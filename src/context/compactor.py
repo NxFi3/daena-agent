@@ -1,3 +1,4 @@
+# src.context/compactor.py
 from src.context.compactorprompt import BuildCompactorPrompt
 from src.engine.LlmProviderManager import LlmProvider
 from src.utils.logger import get_logger

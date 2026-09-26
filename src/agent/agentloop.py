@@ -1,3 +1,4 @@
+# src.agent/agentloop.py
 from __future__ import annotations
 
 import json
@@ -92,6 +93,37 @@ class Loop:
         self._context_step += 1
 
         return self._context_step
+
+    def _resume_step_counter(self) -> None:
+        """
+        `_reset_run_state()` zeroes the in-memory step counter on every
+        `run()` call, but `session_id` (and its STM rows) normally survive
+        across many `run()` calls in the same session (one call per user
+        turn). Restarting the counter at 0 on turn 2 would give that turn's
+        events LOWER step numbers than turn 1's events already sitting in
+        STM. `STMDatabase.get_recent()` orders by `step DESC, timestamp
+        DESC`, so it would then rank the OLD turn as "more recent" than
+        what is actually happening right now — a real correctness bug for
+        any multi-turn session, which matters a lot once this agent is
+        driving a long-running desktop/game session instead of one-shot
+        tasks. Resume from the last stored step instead of zero.
+        """
+
+        if self.session_id is None:
+            return
+
+        try:
+            recent = self.stm.get_recent(
+                session_id=self.session_id,
+                limit=1,
+            )
+
+        except Exception as exc:
+            self.logger.warning(f"Could not resume step counter: {exc}")
+            return
+
+        if recent:
+            self._context_step = max(self._context_step, recent[-1].step)
 
     def _store_event(
         self,
@@ -797,6 +829,10 @@ class Loop:
 
         self._reset_run_state()
 
+        # Must run AFTER _reset_run_state() (which zeroes the counter) and
+        # BEFORE the first _next_step() call below.
+        self._resume_step_counter()
+
         self.logger.info(
             "Starting agent loop | "
             f"session={self.session_id} | "
@@ -805,6 +841,15 @@ class Loop:
         )
 
         user_task.step = self._next_step()
+
+        # Persist the task immediately, instead of only at the end of the
+        # run. Previously the task only entered STM once the loop finished,
+        # so during every intermediate iteration it was invisible to
+        # get_recent()/search() and had to be stuffed into the system
+        # prompt separately as a `<current_task>` blob (duplicating it and
+        # bloating every single request). Storing it up front makes it a
+        # normal, real user message in the conversation from iteration 1.
+        self._store_event(user_task)
 
         empty_streak = 0
 
@@ -851,7 +896,7 @@ class Loop:
                 continue
 
             if llmresult.response:
-                self._store_event(user_task)
+
                 self._store_event(self._assistant_event(llmresult))
 
                 self.agent_state.complete()
@@ -870,7 +915,7 @@ class Loop:
                     f"{self.EMPTY_RESPONSE_THRESHOLD} "
                     "times in a row."
                 )
-                self._store_event(user_task)
+
                 self.agent_state.stop(reason)
 
                 return self._stopped_result(reason)
@@ -878,7 +923,7 @@ class Loop:
         reason = "Maximum iterations reached."
 
         self.agent_state.stop(reason)
-        self._store_event(user_task)
+
         return self._stopped_result(reason)
 
     def _generate_next_action(

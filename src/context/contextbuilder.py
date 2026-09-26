@@ -13,20 +13,35 @@ DEFAULT_INSTRUCTION = (
     "You are Daena, an autonomous assistant and software engineering agent."
 )
 
+SYSTEM_INSTRUCTION_PATH = Path("AgentInstruction/systeminstruction.md")
+EXPERIENCE_PATH = Path("AgentInstruction/experience.md")
+
 
 def SystemInstructionReader() -> str:
-    path = Path("AgentInstruction/systeminstruction.md")
+    """Read once at ContextBuilder construction (rarely changes at runtime)."""
 
     try:
-        text = path.read_text(encoding="utf-8").strip()
+        text = SYSTEM_INSTRUCTION_PATH.read_text(encoding="utf-8").strip()
 
-    except (
-        FileNotFoundError,
-        OSError,
-    ):
+    except (FileNotFoundError, OSError):
         return DEFAULT_INSTRUCTION
 
     return text or DEFAULT_INSTRUCTION
+
+
+def ExperienceReader() -> str:
+    """
+    Hand-curated lessons, edited directly by the user (or later by a
+    self-evolving process). Re-read on every build_context() call, unlike
+    the system instruction, so edits apply on the very next turn with no
+    restart needed.
+    """
+
+    try:
+        return EXPERIENCE_PATH.read_text(encoding="utf-8").strip()
+
+    except (FileNotFoundError, OSError):
+        return ""
 
 
 class ContextBuilder:
@@ -35,40 +50,42 @@ class ContextBuilder:
     provider-visible messages.
 
     Responsibilities:
-
-        - build execution context
-        - reconstruct conversation messages
-        - preserve native assistant tool calls
-        - preserve tool_call_id
+        - build the system message (instruction + experience + runtime)
+        - reconstruct conversation messages from ContextEvents
+        - preserve native assistant tool calls and tool_call_id
         - bound large tool outputs
-        - enforce token budget
+        - enforce the token budget
 
     This class does NOT:
-
         - retrieve memory
         - search STM
-        - perform embeddings
-        - rerank
+        - perform embeddings / reranking
         - call an LLM
         - create long-term memory
 
-    Important:
+    Design note (why agent_state / progress / working_set / observation /
+    recent_actions are accepted but not rendered):
 
-        `events` is the single source of truth for conversation
-        history.
-
-        `task` is used only for the current execution context.
-
-        The task is NOT appended to conversation separately,
-        because Loop persists it into STM before ContextService
-        retrieves events.
+        Tool calls and tool results are replayed through the native
+        tool-calling protocol as real chat messages (see
+        `_build_conversation`). That means everything those blobs used to
+        restate in the system prompt is ALREADY visible to the model in
+        the conversation itself — same file contents, same errors, same
+        outcomes. Rendering it a second time as JSON in the system message
+        only duplicates tokens on every single iteration (and, because it
+        changes every iteration, it also defeats prompt-prefix caching).
+        The parameters are still accepted so ContextService/Loop do not
+        need to change, but this builder no longer stuffs them into the
+        prompt.
     """
 
     MAX_TOOL_CHARS = 8000
     OLD_TOOL_CHARS = 300
     FULL_TOOL_RESULTS = 6
     MAX_THINKING_CHARS = 2000
-    MAX_EXECUTION_CONTEXT_CHARS = 12000
+
+    MAX_EXPERIENCE_CHARS = 4000
+    MAX_LEARNED_EXPERIENCE_CHARS = 3000
 
     _TEXT_FIELDS = (
         "content",
@@ -98,38 +115,22 @@ class ContextBuilder:
     # ============================================================
 
     @staticmethod
-    def _safe_json(
-        value: Any,
-    ) -> str:
+    def _safe_json(value: Any) -> str:
         try:
-            return json.dumps(
-                value,
-                ensure_ascii=False,
-                indent=2,
-                default=str,
-            )
+            return json.dumps(value, ensure_ascii=False, default=str)
 
         except Exception:
             return str(value)
 
     @staticmethod
-    def _parse_json(
-        value: Any,
-    ) -> Any:
-        if not isinstance(
-            value,
-            str,
-        ):
+    def _parse_json(value: Any) -> Any:
+        if not isinstance(value, str):
             return value
 
         try:
             return json.loads(value)
 
-        except (
-            json.JSONDecodeError,
-            TypeError,
-            ValueError,
-        ):
+        except (json.JSONDecodeError, TypeError, ValueError):
             return value
 
     # ============================================================
@@ -141,11 +142,7 @@ class ContextBuilder:
         messages: list[dict[str, Any]],
         role: str,
     ) -> int:
-        for index in range(
-            len(messages) - 1,
-            -1,
-            -1,
-        ):
+        for index in range(len(messages) - 1, -1, -1):
             if messages[index].get("role") == role:
                 return index
 
@@ -173,82 +170,13 @@ class ContextBuilder:
         )
 
     # ============================================================
-    # Execution context
-    # ============================================================
-
-    def _build_execution_context(
-        self,
-        task: dict[str, Any] | None,
-        agent_state: dict[str, Any] | None,
-        progress: dict[str, Any] | None,
-        working_set: dict[str, Any] | None,
-        observation: dict[str, Any] | None,
-        recent_actions: dict[str, Any] | None,
-    ) -> str:
-
-        sections: list[str] = []
-
-        if isinstance(
-            task,
-            dict,
-        ):
-            task_content = str(
-                task.get(
-                    "content",
-                    "",
-                )
-                or ""
-            ).strip()
-
-            if task_content:
-                sections.append(
-                    "<current_task>\n" f"{task_content}\n" "</current_task>"
-                )
-
-        if agent_state:
-            sections.append(
-                "<agent_state>\n" f"{self._safe_json(agent_state)}\n" "</agent_state>"
-            )
-
-        if progress:
-            sections.append(
-                "<progress>\n" f"{self._safe_json(progress)}\n" "</progress>"
-            )
-
-        if working_set:
-            sections.append(
-                "<working_set>\n" f"{self._safe_json(working_set)}\n" "</working_set>"
-            )
-
-        if observation:
-            sections.append(
-                "<observations>\n" f"{self._safe_json(observation)}\n" "</observations>"
-            )
-
-        if recent_actions:
-            sections.append(
-                "<recent_actions>\n"
-                f"{self._safe_json(recent_actions)}\n"
-                "</recent_actions>"
-            )
-
-        if not sections:
-            return ""
-
-        result = "\n\n".join(sections)
-
-        return self._truncate(
-            result,
-            self.MAX_EXECUTION_CONTEXT_CHARS,
-        )
-
-    # ============================================================
     # Conversation reconstruction
     # ============================================================
 
     def _build_conversation(
         self,
         events: list[ContextEvent],
+        task: dict[str, Any] | None,
     ) -> list[dict[str, Any]]:
 
         messages: list[dict[str, Any]] = []
@@ -257,10 +185,7 @@ class ContextBuilder:
 
         for event in events:
 
-            if not isinstance(
-                event,
-                ContextEvent,
-            ):
+            if not isinstance(event, ContextEvent):
                 continue
 
             event_id = str(event.id)
@@ -275,15 +200,12 @@ class ContextBuilder:
             content = event.content
             metadata = event.metadata
 
-            if not isinstance(
-                metadata,
-                dict,
-            ):
+            if not isinstance(metadata, dict):
                 metadata = {}
 
-            # ----------------------------------------------------
+            # --------------------------------------------------------
             # User message
-            # ----------------------------------------------------
+            # --------------------------------------------------------
 
             if role == "user" and event_type == "message":
                 text = str(content or "").strip()
@@ -296,9 +218,9 @@ class ContextBuilder:
                         }
                     )
 
-            # ----------------------------------------------------
+            # --------------------------------------------------------
             # Assistant message
-            # ----------------------------------------------------
+            # --------------------------------------------------------
 
             elif role == "assistant" and event_type == "message":
                 message = self._assistant_message(
@@ -309,34 +231,31 @@ class ContextBuilder:
                 if message is not None:
                     messages.append(message)
 
-            # ----------------------------------------------------
+            # --------------------------------------------------------
             # Assistant tool call
             #
             # Native tool_calls already live inside the assistant
             # message metadata, so we do NOT create another
             # provider-visible message here.
-            # ----------------------------------------------------
+            # --------------------------------------------------------
 
             elif role == "assistant" and event_type == "tool_call":
                 continue
 
-            # ----------------------------------------------------
+            # --------------------------------------------------------
             # Tool result
-            # ----------------------------------------------------
+            # --------------------------------------------------------
 
             elif role == "tool" and event_type == "tool_result":
                 tool_payload = self._parse_json(content)
 
-                if not isinstance(
-                    tool_payload,
-                    dict,
-                ):
+                if not isinstance(tool_payload, dict):
                     tool_payload = {
                         "content": str(tool_payload),
                         "success": False,
                     }
 
-                tool_message = {
+                tool_message: dict[str, Any] = {
                     "role": "tool",
                     "content": self._tool_payload(tool_payload),
                 }
@@ -353,9 +272,9 @@ class ContextBuilder:
 
                 messages.append(tool_message)
 
-            # ----------------------------------------------------
+            # --------------------------------------------------------
             # System event
-            # ----------------------------------------------------
+            # --------------------------------------------------------
 
             elif role == "system":
                 text = str(content or "").strip()
@@ -368,17 +287,33 @@ class ContextBuilder:
                         }
                     )
 
-            # ----------------------------------------------------
-            # Generic runtime event
-            #
-            # Persisted in STM but not automatically injected.
-            # ----------------------------------------------------
+            # --------------------------------------------------------
+            # Generic runtime event: persisted in STM but not
+            # automatically injected.
+            # --------------------------------------------------------
 
             elif event_type == "event":
                 continue
 
-        self._shrink_old_tool_results(messages)
+        # Safety net: Loop persists the task to STM at the very start of
+        # run(), so it is almost always already inside `events`. This only
+        # fires if it somehow fell outside the retrieved/recent window and
+        # search() also missed it (it shouldn't, since search is queried
+        # with the task's own content).
+        if isinstance(task, dict):
 
+            task_id = task.get("id")
+            task_text = str(task.get("content") or "").strip()
+
+            if task_text and task_id is not None and str(task_id) not in seen_ids:
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": task_text,
+                    }
+                )
+
+        self._shrink_old_tool_results(messages)
         self._drop_old_thinking(messages)
 
         return messages
@@ -395,10 +330,7 @@ class ContextBuilder:
 
         raw = metadata.get("llm_message")
 
-        if not isinstance(
-            raw,
-            dict,
-        ):
+        if not isinstance(raw, dict):
             raw = {}
 
         message: dict[str, Any] = {
@@ -421,11 +353,7 @@ class ContextBuilder:
         if reasoning:
             message["reasoning"] = reasoning
 
-        for key in (
-            "refusal",
-            "annotations",
-            "audio",
-        ):
+        for key in ("refusal", "annotations", "audio"):
             value = raw.get(key)
 
             if value is not None:
@@ -440,13 +368,7 @@ class ContextBuilder:
             )
 
         if (
-            not str(
-                message.get(
-                    "content",
-                    "",
-                )
-                or ""
-            ).strip()
+            not str(message.get("content", "") or "").strip()
             and "tool_calls" not in message
         ):
             return None
@@ -464,21 +386,12 @@ class ContextBuilder:
 
         inner = event_content.get("content")
 
-        if isinstance(
-            inner,
-            dict,
-        ):
+        if isinstance(inner, dict):
             payload = dict(inner)
-
         else:
             payload = {"message": str(inner or "")}
 
-        payload["success"] = bool(
-            event_content.get(
-                "success",
-                False,
-            )
-        )
+        payload["success"] = bool(event_content.get("success", False))
 
         blocks: list[str] = []
 
@@ -486,64 +399,38 @@ class ContextBuilder:
 
             value = payload.get(key)
 
-            if isinstance(
-                value,
-                str,
-            ):
-                payload.pop(
-                    key,
-                    None,
-                )
+            if isinstance(value, str):
+                payload.pop(key, None)
 
                 if value.strip():
                     blocks.append(f"[{key}]\n{value}")
 
         files = payload.get("files")
 
-        if isinstance(
-            files,
-            list,
-        ):
+        if isinstance(files, list):
             slim_files: list[dict[str, Any]] = []
 
             for item in files:
 
-                if not isinstance(
-                    item,
-                    dict,
-                ):
+                if not isinstance(item, dict):
                     continue
 
                 slim_files.append(
                     {
                         key: value
                         for key, value in item.items()
-                        if key
-                        not in (
-                            "content",
-                            "content_preview",
-                        )
+                        if key not in ("content", "content_preview")
                     }
                 )
 
                 text = item.get("content")
 
-                if (
-                    isinstance(
-                        text,
-                        str,
-                    )
-                    and text.strip()
-                ):
-                    blocks.append("[file: " f"{item.get('path', '')}]" "\n" f"{text}")
+                if isinstance(text, str) and text.strip():
+                    blocks.append(f"[file: {item.get('path', '')}]\n{text}")
 
             payload["files"] = slim_files
 
-        text = json.dumps(
-            payload,
-            ensure_ascii=False,
-            default=str,
-        )
+        text = json.dumps(payload, ensure_ascii=False, default=str)
 
         if blocks:
             text += "\n\n" + "\n\n".join(blocks)
@@ -571,22 +458,11 @@ class ContextBuilder:
         if len(tool_positions) <= self.FULL_TOOL_RESULTS:
             return
 
-        old_positions = tool_positions[: -self.FULL_TOOL_RESULTS]
+        for index in tool_positions[: -self.FULL_TOOL_RESULTS]:
 
-        for index in old_positions:
+            content = messages[index].get("content", "")
 
-            content = messages[index].get(
-                "content",
-                "",
-            )
-
-            if not isinstance(
-                content,
-                str,
-            ):
-                continue
-
-            if len(content) > self.OLD_TOOL_CHARS:
+            if isinstance(content, str) and len(content) > self.OLD_TOOL_CHARS:
                 messages[index]["content"] = (
                     content[: self.OLD_TOOL_CHARS] + " ...[old result truncated]"
                 )
@@ -600,17 +476,11 @@ class ContextBuilder:
         messages: list[dict[str, Any]],
     ) -> None:
 
-        last_user = self._last_index(
-            messages,
-            "user",
-        )
+        last_user = self._last_index(messages, "user")
 
         for index, message in enumerate(messages):
             if index < last_user:
-                message.pop(
-                    "thinking",
-                    None,
-                )
+                message.pop("thinking", None)
 
     # ============================================================
     # Window population
@@ -621,34 +491,29 @@ class ContextBuilder:
         events: list[ContextEvent],
         task: dict[str, Any] | None,
         workspace: str | None,
-        agent_state: dict[str, Any] | None,
-        progress: dict[str, Any] | None,
-        working_set: dict[str, Any] | None,
-        observation: dict[str, Any] | None,
-        recent_actions: dict[str, Any] | None,
+        learned_experience: str | None,
     ) -> None:
 
-        # Reset system state every build.
         self.window.set_system(self.system_instruction)
 
-        # Reset runtime every build.
-        self.window.set_runtime(workspace)
-
-        execution_context = self._build_execution_context(
-            task=task,
-            agent_state=agent_state,
-            progress=progress,
-            working_set=working_set,
-            observation=observation,
-            recent_actions=recent_actions,
+        experience = self._truncate(
+            ExperienceReader(),
+            self.MAX_EXPERIENCE_CHARS,
         )
+        self.window.set_experience(experience)
 
-        self.window.set_execution_context(execution_context)
+        learned = self._truncate(
+            str(learned_experience or ""),
+            self.MAX_LEARNED_EXPERIENCE_CHARS,
+        )
+        self.window.set_learned_experience(learned)
 
+        self.window.set_runtime(workspace)
 
         self.window.set_conversation(
             self._build_conversation(
                 events=events,
+                task=task,
             )
         )
 
@@ -665,11 +530,8 @@ class ContextBuilder:
 
         start = len(rest)
 
-        for index in range(
-            len(rest) - 1,
-            -1,
-            -1,
-        ):
+        for index in range(len(rest) - 1, -1, -1):
+
             candidate = system + rest[index:]
 
             if not self.tokenbudget.fits(candidate):
@@ -677,32 +539,23 @@ class ContextBuilder:
 
             start = index
 
-
         while start < len(rest) and rest[start].get("role") == "tool":
             start += 1
 
-        kept = rest[start:]
+        return system + rest[start:]
 
-        return system + kept
-
-    def _minimal_messages(
-        self,
-    ) -> list[dict[str, Any]]:
+    def _minimal_messages(self) -> list[dict[str, Any]]:
 
         system = {
             "role": "system",
-            "content": (self.window.build_system_content()),
+            "content": self.window.build_system_content(),
         }
 
         for message in reversed(self.window.conversation):
             if message.get("role") == "user":
-                return [
-                    system,
-                    message,
-                ]
+                return [system, message]
 
         return [system]
-
 
     def build_context(
         self,
@@ -714,17 +567,27 @@ class ContextBuilder:
         observation: dict[str, Any] | None = None,
         recent_actions: dict[str, Any] | None = None,
         workspace: str | None = None,
+        learned_experience: str | None = None,
     ) -> list[dict[str, Any]]:
+        """
+        `agent_state`, `progress`, `working_set`, `observation` and
+        `recent_actions` are accepted for compatibility with
+        ContextService/Loop but intentionally NOT rendered (see the class
+        docstring for why). `learned_experience` is the hook point for a
+        future self-evolving memory system: pass retrieved/learned text
+        there and it renders in its own <learned_experience> section,
+        separate from the hand-curated AgentInstruction/experience.md.
+        """
+
+        # Silence "unused parameter" concerns explicitly: these exist only
+        # for call-site compatibility.
+        del agent_state, progress, working_set, observation, recent_actions
 
         self._populate_window(
             events=events,
             task=task,
             workspace=workspace,
-            agent_state=agent_state,
-            progress=progress,
-            working_set=working_set,
-            observation=observation,
-            recent_actions=recent_actions,
+            learned_experience=learned_experience,
         )
 
         messages = self.window.get_prompt()

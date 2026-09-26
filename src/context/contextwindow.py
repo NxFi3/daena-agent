@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import platform
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -12,31 +13,43 @@ class ContextWindow:
     """
     Builds the final model-visible context.
 
-    Structure:
+    Structure of the system message:
 
-        system message
-            ├── static instruction
-            └── runtime information
+        1. static instruction      (AgentInstruction/systeminstruction.md)
+        2. hand-curated experience (AgentInstruction/experience.md)
+        3. learned experience      (reserved for a future self-evolving
+                                     memory system; empty until wired up)
+        4. runtime info (os / cwd / workspace / date)
 
-        conversation
-            ├── user messages
-            ├── assistant messages
-            └── tool results
+    Everything that changes turn to turn (agent state, progress, working
+    set, tool results) lives in `conversation` as real chat messages, not
+    in the system message. Stuffing it into the system prompt duplicates
+    what the tool-call/tool-result messages already say and is what made
+    the context blow up.
 
-    ContextWindow contains no retrieval logic.
+    ContextWindow holds no retrieval or file-reading logic; ContextBuilder
+    populates it.
     """
 
     def __init__(self) -> None:
+
         self.os_name = platform.system()
 
         self.system_instruction: str = ""
+        self.experience: str = ""
+        self.learned_experience: str = ""
 
-        self.runtime: dict[str, Any] = {
-            "os": self.os_name,
-            "cwd": str(Path.cwd()),
-        }
+        self.runtime: dict[str, Any] = self._base_runtime()
 
         self.conversation: list[Message] = []
+
+    def _base_runtime(self) -> dict[str, Any]:
+
+        return {
+            "os": self.os_name,
+            "cwd": str(Path.cwd()),
+            "date": datetime.now().strftime("%Y-%m-%d (%A)"),
+        }
 
     # ============================================================
     # System
@@ -48,6 +61,30 @@ class ContextWindow:
     ) -> None:
         self.system_instruction = str(instruction or "").strip()
 
+    def set_experience(
+        self,
+        text: str,
+    ) -> None:
+        """
+        Hand-curated, file-backed experience (AgentInstruction/experience.md).
+        Edit that file directly; ContextBuilder re-reads it on every turn,
+        so changes apply on the next model call with no restart needed.
+        """
+        self.experience = str(text or "").strip()
+
+    def set_learned_experience(
+        self,
+        text: str | None,
+    ) -> None:
+        """
+        Reserved slot for a future self-evolving memory system: lessons the
+        agent (or a consolidation process) derives on its own, kept separate
+        from the hand-curated file above so the two never overwrite each
+        other. Currently always empty unless something passes
+        `learned_experience=` into ContextBuilder.build_context().
+        """
+        self.learned_experience = str(text or "").strip()
+
     # ============================================================
     # Runtime
     # ============================================================
@@ -56,31 +93,10 @@ class ContextWindow:
         self,
         workspace: str | None = None,
     ) -> None:
-        self.runtime = {
-            "os": self.os_name,
-            "cwd": str(Path.cwd()),
-        }
+        self.runtime = self._base_runtime()
 
         if workspace:
             self.runtime["workspace"] = str(Path(workspace).expanduser().resolve())
-
-    def set_execution_context(
-        self,
-        execution_context: str | None,
-    ) -> None:
-        """
-        Add dynamic execution state to runtime.
-
-        This is replaced on every build, never accumulated.
-        """
-
-        if execution_context:
-            self.runtime["execution_context"] = execution_context
-        else:
-            self.runtime.pop(
-                "execution_context",
-                None,
-            )
 
     # ============================================================
     # Conversation
@@ -116,28 +132,33 @@ class ContextWindow:
         name: str,
         content: Any,
     ) -> str:
-        return f"<{name}>\n" f"{cls._serialize(content)}\n" f"</{name}>"
+        return f"<{name}>\n{cls._serialize(content)}\n</{name}>"
 
     # ============================================================
     # System content
     # ============================================================
 
     def build_system_content(self) -> str:
+
         sections: list[str] = []
 
         if self.system_instruction:
             sections.append(self.system_instruction)
 
-        sections.append(
-            self._section(
-                "runtime",
-                self.runtime,
+        if self.experience:
+            sections.append(self._section("experience", self.experience))
+
+        if self.learned_experience:
+            sections.append(
+                self._section("learned_experience", self.learned_experience)
             )
-        )
+
+        sections.append(self._section("runtime", self.runtime))
 
         return "\n\n".join(sections)
 
     def get_prompt(self) -> list[Message]:
+
         messages: list[Message] = []
 
         system_content = self.build_system_content()
