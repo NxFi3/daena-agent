@@ -1,4 +1,4 @@
-# src.agent/agentloop.py
+# src/agent/agentloop.py
 from __future__ import annotations
 
 import json
@@ -182,15 +182,20 @@ class Loop:
 
         message["role"] = "assistant"
 
-        content = llmresult.response or ""
+        message_content = message.get("content")
 
-        if "content" not in message:
+        if message_content is None:
 
-            message["content"] = content
+            message_content = llmresult.response or ""
 
-        elif message.get("content") is None:
+        if not isinstance(
+            message_content,
+            str,
+        ):
 
-            message["content"] = content
+            message_content = str(message_content)
+
+        message["content"] = message_content
 
         if normalized_tool_calls is not None:
 
@@ -241,41 +246,17 @@ class Loop:
                         "type": "function",
                         "function": {
                             "name": name,
-                            "arguments": (arguments_json),
+                            "arguments": arguments_json,
                         },
                     }
                 )
 
             message["tool_calls"] = serialized_tool_calls
 
+        # Preserve model reasoning/thinking when the provider exposes it.
         if "thinking" not in message and llmresult.thinking:
 
             message["thinking"] = str(llmresult.thinking)
-
-        message_content = message.get("content")
-
-        if message_content is None:
-
-            message_content = ""
-
-        if not isinstance(
-            message_content,
-            str,
-        ):
-
-            message_content = str(message_content)
-
-        # For tool-call-only assistant messages,
-        # content can legitimately be empty.
-        event_content = message_content
-
-        if not event_content.strip() and not normalized_tool_calls:
-
-            event_content = json.dumps(
-                message,
-                ensure_ascii=False,
-                default=str,
-            )
 
         metadata: dict[str, Any] = {
             "has_tool_calls": bool(normalized_tool_calls),
@@ -289,7 +270,7 @@ class Loop:
         return ContextEvent(
             role=ContextRole.ASSISTANT,
             type=ContextType.MESSAGE,
-            content=event_content,
+            content=message_content,
             priority=ContextPriority.NORMAL,
             step=self._next_step(),
             metadata=metadata,
@@ -516,7 +497,7 @@ class Loop:
                 "success": False,
                 "error": {
                     "type": "invalid_tool_call",
-                    "message": ("Invalid tool call."),
+                    "message": "Invalid tool call.",
                 },
             },
             metadata={},
@@ -773,6 +754,7 @@ class Loop:
             return None
 
         if is_duplicate:
+
             return None
 
         signature = self._failure_signature(
@@ -991,15 +973,21 @@ class Loop:
 
                 try:
 
+                    # The ONLY place where raw provider tool calls are
+                    # converted into canonical ToolCall objects.
                     parsed_calls = self.tool.dispatcher.dispatch(llmresult.tool_calls)
 
                 except Exception as exc:
 
                     self.logger.error("Tool dispatch failed: " f"{exc}")
 
+                    # Persist the assistant message for diagnostics.
+                    # _assistant_event() deliberately stores textual content
+                    # only in ContextEvent.content and keeps the full message
+                    # under metadata["llm_message"].
                     self._store_event(self._assistant_event(llmresult))
 
-                    self.agent_state.fail(f"Tool dispatch failed: " f"{exc}")
+                    self.agent_state.fail("Tool dispatch failed: " f"{exc}")
 
                     return self._stopped_result(
                         self.agent_state.error or "Tool dispatch failed."
@@ -1019,6 +1007,7 @@ class Loop:
                         self.agent_state.error or "Tool dispatch failed."
                     )
 
+                # Store the canonical calls with stable IDs.
                 self._store_event(
                     self._assistant_event(
                         llmresult,

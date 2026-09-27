@@ -4,7 +4,7 @@
     "provider_config": {
       "model_name": "gpt-oss:20b",
       "generation_config": {
-        "temperature": 0.2,
+        "temperature": 0.5,
         "num_ctx": 95000,
         "num_predict": -1
       }
