@@ -5,6 +5,7 @@ import json
 import re
 from typing import Any
 from uuid import UUID, uuid4
+
 from src.agent.agentstate import AgentState
 from src.context.contextservice import ContextService
 from src.context.workingset import WorkingSet
@@ -38,13 +39,21 @@ class Loop:
         config,
         llm: LlmProvider,
     ) -> None:
+
         self.config = config
+
         self.logger = get_logger("[LOOP]")
+
         self.llm = llm
+
         self.stm = STM(db_path="data/stm.db")
+
         self.session_id: UUID | None = None
+
         self._context_step = 0
+
         self.tool = ToolManager()
+
         self.context = ContextService(
             config=self.config,
             llm=self.llm,
@@ -52,20 +61,29 @@ class Loop:
         )
 
         self.agent_state = AgentState()
+
         self.working_set = WorkingSet()
 
         self.workspace_revision = 0
+
         self._successful_tool_calls: dict[
             str,
             int,
         ] = {}
+
         self._last_duplicate_key: str | None = None
+
         self._duplicate_block_streak = 0
+
         self._recent_failure_signatures: list[str] = []
+
         self.max_iterations = self._read_max_iterations()
+
         self.tool_definitions = self.tool.get_tools()
 
-    def _read_max_iterations(self) -> int:
+    def _read_max_iterations(
+        self,
+    ) -> int:
 
         try:
 
@@ -88,42 +106,48 @@ class Loop:
             value,
         )
 
-    def _next_step(self) -> int:
+    def _next_step(
+        self,
+    ) -> int:
 
         self._context_step += 1
 
         return self._context_step
 
-    def _resume_step_counter(self) -> None:
+    def _resume_step_counter(
+        self,
+    ) -> None:
         """
-        `_reset_run_state()` zeroes the in-memory step counter on every
-        `run()` call, but `session_id` (and its STM rows) normally survive
-        across many `run()` calls in the same session (one call per user
-        turn). Restarting the counter at 0 on turn 2 would give that turn's
-        events LOWER step numbers than turn 1's events already sitting in
-        STM. `STMDatabase.get_recent()` orders by `step DESC, timestamp
-        DESC`, so it would then rank the OLD turn as "more recent" than
-        what is actually happening right now — a real correctness bug for
-        any multi-turn session, which matters a lot once this agent is
-        driving a long-running desktop/game session instead of one-shot
-        tasks. Resume from the last stored step instead of zero.
+        `_reset_run_state()` zeroes the in-memory step counter on
+        every `run()` call, but `session_id` and STM rows normally
+        survive across many `run()` calls in the same session.
+
+        Resume from the last stored step so newer turns always get
+        higher step numbers.
         """
 
         if self.session_id is None:
             return
 
         try:
+
             recent = self.stm.get_recent(
                 session_id=self.session_id,
                 limit=1,
             )
 
         except Exception as exc:
-            self.logger.warning(f"Could not resume step counter: {exc}")
+
+            self.logger.warning("Could not resume step counter: " f"{exc}")
+
             return
 
         if recent:
-            self._context_step = max(self._context_step, recent[-1].step)
+
+            self._context_step = max(
+                self._context_step,
+                recent[-1].step,
+            )
 
     def _store_event(
         self,
@@ -144,36 +168,131 @@ class Loop:
     def _assistant_event(
         self,
         llmresult: LLMResult,
+        normalized_tool_calls: list | None = None,
     ) -> ContextEvent:
+
+        message = (
+            dict(llmresult.message)
+            if isinstance(
+                llmresult.message,
+                dict,
+            )
+            else {}
+        )
+
+        message["role"] = "assistant"
 
         content = llmresult.response or ""
 
-        if not content:
+        if "content" not in message:
 
-            message = (
-                llmresult.message
-                if isinstance(
-                    llmresult.message,
-                    dict,
+            message["content"] = content
+
+        elif message.get("content") is None:
+
+            message["content"] = content
+
+        if normalized_tool_calls is not None:
+
+            serialized_tool_calls: list[dict[str, Any]] = []
+
+            for call in normalized_tool_calls:
+
+                call_id = str(
+                    getattr(
+                        call,
+                        "id",
+                        "",
+                    )
+                ).strip()
+
+                name = str(
+                    getattr(
+                        call,
+                        "name",
+                        "",
+                    )
+                ).strip()
+
+                arguments = (
+                    getattr(
+                        call,
+                        "args",
+                        {},
+                    )
+                    or {}
                 )
-                else {}
-            )
 
-            content = json.dumps(
+                try:
+
+                    arguments_json = json.dumps(
+                        arguments,
+                        ensure_ascii=False,
+                        default=str,
+                    )
+
+                except Exception:
+
+                    arguments_json = "{}"
+
+                serialized_tool_calls.append(
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "arguments": (arguments_json),
+                        },
+                    }
+                )
+
+            message["tool_calls"] = serialized_tool_calls
+
+        if "thinking" not in message and llmresult.thinking:
+
+            message["thinking"] = str(llmresult.thinking)
+
+        message_content = message.get("content")
+
+        if message_content is None:
+
+            message_content = ""
+
+        if not isinstance(
+            message_content,
+            str,
+        ):
+
+            message_content = str(message_content)
+
+        # For tool-call-only assistant messages,
+        # content can legitimately be empty.
+        event_content = message_content
+
+        if not event_content.strip() and not normalized_tool_calls:
+
+            event_content = json.dumps(
                 message,
                 ensure_ascii=False,
                 default=str,
             )
 
+        metadata: dict[str, Any] = {
+            "has_tool_calls": bool(normalized_tool_calls),
+            "llm_message": message,
+        }
+
+        if llmresult.thinking:
+
+            metadata["thinking"] = str(llmresult.thinking)
+
         return ContextEvent(
             role=ContextRole.ASSISTANT,
             type=ContextType.MESSAGE,
-            content=content,
+            content=event_content,
             priority=ContextPriority.NORMAL,
             step=self._next_step(),
-            metadata={
-                "has_tool_calls": bool(llmresult.tool_calls),
-            },
+            metadata=metadata,
         )
 
     def _tool_call_event(
@@ -397,7 +516,7 @@ class Loop:
                 "success": False,
                 "error": {
                     "type": "invalid_tool_call",
-                    "message": "Invalid tool call.",
+                    "message": ("Invalid tool call."),
                 },
             },
             metadata={},
@@ -525,15 +644,18 @@ class Loop:
 
     def _execute_allowed_calls(
         self,
-        raw_tool_calls: list,
+        normalized_tool_calls: list,
         allowed_indices: list[int],
-    ) -> tuple[list, list[ToolResult]]:
+    ) -> tuple[
+        list,
+        list[ToolResult],
+    ]:
 
         if not allowed_indices:
 
             return [], []
 
-        allowed_calls = [raw_tool_calls[index] for index in allowed_indices]
+        allowed_calls = [normalized_tool_calls[index] for index in allowed_indices]
 
         try:
 
@@ -542,6 +664,13 @@ class Loop:
         except Exception as exc:
 
             self.logger.error(f"Tool execution failed: {exc}")
+
+            return [], []
+
+        if not isinstance(
+            output,
+            dict,
+        ):
 
             return [], []
 
@@ -593,10 +722,8 @@ class Loop:
             iteration=iteration,
         )
 
-        # Tool call → STM
         self._store_event(self._tool_call_event(call))
 
-        # Update runtime state
         self.agent_state.update_from_result(result)
 
         changed = self.working_set.update(
@@ -615,7 +742,6 @@ class Loop:
 
             self._successful_tool_calls[key] = self.workspace_revision
 
-        # Tool result → STM
         self._store_event(
             self._tool_result_event(
                 call,
@@ -647,7 +773,6 @@ class Loop:
             return None
 
         if is_duplicate:
-
             return None
 
         signature = self._failure_signature(
@@ -670,32 +795,16 @@ class Loop:
                 f"STUCK: "
                 f"'{call.name}' failed "
                 f"{self.FAILURE_STUCK_THRESHOLD} "
-                f"times in a row."
+                "times in a row."
             )
 
         return None
 
     def _execute_tool_calls(
         self,
-        llmresult: LLMResult,
+        parsed_calls: list,
         iteration: int,
     ) -> bool:
-
-        raw_calls = llmresult.tool_calls or []
-
-        if not raw_calls:
-
-            return False
-
-        try:
-
-            parsed_calls = self.tool.dispatcher.dispatch(raw_calls)
-
-        except Exception as exc:
-
-            self.logger.error(f"Tool dispatch failed: {exc}")
-
-            return False
 
         if not parsed_calls:
 
@@ -710,16 +819,22 @@ class Loop:
             executed_calls,
             executed_results,
         ) = self._execute_allowed_calls(
-            raw_calls,
-            allowed_indices,
+            normalized_tool_calls=(parsed_calls),
+            allowed_indices=(allowed_indices),
         )
 
         executed: dict[
             int,
-            tuple[Any, ToolResult],
+            tuple[
+                Any,
+                ToolResult,
+            ],
         ] = {}
 
-        for position, original_index in enumerate(allowed_indices):
+        for (
+            position,
+            original_index,
+        ) in enumerate(allowed_indices):
 
             if position >= len(executed_results):
 
@@ -829,8 +944,8 @@ class Loop:
 
         self._reset_run_state()
 
-        # Must run AFTER _reset_run_state() (which zeroes the counter) and
-        # BEFORE the first _next_step() call below.
+        # Must run AFTER _reset_run_state()
+        # and BEFORE the first _next_step().
         self._resume_step_counter()
 
         self.logger.info(
@@ -842,13 +957,7 @@ class Loop:
 
         user_task.step = self._next_step()
 
-        # Persist the task immediately, instead of only at the end of the
-        # run. Previously the task only entered STM once the loop finished,
-        # so during every intermediate iteration it was invisible to
-        # get_recent()/search() and had to be stuffed into the system
-        # prompt separately as a `<current_task>` blob (duplicating it and
-        # bloating every single request). Storing it up front makes it a
-        # normal, real user message in the conversation from iteration 1.
+        # Persist the task immediately.
         self._store_event(user_task)
 
         empty_streak = 0
@@ -880,10 +989,45 @@ class Loop:
 
                 empty_streak = 0
 
-                self._store_event(self._assistant_event(llmresult))
+                try:
+
+                    parsed_calls = self.tool.dispatcher.dispatch(llmresult.tool_calls)
+
+                except Exception as exc:
+
+                    self.logger.error("Tool dispatch failed: " f"{exc}")
+
+                    self._store_event(self._assistant_event(llmresult))
+
+                    self.agent_state.fail(f"Tool dispatch failed: " f"{exc}")
+
+                    return self._stopped_result(
+                        self.agent_state.error or "Tool dispatch failed."
+                    )
+
+                if not parsed_calls:
+
+                    self.logger.error(
+                        "Tool dispatcher returned " "no normalized calls."
+                    )
+
+                    self._store_event(self._assistant_event(llmresult))
+
+                    self.agent_state.fail("Tool dispatcher returned " "no calls.")
+
+                    return self._stopped_result(
+                        self.agent_state.error or "Tool dispatch failed."
+                    )
+
+                self._store_event(
+                    self._assistant_event(
+                        llmresult,
+                        normalized_tool_calls=(parsed_calls),
+                    )
+                )
 
                 should_stop = self._execute_tool_calls(
-                    llmresult,
+                    parsed_calls,
                     iteration_number,
                 )
 
@@ -971,17 +1115,28 @@ class Loop:
 
         return result
 
-    def _reset_run_state(self) -> None:
+    def _reset_run_state(
+        self,
+    ) -> None:
 
         self.agent_state.reset()
+
         self.working_set.reset()
+
         self.workspace_revision = 0
+
         self._context_step = 0
+
         self._successful_tool_calls.clear()
+
         self._last_duplicate_key = None
+
         self._duplicate_block_streak = 0
+
         self._recent_failure_signatures.clear()
 
-    def close(self) -> None:
+    def close(
+        self,
+    ) -> None:
 
         self.stm.close()

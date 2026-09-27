@@ -1,5 +1,6 @@
-from typing import Any
+from __future__ import annotations
 
+from src.models.ToolCall import ToolCall
 from src.models.ToolResult import ToolResult
 from src.tools.ToolDispatcher import ToolDispatcher
 from src.tools.ToolRegistry import ToolRegistry
@@ -9,20 +10,32 @@ from src.security.securityService import security  # NotImplemented
 
 class ToolManager:
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+    ) -> None:
+
         self.logger = get_logger("[TOOLMANAGER]")
+
         self.toolregistry = ToolRegistry()
+
         self.dispatcher = ToolDispatcher(self.toolregistry)
+
         self.security = security()
+
         self._definitions: list[dict] | None = None
 
-    def get_tools(self):
+    def get_tools(
+        self,
+    ):
         """
-        Discover builtin tools once and return their definitions.
+        Discover builtin tools once and
+        return their definitions.
         """
 
         if self._definitions is None:
+
             self.toolregistry.discover()
+
             self._definitions = self.toolregistry.get_definitions()
 
         return self._definitions
@@ -31,18 +44,38 @@ class ToolManager:
         self,
         name: str,
     ) -> dict | None:
+
         normalized_name = str(name).strip().lower()
 
         for definition in self.get_tools():
-            if not isinstance(definition, dict):
+
+            if not isinstance(
+                definition,
+                dict,
+            ):
                 continue
 
-            function = definition.get("function", {})
+            function = definition.get(
+                "function",
+                {},
+            )
 
-            if not isinstance(function, dict):
+            if not isinstance(
+                function,
+                dict,
+            ):
                 continue
 
-            definition_name = str(function.get("name", "")).strip().lower()
+            definition_name = (
+                str(
+                    function.get(
+                        "name",
+                        "",
+                    )
+                )
+                .strip()
+                .lower()
+            )
 
             if definition_name == normalized_name:
                 return definition
@@ -53,93 +86,230 @@ class ToolManager:
         self,
         name: str,
     ):
+
         return self.toolregistry.get(str(name).strip().lower())
 
-    def _call_metadata(
+    def execute(
         self,
-        parsed: dict,
+        tool_calls: list[ToolCall],
     ) -> dict:
-        return {
-            "tool_name": parsed.get("name", ""),
-            "tool_call_id": parsed.get("id"),
-            "tool_call_type": parsed.get("type", "function"),
-        }
 
-    def execute(self, tool_calls):
-        calls = []
-        results = []
+        calls: list[ToolCall] = []
+        results: list[ToolResult] = []
 
         if not tool_calls:
-            return {"calls": [], "results": []}
 
-        try:
-            parsed_tool_calls = self.dispatcher.dispatch(tool_calls)
-        except Exception as e:
-            self.logger.error(f"dispatch failed: {e}")
-            return {"calls": [], "results": []}
+            return {
+                "calls": [],
+                "results": [],
+            }
 
-        for toolcall in parsed_tool_calls:
-            calls.append(toolcall)
+        for incoming_call in tool_calls:
+
+            if not isinstance(
+                incoming_call,
+                ToolCall,
+            ):
+
+                self.logger.error(
+                    "ToolManager received "
+                    "non-ToolCall object: "
+                    f"{type(incoming_call).__name__}"
+                )
+
+                invalid_call = ToolCall(
+                    name="",
+                    valid=False,
+                )
+
+                calls.append(invalid_call)
+
+                results.append(
+                    ToolResult(
+                        success=False,
+                        name="",
+                        content={
+                            "success": False,
+                            "error": {
+                                "type": ("invalid_tool_call"),
+                                "message": (
+                                    "ToolManager received " "a non-ToolCall object."
+                                ),
+                            },
+                        },
+                        metadata={},
+                    )
+                )
+
+                continue
+
+            toolcall = incoming_call
+
             if not toolcall.valid:
+
+                calls.append(toolcall)
+
                 results.append(
                     ToolResult(
                         success=False,
                         name=toolcall.name,
                         content={
                             "success": False,
-                            "content": "Invalid tool call.",
+                            "error": {
+                                "type": ("invalid_tool_call"),
+                                "message": ("Invalid tool call."),
+                            },
                         },
-                        metadata={},
+                        metadata={
+                            "tool_call_id": toolcall.id,
+                        },
                     )
                 )
+
                 continue
-            tool = self._find_tool(toolcall.name.lower())
+
+            tool = self._find_tool(toolcall.name)
 
             if tool is None:
+
+                calls.append(toolcall)
+
                 results.append(
                     ToolResult(
                         success=False,
                         name=toolcall.name,
                         content={
                             "success": False,
-                            "content": "Tool Not Found.",
+                            "error": {
+                                "type": ("tool_not_found"),
+                                "message": (
+                                    f"Tool '{toolcall.name}' " "was not found."
+                                ),
+                            },
                         },
-                        metadata={},
+                        metadata={
+                            "tool_call_id": toolcall.id,
+                        },
                     )
                 )
-                continue
 
-            toolcall = self.security.check(toolcall)
-
-            if not toolcall.approved:
-                results.append(
-                    ToolResult(
-                        success=False,
-                        name=toolcall.name,
-                        content={
-                            "success": False,
-                            "content": "You are not allowed to use this tool.",
-                        },
-                        metadata={},
-                    )
-                )
                 continue
 
             try:
-                result = tool.execute(**toolcall.args)
-                results.append(result)
-            except Exception as e:
-                self.logger.error(f"tool '{toolcall.name}' failed: {e}")
+
+                checked_call = self.security.check(toolcall)
+
+                if isinstance(
+                    checked_call,
+                    ToolCall,
+                ):
+
+                    toolcall = checked_call
+
+            except Exception as exc:
+
+                self.logger.error(
+                    "Security check failed for " f"'{toolcall.name}': {exc}"
+                )
+
+                calls.append(toolcall)
+
                 results.append(
                     ToolResult(
                         success=False,
                         name=toolcall.name,
                         content={
                             "success": False,
-                            "content": f"unexpected error while using tool: {e}",
+                            "error": {
+                                "type": ("security_check_failed"),
+                                "message": (f"Security check failed: " f"{exc}"),
+                            },
                         },
-                        metadata={},
+                        metadata={
+                            "tool_call_id": toolcall.id,
+                        },
                     )
                 )
 
-        return {"calls": calls, "results": results}
+                continue
+
+            calls.append(toolcall)
+
+            if not toolcall.approved:
+
+                results.append(
+                    ToolResult(
+                        success=False,
+                        name=toolcall.name,
+                        content={
+                            "success": False,
+                            "error": {
+                                "type": ("tool_not_allowed"),
+                                "message": ("You are not allowed " "to use this tool."),
+                            },
+                        },
+                        metadata={
+                            "tool_call_id": toolcall.id,
+                        },
+                    )
+                )
+
+                continue
+
+            try:
+
+                result = tool.execute(**toolcall.args)
+
+                if not isinstance(
+                    result,
+                    ToolResult,
+                ):
+
+                    self.logger.error(
+                        f"Tool '{toolcall.name}' " "returned an invalid " "result type."
+                    )
+
+                    result = ToolResult(
+                        success=False,
+                        name=toolcall.name,
+                        content={
+                            "success": False,
+                            "error": {
+                                "type": ("invalid_tool_result"),
+                                "message": ("Tool returned an " "invalid result."),
+                            },
+                        },
+                        metadata={
+                            "tool_call_id": toolcall.id,
+                        },
+                    )
+
+                results.append(result)
+
+            except Exception as exc:
+
+                self.logger.error(f"Tool '{toolcall.name}' " f"failed: {exc}")
+
+                results.append(
+                    ToolResult(
+                        success=False,
+                        name=toolcall.name,
+                        content={
+                            "success": False,
+                            "error": {
+                                "type": ("tool_execution_error"),
+                                "message": (
+                                    "Unexpected error while " f"using tool: {exc}"
+                                ),
+                            },
+                        },
+                        metadata={
+                            "tool_call_id": toolcall.id,
+                        },
+                    )
+                )
+
+        return {
+            "calls": calls,
+            "results": results,
+        }
