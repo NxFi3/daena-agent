@@ -110,10 +110,6 @@ class ContextBuilder:
 
         self.system_instruction = SystemInstructionReader()
 
-    # ============================================================
-    # JSON helpers
-    # ============================================================
-
     @staticmethod
     def _safe_json(value: Any) -> str:
         try:
@@ -132,10 +128,6 @@ class ContextBuilder:
 
         except (json.JSONDecodeError, TypeError, ValueError):
             return value
-
-    # ============================================================
-    # Utility
-    # ============================================================
 
     @staticmethod
     def _last_index(
@@ -169,10 +161,6 @@ class ContextBuilder:
             + f"... {omitted} characters omitted ..."
         )
 
-    # ============================================================
-    # Conversation reconstruction
-    # ============================================================
-
     def _build_conversation(
         self,
         events: list[ContextEvent],
@@ -203,10 +191,6 @@ class ContextBuilder:
             if not isinstance(metadata, dict):
                 metadata = {}
 
-            # --------------------------------------------------------
-            # User message
-            # --------------------------------------------------------
-
             if role == "user" and event_type == "message":
                 text = str(content or "").strip()
 
@@ -218,10 +202,6 @@ class ContextBuilder:
                         }
                     )
 
-            # --------------------------------------------------------
-            # Assistant message
-            # --------------------------------------------------------
-
             elif role == "assistant" and event_type == "message":
                 message = self._assistant_message(
                     content=content,
@@ -231,20 +211,8 @@ class ContextBuilder:
                 if message is not None:
                     messages.append(message)
 
-            # --------------------------------------------------------
-            # Assistant tool call
-            #
-            # Native tool_calls already live inside the assistant
-            # message metadata, so we do NOT create another
-            # provider-visible message here.
-            # --------------------------------------------------------
-
             elif role == "assistant" and event_type == "tool_call":
                 continue
-
-            # --------------------------------------------------------
-            # Tool result
-            # --------------------------------------------------------
 
             elif role == "tool" and event_type == "tool_result":
                 tool_payload = self._parse_json(content)
@@ -272,10 +240,6 @@ class ContextBuilder:
 
                 messages.append(tool_message)
 
-            # --------------------------------------------------------
-            # System event
-            # --------------------------------------------------------
-
             elif role == "system":
                 text = str(content or "").strip()
 
@@ -287,19 +251,9 @@ class ContextBuilder:
                         }
                     )
 
-            # --------------------------------------------------------
-            # Generic runtime event: persisted in STM but not
-            # automatically injected.
-            # --------------------------------------------------------
-
             elif event_type == "event":
                 continue
 
-        # Safety net: Loop persists the task to STM at the very start of
-        # run(), so it is almost always already inside `events`. This only
-        # fires if it somehow fell outside the retrieved/recent window and
-        # search() also missed it (it shouldn't, since search is queried
-        # with the task's own content).
         if isinstance(task, dict):
 
             task_id = task.get("id")
@@ -317,10 +271,6 @@ class ContextBuilder:
         self._drop_old_thinking(messages)
 
         return messages
-
-    # ============================================================
-    # Assistant message
-    # ============================================================
 
     def _assistant_message(
         self,
@@ -374,10 +324,6 @@ class ContextBuilder:
             return None
 
         return message
-
-    # ============================================================
-    # Tool payload
-    # ============================================================
 
     def _tool_payload(
         self,
@@ -440,10 +386,6 @@ class ContextBuilder:
 
         return text
 
-    # ============================================================
-    # Tool result shrinking
-    # ============================================================
-
     def _shrink_old_tool_results(
         self,
         messages: list[dict[str, Any]],
@@ -467,10 +409,6 @@ class ContextBuilder:
                     content[: self.OLD_TOOL_CHARS] + " ...[old result truncated]"
                 )
 
-    # ============================================================
-    # Thinking cleanup
-    # ============================================================
-
     def _drop_old_thinking(
         self,
         messages: list[dict[str, Any]],
@@ -481,10 +419,6 @@ class ContextBuilder:
         for index, message in enumerate(messages):
             if index < last_user:
                 message.pop("thinking", None)
-
-    # ============================================================
-    # Window population
-    # ============================================================
 
     def _populate_window(
         self,

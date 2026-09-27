@@ -50,10 +50,6 @@ class ContextService:
 
         self.context: list[dict[str, Any]] = []
 
-    # ============================================================
-    # Task representation
-    # ============================================================
-
     @staticmethod
     def _task_to_dict(
         event: ContextEvent | None,
@@ -73,10 +69,6 @@ class ContextService:
             "metadata": event.metadata,
         }
 
-    # ============================================================
-    # Event merge
-    # ============================================================
-
     @staticmethod
     def _merge_events(
         recent_events: list[ContextEvent],
@@ -86,10 +78,6 @@ class ContextService:
         merged: list[ContextEvent] = []
 
         seen: set[str] = set()
-
-        # --------------------------------------------------------
-        # Recent events
-        # --------------------------------------------------------
 
         for event in recent_events:
 
@@ -107,10 +95,6 @@ class ContextService:
             seen.add(event_id)
             merged.append(event)
 
-        # --------------------------------------------------------
-        # Relevant events
-        # --------------------------------------------------------
-
         for event in relevant_events:
 
             if not isinstance(
@@ -127,10 +111,6 @@ class ContextService:
             seen.add(event_id)
             merged.append(event)
 
-        # --------------------------------------------------------
-        # Chronological order
-        # --------------------------------------------------------
-
         merged.sort(
             key=lambda event: (
                 event.step,
@@ -139,10 +119,6 @@ class ContextService:
         )
 
         return merged
-
-    # ============================================================
-    # Context retrieval
-    # ============================================================
 
     def get_context(
         self,
@@ -153,22 +129,14 @@ class ContextService:
         observation: dict[str, Any] | None = None,
         recent_actions: dict[str, Any] | None = None,
         workspace_directory: str | None = None,
-        recent_limit: int = 10,
-        search_top_k: int = 3,
+        recent_limit: int = 40,
+        search_top_k: int = 5,
     ) -> list[dict[str, Any]]:
-
-        # --------------------------------------------------------
-        # Recent STM
-        # --------------------------------------------------------
 
         recent_events = self.stm.get_recent(
             session_id=session_id,
             limit=recent_limit,
         )
-
-        # --------------------------------------------------------
-        # Relevant STM
-        # --------------------------------------------------------
 
         query = str(user_task.content or "").strip()
 
@@ -184,23 +152,10 @@ class ContextService:
 
             relevant_events = []
 
-        # --------------------------------------------------------
-        # Merge + deduplicate
-        # --------------------------------------------------------
-
         events = self._merge_events(
             recent_events=recent_events,
             relevant_events=relevant_events,
         )
-
-        # --------------------------------------------------------
-        # Build final provider context
-        #
-        # `user_task` is passed only as execution metadata.
-        #
-        # It is NOT separately added to conversation.
-        # The actual conversation event comes from STM.
-        # --------------------------------------------------------
 
         self.context = self.contextbuilder.build_context(
             events=events,
@@ -214,10 +169,6 @@ class ContextService:
         )
 
         return self.context
-
-    # ============================================================
-    # Token calibration
-    # ============================================================
 
     def calibrate(
         self,

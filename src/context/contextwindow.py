@@ -51,10 +51,6 @@ class ContextWindow:
             "date": datetime.now().strftime("%Y-%m-%d (%A)"),
         }
 
-    # ============================================================
-    # System
-    # ============================================================
-
     def set_system(
         self,
         instruction: str,
@@ -85,10 +81,6 @@ class ContextWindow:
         """
         self.learned_experience = str(text or "").strip()
 
-    # ============================================================
-    # Runtime
-    # ============================================================
-
     def set_runtime(
         self,
         workspace: str | None = None,
@@ -98,19 +90,11 @@ class ContextWindow:
         if workspace:
             self.runtime["workspace"] = str(Path(workspace).expanduser().resolve())
 
-    # ============================================================
-    # Conversation
-    # ============================================================
-
     def set_conversation(
         self,
         content: list[Message],
     ) -> None:
         self.conversation = list(content or [])
-
-    # ============================================================
-    # Serialization
-    # ============================================================
 
     @staticmethod
     def _serialize(
@@ -133,10 +117,6 @@ class ContextWindow:
         content: Any,
     ) -> str:
         return f"<{name}>\n{cls._serialize(content)}\n</{name}>"
-
-    # ============================================================
-    # System content
-    # ============================================================
 
     def build_system_content(self) -> str:
 

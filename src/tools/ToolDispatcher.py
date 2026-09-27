@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from typing import Any
+from uuid import uuid4
 
 from src.models.ToolCall import ToolCall
 from src.utils.logger import get_logger
@@ -62,7 +63,6 @@ class ToolDispatcher:
         results: list[ToolCall] = []
 
         for raw_call in raw_calls:
-
             results.append(self._dispatch_call(raw_call))
 
         return results
@@ -138,7 +138,6 @@ class ToolDispatcher:
             if callable(validate):
 
                 try:
-
                     validation_result = validate(arguments)
 
                 except Exception:
@@ -195,6 +194,7 @@ class ToolDispatcher:
                         ).strip()
 
                 except Exception:
+
                     action = (
                         str(
                             getattr(
@@ -219,9 +219,12 @@ class ToolDispatcher:
             )
 
         except Exception:
+
+            # The dispatcher guarantees that every normalized
+            # ToolCall still has an ID, even on malformed input.
             return ToolCall(
                 name="",
-                id="",
+                id=str(uuid4()),
                 valid=False,
             )
 
@@ -283,11 +286,12 @@ class ToolDispatcher:
         if not allowed:
             return arguments
 
-        filtered = {k: v for k, v in arguments.items() if k in allowed}
+        filtered = {key: value for key, value in arguments.items() if key in allowed}
 
         dropped = set(arguments.keys()) - allowed
 
         if dropped:
+
             self.logger.warning(
                 f"Dropped unknown args for '{tool_name}': "
                 f"{sorted(dropped)}. "
@@ -297,13 +301,29 @@ class ToolDispatcher:
         return filtered
 
     @staticmethod
+    def _normalize_call_id(
+        raw_id: Any,
+    ) -> str:
+
+        if raw_id is None:
+            return str(uuid4())
+
+        call_id = str(raw_id).strip()
+
+        if not call_id:
+            return str(uuid4())
+
+        return call_id
+
+    @classmethod
     def _extract_tool_call(
+        cls,
         raw_call: Any,
     ) -> tuple[str, Any, Any]:
 
-        call_id = ""
+        call_id = str(uuid4())
 
-        # OpenAI/OpenRouter/Ollama tool-call objects:
+        # OpenAI / OpenRouter / Ollama-style tool call object:
         #
         # {
         #     "id": "call_xxx",
@@ -321,34 +341,47 @@ class ToolDispatcher:
                 None,
             )
 
-            if raw_id is not None:
-                call_id = str(raw_id)
+            call_id = cls._normalize_call_id(raw_id)
 
-        function = getattr(
-            raw_call,
-            "function",
-            None,
-        )
-
-        if function is not None:
-
-            name = getattr(
-                function,
-                "name",
+            function = getattr(
+                raw_call,
+                "function",
                 None,
             )
 
-            arguments = getattr(
-                function,
-                "arguments",
-                None,
-            )
+            if function is not None:
 
-            return (
-                call_id,
-                name,
-                arguments,
-            )
+                if isinstance(
+                    function,
+                    Mapping,
+                ):
+
+                    name = function.get("name")
+
+                    arguments = function.get(
+                        "arguments",
+                        {},
+                    )
+
+                else:
+
+                    name = getattr(
+                        function,
+                        "name",
+                        None,
+                    )
+
+                    arguments = getattr(
+                        function,
+                        "arguments",
+                        None,
+                    )
+
+                return (
+                    call_id,
+                    name,
+                    arguments,
+                )
 
         if isinstance(
             raw_call,
@@ -357,8 +390,7 @@ class ToolDispatcher:
 
             raw_id = raw_call.get("id")
 
-            if raw_id is not None:
-                call_id = str(raw_id)
+            call_id = cls._normalize_call_id(raw_id)
 
             nested_function = raw_call.get("function")
 
@@ -416,14 +448,12 @@ class ToolDispatcher:
                 return {}
 
             try:
-
                 parsed = json.loads(arguments)
 
             except (
                 json.JSONDecodeError,
                 TypeError,
             ):
-
                 return None
 
             if not isinstance(
