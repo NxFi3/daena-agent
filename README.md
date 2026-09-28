@@ -736,13 +736,6 @@ Possible measurements include:
 
 ---
 
-# Current Experimental Project
-
-The repository contains:
-
-```text
-ai_provider_report_agent_test/
-```
 
 This is an end-to-end generated project used to test the agent on a real software task.
 
