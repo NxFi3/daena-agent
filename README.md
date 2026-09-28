@@ -1,807 +1,931 @@
-# Evana Agent Runtime
+# Daena Agent Runtime
 
-> **The LLM makes decisions. The runtime makes those decisions reliable.**
+> **The model makes decisions. Daena manages what actually happens.**
 
-Evana is an **open-source, local-first, model-agnostic runtime for building stateful, tool-using LLM agents**.
+Daena is a **local-first, model-agnostic runtime for tool-using LLM agents**.
 
-The goal is not to build another `LLM → tool → LLM` wrapper. Evana is being developed as a runtime layer for the difficult parts of real agent execution:
-
-- context management
-- memory
-- tool execution
-- execution state
-- environment interaction
-- verification
-- failure handling and recovery
-- long-running tasks
-
-🚧 **Evana is actively under development.** Some components are implemented, while the Agent Loop, memory lifecycle, evaluation, and future Harness are still evolving.
-
----
-
-## Why Evana?
-
-A model can decide:
+The project is focused on the part that sits between an LLM and the real environment:
 
 ```text
-"I should run the server."
-```
-
-A runtime has to deal with what happens next:
-
-```text
-Model decision
-      ↓
-Tool execution
-      ↓
+Task
+ ↓
+Context
+ ↓
+LLM
+ ↓
+Tool Call
+ ↓
+Execution
+ ↓
 Observation
-      ↓
-Did it actually work?
-      ↓
-      ├── YES → continue
-      │
-      └── NO  → understand failure → recover → continue
+ ↓
+Next Decision
 ```
 
-The central idea is:
+The goal is to build a runtime that can keep an agent working through real tasks instead of treating a single LLM response as the whole agent.
 
-> **An LLM response is not ground truth about the environment.**
-
-For example, `node server.js` exiting successfully does not necessarily mean that the application is actually working.
-
-Evana is being designed around the boundary between **model reasoning** and **reliable runtime execution**.
+Daena is actively under development.
 
 ---
 
-# Current Status
+## What Daena Is
 
-### Implemented / active
+Daena provides the runtime pieces needed to build a stateful software-engineering agent:
 
-- structured LLM message handling
-- local Ollama provider
-- model context-length discovery
-- context-window management
-- token budgeting and safety margins
-- trajectory/event handling
+- agent execution loop
+- structured context
+- short-term memory
+- tool registration and dispatch
+- workspace state
+- tool-result normalization
+- local and remote LLM providers
 - context compaction
-- memory events and durable memory items
-- SQLite-backed memory infrastructure
-- embedding-based retrieval
-- lexical retrieval
-- reciprocal-rank fusion
-- reranking
-- memory consolidation foundation
-- tool registration and execution infrastructure
-- agent instructions
-- initial Agent execution loop
-- generated test project for end-to-end experiments
+- failure and duplicate-action handling
 
-### In active development
-
-- reliable Agent execution loop
-- stronger separation between reasoning and execution
-- structured execution state
-- context/memory coordination
-- memory lifecycle and maintenance
-- task-level verification
-- failure handling and recovery
-- evaluation and benchmarking
-
-### Planned
-
-- dedicated Runtime/Harness control plane
-- checkpoint/resume
-- process lifecycle management
-- browser/computer-use integration
-- parallel/subagent orchestration
-- mature task-level evaluation
-- long-running autonomous tasks
-
-The distinction between **implemented**, **in development**, and **planned** is intentional.
+The project is intentionally being built incrementally from real agent failures and end-to-end experiments.
 
 ---
 
 # Architecture
 
-The long-term architecture is centered around a runtime that coordinates the model with the environment.
+The current architecture is roughly:
 
 ```text
-                         User Task
-                            │
-                            ▼
-                     ┌─────────────┐
-                     │    Agent    │
-                     │  Reasoning  │
-                     └──────┬──────┘
-                            │
-                            ▼
-                 ┌─────────────────────┐
-                 │    Runtime /        │
-                 │    Harness          │
-                 └──────────┬──────────┘
-                            │
-          ┌─────────────────┼─────────────────┐
-          │                 │                 │
-          ▼                 ▼                 ▼
-      Context            Memory            Tools
-      System             System            System
-          │                 │                 │
-          │                 │                 ▼
-          │                 │            Environment
-          │                 │                 │
-          └─────────────────┴─────────────────┘
-                            │
-                            ▼
-                       Observation
-                            │
-                            ▼
-                       Verification
-                            │
-                     ┌──────┴──────┐
-                     │             │
-                  Success       Failure
-                                    │
-                                    ▼
-                                Recovery
+                        User Task
+                           │
+                           ▼
+                    ┌─────────────┐
+                    │    Agent    │
+                    └──────┬──────┘
+                           │
+                           ▼
+                    ┌─────────────┐
+                    │     Loop    │
+                    └──────┬──────┘
+                           │
+              ┌────────────┼────────────┐
+              │            │            │
+              ▼            ▼            ▼
+          Context        Memory       Tools
+           System         (STM)       System
+              │            │            │
+              └────────────┼────────────┘
+                           │
+                           ▼
+                          LLM
+                           │
+                           ▼
+                      Tool Call
+                           │
+                           ▼
+                        Tool
+                           │
+                           ▼
+                        Result
+                           │
+                           ▼
+                   State / WorkingSet
+                           │
+                           └──────→ next iteration
 ```
 
-The **Runtime/Harness** shown above is the long-term architectural direction. The current codebase is being built toward this separation incrementally.
+The runtime keeps the model, execution state, tools, context, and environment as separate concerns.
 
 ---
 
-# Core Components
+# Agent
 
-## Agent
+The `Agent` is the top-level entry point.
 
-The Agent is responsible for model-driven reasoning:
+It:
+
+- creates the working directory
+- creates an LLM provider
+- creates the agent loop
+- owns the session id
+- sends user tasks to the loop
+
+The actual execution happens inside `Loop`.
+
+---
+
+# Agent Loop
+
+The main execution loop is implemented in:
 
 ```text
-Task
- ↓
-Context + Memory + Tool information
- ↓
-LLM
- ↓
-Next action
+src/agent/agentloop.py
 ```
 
-The current Agent implementation is evolving, with the immediate focus on making the execution loop reliable and keeping responsibilities separated between model and runtime.
+The loop repeatedly:
+
+```text
+1. Build context
+2. Ask the LLM for the next action
+3. Parse tool calls
+4. Execute tools
+5. Store tool calls/results
+6. Update runtime state
+7. Continue
+```
+
+The loop also contains basic runtime protection against:
+
+- repeated identical successful actions
+- repeated failure patterns
+- empty model responses
+- excessive iteration counts
+
+The current default maximum is configurable through:
+
+```json
+{
+  "max_agent_iterations": 100
+}
+```
+
+The loop stores the execution trajectory as structured `ContextEvent` objects.
+
+---
+
+# Agent State
+
+`AgentState` tracks the current runtime status of the agent.
+
+It keeps information such as:
+
+- current status
+- current tool
+- current action
+- current target
+- current iteration
+- current error
+- short progress history
+
+Tool results are converted into normalized runtime effects such as:
+
+```text
+Created
+Modified
+Deleted
+Inspected
+Ran
+Searched
+Verified
+```
+
+This lets the runtime reason about execution state without hard-coding every concrete tool.
+
+---
+
+# Working Set
+
+`WorkingSet` is the compact state of the current task.
+
+It tracks things such as:
+
+- recently touched artifacts
+- file previews
+- recent actions
+- observations
+- facts
+- unresolved failures
+- verification information
+
+The idea is simple:
+
+```text
+Memory = longer-lived information
+
+WorkingSet = information needed for the next decision
+```
+
+This prevents the runtime from having to reconstruct everything from raw history on every iteration.
 
 ---
 
 # Context System
 
-The Context subsystem controls what information is presented to the model at each step.
+The context system is responsible for deciding what the model sees.
 
-### ContextWindow
+Main components:
 
-Represents structured model context containing information such as:
+```text
+src/context/
+├── contextbuilder.py
+├── contextservice.py
+├── contextwindow.py
+├── tokenbudget.py
+├── compactor.py
+├── compactorprompt.py
+└── workingset.py
+```
+
+## ContextService
+
+`ContextService` currently retrieves:
+
+1. recent STM events
+2. relevant STM events using lexical search
+
+Those events are merged and passed to `ContextBuilder`.
+
+The current configuration uses recent context plus a small number of search results instead of replaying the entire session.
+
+## ContextBuilder
+
+`ContextBuilder` converts runtime events into provider-facing messages.
+
+It preserves structured messages such as:
+
+```text
+user
+assistant
+assistant + tool_calls
+tool + tool_call_id
+```
+
+It also handles:
 
 - system instructions
-- task/developer instructions
-- plans
-- user input
-- trajectory messages
-- tool interactions
+- hand-written experience
+- runtime information
+- large tool-result truncation
+- context-budget fitting
 
-Evana uses structured messages rather than flattening the entire interaction into one prompt.
+The builder intentionally keeps changing execution state in the conversation itself rather than duplicating it into the system prompt.
 
-### ContextBuilder
+## Context Compaction
 
-Converts runtime events and relevant information into model-facing messages.
+When context becomes too large, `Compactor` can turn older context into a smaller working-state representation.
 
-| Runtime event | Model representation |
-|---|---|
-| `user_input` | `user` |
-| `agent_action` | `assistant` |
-| `tool_call` | tool-call message |
-| `tool_result` | `tool` |
+The compaction prompt is designed to preserve:
 
-### ContextManager
+- task requirements
+- completed work
+- current state
+- important discoveries
+- changes
+- errors
+- unresolved problems
+- next steps
 
-Coordinates context construction, trajectory management, token limits, and compaction.
-
-### TokenBudget
-
-Tracks available context capacity and keeps a safety margin so the runtime does not intentionally consume the entire model context window.
-
-### Compaction
-
-When a trajectory becomes too large, Evana can compact older information instead of allowing context overflow.
-
-Future work will make compaction increasingly state-aware so important facts, unfinished work, tool state, and recovery information survive context transitions.
+and remove repetitive history and unnecessary raw output.
 
 ---
 
-# Memory System
+# Memory
 
-Memory is one of the major architectural areas of Evana. The goal is **not** to permanently store every conversation event.
+Daena's memory system is intentionally simple at the current stage.
 
-Evana separates runtime events from durable memories:
-
-```text
-Runtime Events
-      │
-      ▼
-Memory Decision
-      │
-      ▼
-Candidate Memory
-      │
-      ▼
-Durable Memory
-      │
-      ├───────────────┐
-      │               │
-      ▼               ▼
- Retrieval       Maintenance
-      │               │
-      ▼               ▼
-   Context       Memory Store
-```
-
-## Memory Events
-
-`MemoryEvent` represents raw runtime events such as user input, agent actions, tool calls, and tool results.
-
-## Memory Items
-
-`MemoryItem` represents durable information worth retaining.
+The current persistent memory layer is:
 
 ```text
-Event ≠ Memory
-
-Event:
-"The user asked to use PostgreSQL."
-
-Memory:
-"The project uses PostgreSQL."
+Session
+   ↓
+Context Events
+   ↓
+SQLite
+   ↓
+Recent retrieval / lexical search
 ```
 
-## Memory Consolidation
+The active implementation is **Short-Term Memory (STM)**.
 
-`MemoryConsolidator` decides whether information from runtime events should become durable memory.
+---
 
-The current design uses an LLM-based decision stage with structured output followed by runtime-side parsing and memory handling.
+## Short-Term Memory
 
-The intended purpose is to reduce:
-
-- irrelevant events
-- transient noise
-- duplicate memories
-- unnecessary database growth
-- low-value information
-
-The memory pipeline is still under active development.
-
-## Memory Maintenance
-
-Memory Maintenance is **planned and is not yet implemented as a complete subsystem**.
-
-It is intentionally different from consolidation:
+STM is implemented in:
 
 ```text
-Consolidation
-New events → candidate durable memories
-
-Maintenance
-Existing memories → analyze → merge/update/prune/keep
+src/memories/stm/
 ```
 
-The planned maintenance layer may eventually handle:
+It stores `ContextEvent` objects in SQLite.
 
-- duplicate detection
-- merging
-- contradiction detection
-- stale-memory handling
-- superseding old information
-- low-value memory pruning
-- retrieval-index consistency
-- auditable memory changes
+Each event contains information such as:
 
-This is future work, not a completed feature.
+- id
+- session id
+- role
+- type
+- content
+- priority
+- step
+- timestamp
+- metadata
+
+SQLite also contains an FTS5 index for lexical retrieval.
+
+STM provides two basic access patterns:
+
+```text
+get_recent(...)
+```
+
+and
+
+```text
+search(...)
+```
+
+The search path currently uses SQLite FTS5/BM25.
+
+STM itself does not build prompts and does not call the LLM.
+
+---
+
+# Experience
+
+Daena also has a small experience mechanism:
+
+```text
+AgentInstruction/experience.md
+```
+
+This is currently a **hand-curated experience file** that is injected into the model context on each turn.
+
+Its purpose is to store short, reusable instructions such as:
+
+```text
+- known tool usage patterns
+- important operational rules
+- lessons learned from previous failures
+```
+
+The current system is deliberately simple.
+
+The longer-term direction is to make **Experience something Daena can produce from its own execution history**, rather than something that has to be written manually.
+
+The intended flow is:
+
+```text
+Task
+ ↓
+Actions
+ ↓
+Tool Results
+ ↓
+Outcome
+ ↓
+Experience
+```
+
+That experience can later become useful to future runs.
+
+The key distinction is:
+
+```text
+Memory
+= stored information
+
+Experience
+= a useful lesson extracted from what happened
+```
+
+The experience-learning pipeline is not complete yet.
 
 ---
 
 # Retrieval
 
-Evana's retrieval layer combines multiple signals rather than relying on a single search mechanism.
+The repository contains embedding and reranking components:
+
+```text
+src/engine/EmbeddingModel.py
+src/engine/RerankerModel.py
+```
+
+The current active STM retrieval path, however, is based on SQLite FTS5/BM25.
+
+The semantic retrieval and reranking components exist as infrastructure for future memory/retrieval work and are not currently the main STM retrieval path.
+
+The intended direction is:
 
 ```text
 Query
- │
- ├── Semantic Retrieval
- │
- └── Lexical Retrieval
-          │
-          ▼
-      Rank Fusion
-          │
-          ▼
-       Reranking
-          │
-          ▼
-   Relevant Memories
+ ↓
+Memory retrieval
+ ↓
+Relevant information
+ ↓
+Context
 ```
 
-The current implementation uses embedding-based retrieval together with lexical retrieval, rank fusion, and reranking.
-
-Future work includes better handling of semantic/paraphrased queries and intent-aware retrieval.
+rather than inserting the entire history into every request.
 
 ---
 
-# Tool System
+# Tools
 
-Evana contains a tool execution layer responsible for:
+Tools are first-class runtime components.
 
-- tool registration
-- tool discovery
-- dispatch
-- execution
-- standardized results
-
-The architectural boundary is:
+The tool system contains:
 
 ```text
-Agent / Runtime
-      │
-      ▼
-Tool Manager
-      │
-      ▼
+src/tools/
+├── Tool.py
+├── ToolRegistry.py
+├── ToolManager.py
+└── ToolDispatcher.py
+```
+
+## Tool Registry
+
+`ToolRegistry` discovers builtin tools dynamically from the builtin tool packages.
+
+Each tool provides:
+
+- name
+- description
+- parameter schema
+- execution method
+- optional validation
+- optional semantic action/target description
+
+---
+
+# Built-in Tools
+
+Current builtin tools include:
+
+### `read_file`
+
+Reads UTF-8 text files.
+
+Supports bounded output and optional line ranges.
+
+```text
+read_file
+```
+
+### `command_exec`
+
+Runs local commands.
+
+It supports:
+
+- argument-array commands
+- working directories
+- timeouts
+- bounded stdout/stderr
+- foreground execution
+- background execution
+
+```text
+command_exec
+```
+
+### `apply_patch`
+
+Modifies files using a **Codex-style patch format**.
+
+Supports:
+
+```text
+*** Add File
+*** Update File
+*** Delete File
+```
+
+Update operations use exact context matching.
+
+### `web_search`
+
+Searches the web through the available search backend.
+
+The current implementation can use:
+
+- DuckDuckGo through `ddgs`
+- an optional self-hosted SearXNG instance
+
+Search results are treated as untrusted external data.
+
+### `web_fetch`
+
+Fetches readable web pages and returns extracted text.
+
+The implementation includes:
+
+- HTML extraction
+- text/JSON/XML handling
+- paging for long pages
+- bounded output
+- link extraction
+- public-network URL restrictions
+
+---
+
+# Tool Dispatch
+
+Tool calls from providers are normalized into Daena's internal `ToolCall` representation.
+
+The flow is:
+
+```text
+Provider Response
+      ↓
+ToolDispatcher
+      ↓
+Normalized ToolCall
+      ↓
+ToolManager
+      ↓
+ToolRegistry
+      ↓
 Concrete Tool
-      │
-      ▼
-Environment
+      ↓
+ToolResult
 ```
 
-The long-term runtime should decide **when and under what policy** a tool should execute. The tool layer should remain responsible for **how the tool is invoked**.
+The runtime therefore does not need each provider to use exactly the same tool-call representation.
 
 ---
 
-# Agent Execution
+# Tool Results
 
-The current development focus is the Agent execution loop.
+All tools return a common `ToolResult`.
 
-The intended interaction is:
+A result contains:
 
 ```text
-Task
- ↓
-Build Context
- ↓
-LLM Decision
- ↓
-Tool / Action
- ↓
-Observe Result
- ↓
-Update State
- ↓
-Build Next Context
- ↓
-LLM Decision
- ↓
-...
+success
+name
+content
+metadata
+summary
+evidence
+effects
 ```
 
-The goal is to avoid treating the LLM as the entire runtime. The runtime should be able to track what actually happened independently from what the model claimed happened.
+This gives the runtime a normalized representation of what happened.
+
+For example, a file operation can produce an effect such as:
+
+```text
+modified → path/to/file.py
+```
+
+while command execution can produce evidence such as:
+
+```text
+exit code
+stdout
+stderr
+duration
+```
+
+The goal is to let higher-level runtime components reason about outcomes without knowing the internal implementation of every tool.
 
 ---
 
-# Runtime / Harness
+# Providers
 
-The **Harness** is the next major architectural layer and is currently a planned direction rather than a finished subsystem.
+Daena separates the runtime from the underlying model provider.
 
-It should not become another LLM wrapper, tool manager, prompt layer, or copy of the Agent loop. Its purpose is reliable execution control around existing runtime components.
-
-The intended lifecycle is:
+Current provider implementations include:
 
 ```text
-PLAN
-  ↓
-ACT
-  ↓
-OBSERVE
-  ↓
-VERIFY
-  ↓
- ┌─────────────┐
- │             │
-SUCCESS      FAILURE
- │             │
- ▼             ▼
-DONE         RECOVER
-               │
-               ▼
-              ACT
+Ollama
+OpenRouter
 ```
 
-Potential responsibilities include:
+The provider abstraction lives under:
 
-- execution state
-- action lifecycle
-- environment observations
-- tool execution policy
-- process lifecycle
-- task verification
-- failure classification
-- recovery policies
-- checkpoints
-- resume/restart
-- security and permissions
-- logging and telemetry
-- context/memory coordination
+```text
+src/engine/providers/
+```
 
-The exact implementation is intentionally not frozen yet.
+The runtime uses `LLMInput` and `LLMResult` as its provider-facing data structures.
+
+This allows different providers to have different native message/tool formats while keeping the rest of the runtime provider-neutral.
 
 ---
 
-# Long-Running Tasks
+# Ollama
 
-A major long-term goal is supporting tasks that cannot reliably be completed inside one context window or one execution burst.
+The current local development configuration uses Ollama.
 
-```text
-Task
- │
- ├── Context Window 1
- │       └── progress + artifacts + state
- │
- ├── Checkpoint
- │
- ├── Context Window 2
- │       └── resume from structured state
- │
- ├── Checkpoint
- │
- └── ...
-```
+The provider converts Daena's canonical tool-call representation into the format expected by the Ollama SDK.
 
-The runtime eventually needs to preserve structured state such as:
+It also normalizes:
 
-- task objective
-- completed work
-- unfinished work
-- relevant memories
-- environment state
-- artifacts
-- tool/process state
-- failures and recovery attempts
-- verification status
+- model responses
+- tool calls
+- thinking/reasoning
+- token usage
 
-This is a planned capability.
+The active default configuration is defined in `config.json`.
 
 ---
 
-# Coding Agent Direction
+# OpenRouter
 
-Software engineering is one of the primary target workloads for Evana.
+OpenRouter is supported as another provider.
 
-A future coding agent should be able to:
-
-1. inspect a repository
-2. understand the task
-3. plan changes
-4. edit files
-5. execute commands
-6. observe results
-7. run tests
-8. diagnose failures
-9. modify the implementation
-10. verify the result
-11. stop only when the task is actually complete
-
-The repository contains a generated `test_project/` used for practical end-to-end experiments.
-
-The goal is not simply:
-
-> Can the LLM generate code?
-
-The more important question is:
-
-> **Can the runtime keep the agent on track when the environment pushes back?**
-
----
-
-# Computer-Use Direction
-
-Evana is intended to remain general enough to support browser and computer-use agents in the future.
-
-A future computer-use backend could expose operations such as:
-
-```text
-observe
-click
-type
-keypress
-scroll
-drag
-```
-
-The runtime should still own the higher-level lifecycle:
-
-```text
-Observe
-   ↓
-Choose Action
-   ↓
-Execute
-   ↓
-Observe Again
-   ↓
-Verify
-   ↓
-Recover if Necessary
-```
-
-This is future work.
+Its provider implementation normalizes OpenAI-compatible tool calls and messages into the same internal `LLMResult` representation used by the rest of Daena.
 
 ---
 
 # Security
 
-Agent autonomy introduces security boundaries around operations such as:
+The repository contains the beginning of a security boundary:
 
-- filesystem modification
-- shell execution
-- network access
-- process creation
-- external services
-- computer interaction
+```text
+src/security/
+├── Policy.py
+├── Sandbox.py
+└── securityService.py
+```
 
-Evana treats these as **runtime concerns**, rather than assuming the model will always make safe decisions.
+The current security service is still a scaffold and is not a complete policy/sandbox system.
 
-The long-term design is expected to include explicit permissions, execution policies, auditable actions, controlled tool access, and runtime-level safety boundaries.
+The long-term goal is to move important execution restrictions into the runtime instead of relying only on model instructions.
 
 ---
 
-# Evaluation
+# Current Project Direction
 
-Evana is intended to be evaluated at the **task level**, rather than only by inspecting individual LLM responses.
+Daena is currently focused on making the basic runtime reliable before adding large higher-level systems.
 
-Potential metrics include:
+The immediate direction is:
 
-### Agent execution
+```text
+Reliable execution
+        ↓
+Simple persistent memory
+        ↓
+Experience extraction
+        ↓
+Better future decisions
+```
 
-- task success rate
-- recovery success rate
-- verification accuracy
-- unnecessary action rate
-- tool-call efficiency
-- latency
-- token consumption
+The memory design is intentionally not overly complicated yet.
 
-### Context
+The current target is closer to:
 
-- compaction quality
-- important-state retention
-- context efficiency
+```text
+              ┌──────────────┐
+              │ Main Memory  │
+              └──────┬───────┘
+                     │
+                     ▼
+                  Context
+                     │
+                     ▼
+                    LLM
+                     │
+                 execution
+                     │
+                     ▼
+                 Experience
+                     │
+                     └──────→ future use
+```
 
-### Memory
+The exact experience-learning mechanism is still being designed and evaluated.
 
-- retrieval quality
-- memory write precision/recall
-- duplicate-memory rate
-- contradiction handling
-- stale-memory handling
-- maintenance accuracy
+---
 
-### Reliability
+# Research Direction
 
-- failure rate by category
-- successful recovery after failure
-- successful completion after interruption
-- checkpoint/resume success rate
+The main research idea behind Daena is **experience-driven agent improvement**.
 
-Formal benchmark infrastructure is still under development.
+Instead of only storing raw history, the runtime should eventually be able to identify useful lessons from previous execution.
+
+For example:
+
+```text
+Task
+ ↓
+Tool failure
+ ↓
+Recovery
+ ↓
+Successful strategy
+ ↓
+Experience
+```
+
+A later task can then retrieve that experience:
+
+```text
+New Task
+ ↓
+Relevant Experience
+ ↓
+Better Action
+```
+
+The key research question is:
+
+> Can an agent become more effective on recurring task classes by learning reusable strategies from its own past execution trajectories?
+
+The goal is to measure this through real task execution rather than only through static prompt evaluation.
+
+Possible measurements include:
+
+- task success
+- tool-call count
+- repeated errors
+- recovery success
+- execution time
+- token usage
+- performance before and after relevant experience
+
+---
+
+# Current Experimental Project
+
+The repository contains:
+
+```text
+ai_provider_report_agent_test/
+```
+
+This is an end-to-end generated project used to test the agent on a real software task.
+
+The project contains:
+
+- provider data models
+- report generation
+- provider comparison
+- source information
+- pytest tests
+- CLI entry point
+
+It is useful as a small benchmark for checking whether the agent can:
+
+```text
+Research
+ ↓
+Understand
+ ↓
+Create files
+ ↓
+Run tests
+ ↓
+Recover from mistakes
+ ↓
+Finish the task
+```
+
+More benchmark tasks will be added as the runtime evolves.
 
 ---
 
 # Repository Structure
 
 ```text
-Evana-agent-runtime/
+daena-agent/
 │
-├── agentInstructions/
-│   └── SystemInstructions.md
+├── AgentInstruction/
+│   ├── systeminstruction.md
+│   └── experience.md
+│
+├── ai_provider_report_agent_test/
 │
 ├── src/
-│   ├── Agent/
-│   │   ├── Agent.py
-│   │   ├── Loop.py
-│   │   └── Planner.py
+│   ├── agent/
+│   │   ├── agent.py
+│   │   ├── agentloop.py
+│   │   └── agentstate.py
 │   │
-│   ├── Context/
-│   │   ├── ContextBuilder.py
-│   │   ├── ContextManager.py
-│   │   ├── ContextWindow.py
-│   │   ├── Compactor.py
-│   │   ├── CompactorPrompt.py
-│   │   └── TokenBudget.py
+│   ├── context/
+│   │   ├── compactor.py
+│   │   ├── compactorprompt.py
+│   │   ├── contextbuilder.py
+│   │   ├── contextservice.py
+│   │   ├── contextwindow.py
+│   │   ├── tokenbudget.py
+│   │   └── workingset.py
 │   │
-│   ├── Engine/
+│   ├── engine/
 │   │   ├── EmbeddingModel.py
+│   │   ├── LlmProviderManager.py
 │   │   ├── RerankerModel.py
-│   │   └── llmManagment/
-│   │       ├── LlmProvider.py
-│   │       └── ollama.py
+│   │   └── providers/
 │   │
-│   ├── Memory/
-│   │   ├── DatabaseManager.py
-│   │   ├── MemoryConsolidator.py
-│   │   ├── MemoryEvent.py
-│   │   ├── MemoryItem.py
-│   │   ├── MemoryManager.py
-│   │   ├── MemoryParser.py
-│   │   ├── MemoryPrompt.py
-│   │   ├── Retrieval.py
-│   │   └── ShortTermMemory/
+│   ├── memories/
+│   │   └── stm/
+│   │       ├── STM.py
+│   │       └── stmdatabase.py
 │   │
-│   └── ...
+│   ├── models/
+│   │
+│   ├── security/
+│   │
+│   ├── tools/
+│   │   ├── Tool.py
+│   │   ├── ToolDispatcher.py
+│   │   ├── ToolManager.py
+│   │   ├── ToolRegistry.py
+│   │   └── builtin/
+│   │
+│   └── utils/
 │
-├── test_project/
-│   └── Generated project for end-to-end testing
-│
+├── config.json
+├── Agent.md
 └── README.md
 ```
 
 ---
 
-# Design Principles
-
-### 1. Model decisions are not ground truth
-
-The runtime should verify important claims against the environment.
-
-### 2. Memory is not history
-
-Not every event deserves to become durable memory.
-
-### 3. Context is a resource
-
-The runtime should manage, prioritize, and compact context instead of endlessly appending history.
-
-### 4. Separate responsibilities
-
-The Agent reasons.
-
-The runtime coordinates.
-
-The tool system executes.
-
-The environment produces observations.
-
-The verification layer determines whether the desired state was actually reached.
-
-### 5. Recover deliberately
-
-Failures should be classified and handled rather than triggering unlimited blind retries.
-
-### 6. Prefer explicit state
-
-Important execution state should be represented explicitly rather than hidden inside prompts.
-
-### 7. Build from real failures
-
-Architecture should be driven by failures observed during actual end-to-end tasks.
-
-### 8. Stay model-agnostic
-
-Ollama is the current local development environment, but the runtime should not be coupled to a single model or provider.
-
----
-
 # Roadmap
 
-## Phase 1 — Foundation
+## Runtime
 
-- [x] Structured context messages
-- [x] Context window management
-- [x] Token budgeting
+- [x] Structured agent loop
+- [x] Structured tool calls/results
+- [x] Tool discovery and dispatch
+- [x] Agent state
+- [x] Working set
+- [x] Context budgeting
 - [x] Context compaction foundation
-- [x] Memory event/item abstractions
-- [x] Memory storage foundation
-- [x] Retrieval foundation
-- [x] Memory consolidation foundation
-- [x] Tool execution infrastructure
-- [x] Local LLM provider
-
-## Phase 2 — Reliable Agent Execution
-
-- [ ] Improve Agent execution loop
-- [ ] Define structured runtime state
-- [ ] Define action/observation contracts
-- [ ] Separate execution success from task success
-- [ ] Define task completion criteria
-- [ ] Improve failure handling
-- [ ] Controlled recovery
-
-## Phase 3 — Runtime / Harness
-
-- [ ] Harness/control-plane foundation
-- [ ] Process lifecycle management
-- [ ] Task-level verification
-- [ ] Failure classification
-- [ ] Recovery policies
+- [ ] Stronger task completion and verification
+- [ ] Better failure recovery
 - [ ] Checkpoint/resume
-- [ ] Runtime observability
 
-## Phase 4 — Memory
+## Memory
 
-- [ ] Complete memory lifecycle
-- [ ] Improve semantic retrieval
-- [ ] Intent-aware retrieval
-- [ ] Memory maintenance
-- [ ] Duplicate/merge handling
-- [ ] Contradiction handling
-- [ ] Stale-memory handling
-- [ ] Retrieval-index maintenance
+- [x] Persistent STM
+- [x] Recent retrieval
+- [x] Lexical retrieval
+- [x] Hand-curated experience
+- [ ] Main long-term memory layer
+- [ ] Automatic experience extraction
+- [ ] Experience retrieval/use
+- [ ] Memory lifecycle improvements
 
-## Phase 5 — Advanced Agents
+## Tools
 
-- [ ] Coding-agent evaluation
-- [ ] Browser tools
-- [ ] Computer-use integration
-- [ ] Long-running tasks
-- [ ] Parallel/subagent execution
-- [ ] Formal benchmarks
+- [x] Local filesystem tools
+- [x] Command execution
+- [x] Codex-style patching
+- [x] Web search
+- [x] Web fetch
+- [ ] More integrations
+- [ ] MCP support
+
+## Evaluation
+
+- [x] Real end-to-end agent task
+- [ ] Repeatable benchmark suite
+- [ ] Learning-gain evaluation
+- [ ] Failure-recovery evaluation
+- [ ] Experience-ablation experiments
 
 ---
 
-# Development Philosophy
+# Design Principles
 
-Evana is intentionally being built incrementally.
+### Runtime over prompt
 
-Instead of implementing every proposed subsystem immediately, the architecture is being tested against actual agent behavior.
+Important execution guarantees should live in the runtime.
+
+### Memory over raw history
+
+Store useful information instead of replaying everything.
+
+### Experience over repetition
+
+Past failures should eventually become useful lessons.
+
+### Verify real outcomes
+
+A successful tool call does not automatically mean the task is complete.
+
+### Build from real failures
+
+The architecture should be driven by what actually breaks during agent execution.
+
+### Keep the system modular
+
+Agent, context, memory, tools, and providers should remain replaceable and independently testable.
+
+---
+
+# Status
+
+**🚧 Active Development**
+
+Daena is not a finished autonomous-agent framework.
+
+The current project is a working foundation for experimenting with:
 
 ```text
-Build
- ↓
-Run real task
- ↓
-Observe failure
- ↓
-Identify missing runtime capability
- ↓
-Design solution
- ↓
-Implement
- ↓
-Evaluate
- ↓
-Repeat
+LLMs
++
+Tools
++
+Context
++
+State
++
+Memory
++
+Experience
 ```
 
-The goal is to avoid building a large collection of abstractions that sound useful but are not validated by real agent workloads.
-
----
-
-# Contributing
-
-Evana is currently an active development project.
-
-Feedback is especially valuable around:
-
-- agent execution architecture
-- memory design
-- retrieval
-- context management
-- tool/runtime boundaries
-- task verification
-- failure recovery
-- evaluation methodology
-
-If you find an architectural issue, unexpected behavior, or a better approach, opening an issue or discussion is welcome.
-
----
-
-# Project Status
-
-**Status:** 🚧 Active Development
-
-Evana is not presented as a finished autonomous-agent framework.
-
-The current goal is to build and validate a reliable foundation for stateful, tool-using agents, one subsystem at a time.
-
-> **The objective is not to make the LLM look autonomous.**  
-> **The objective is to build a runtime that can make autonomous behavior reliable.**
+with the longer-term goal of building an agent that can **learn useful strategies from its own experience instead of repeating the same mistakes forever**.

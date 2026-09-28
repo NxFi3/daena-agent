@@ -1,10 +1,11 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from src.tools.Tool import Tool
 from src.models.ToolResult import ToolResult
+from src.tools.Tool import Tool
 
 
 @dataclass
@@ -21,26 +22,51 @@ class ApplyPatch(Tool):
 
     Supported operations:
 
-        *** Add File: path
-        *** Update File: path
-        *** Delete File: path
+        *** Add File: path/to/file
+        *** Update File: path/to/file
+        *** Delete File: path/to/file
 
-    Successful results include the full resulting file content for
-    small files, and a bounded preview for large files. This lets the
-    model continue from the modification without re-reading the file.
+    Patch format:
+
+        *** Begin Patch
+        *** Add File: README.md
+        +# Hello
+        +
+        +World
+
+        *** Update File: app.py
+        @@
+         print("hello")
+        -print("old")
+        +print("new")
+
+        *** Delete File: old.py
+        *** End Patch
+
+    The parser intentionally keeps the Codex-style format, but is tolerant
+    of common LLM formatting mistakes such as:
+
+        - omitted *** Begin Patch
+        - omitted *** End Patch
+        - markdown code fences
+        - blank lines in Add File
+        - blank lines inside Update hunks
+
+    It remains strict about actual content prefixes, exact update matching,
+    duplicate operations, ambiguous matches, and invalid operation syntax.
     """
 
     name = "apply_patch"
     action = "modify"
+
     description = (
-        "Apply a patch to one or more text files. "
-        "Supports adding, updating, and deleting files. "
+        "Apply Codex-style patches to text files. "
+        "Supports Add File, Update File, and Delete File. "
         "Update hunks use exact context matching. "
-        "The operation fails instead of guessing when the patch "
-        "does not match exactly. Multiple file operations are allowed "
-        "in a single patch. "
-        "The result includes the resulting file content so you do not "
-        "need to read the file again."
+        "Multiple file operations are allowed. "
+        "The patch may be wrapped in a markdown code fence. "
+        "For updates, use exact file context. "
+        "The tool fails rather than guessing when an update is ambiguous."
     )
 
     parameters = {
@@ -49,18 +75,24 @@ class ApplyPatch(Tool):
             "patch": {
                 "type": "string",
                 "description": (
-                    "Complete patch text using this format:\n"
+                    "Codex-style patch text. Example:\n"
                     "*** Begin Patch\n"
-                    "*** Update File: path/to/file.py\n"
+                    "*** Add File: example.py\n"
+                    '+example = "hello"\n'
+                    "+\n"
+                    "*** Update File: app.py\n"
                     "@@\n"
                     " context line\n"
                     "-old line\n"
                     "+new line\n"
-                    "*** Add File: path/to/new.py\n"
-                    "+content line\n"
-                    "*** Delete File: path/to/remove.py\n"
-                    "*** End Patch\n\n"
-                    "Use exact file context for update operations."
+                    "*** Delete File: old.py\n"
+                    "*** End Patch\n"
+                    "\n"
+                    "For Add File, prefix each content line with '+'. "
+                    "A blank line may also be written as an empty line. "
+                    "For Update File, start each hunk with '@@' and use "
+                    "' ' for context, '-' for removed lines, and '+' for "
+                    "added lines. Exact context is required."
                 ),
             }
         },
@@ -78,7 +110,6 @@ class ApplyPatch(Tool):
     MAX_CONTENT_PREVIEW_CHARS = 4000
 
     def execute(self, patch: str) -> ToolResult:
-
         if not isinstance(patch, str):
             return self._failure(
                 error_type="invalid_argument",
@@ -131,6 +162,7 @@ class ApplyPatch(Tool):
         removed = sum(item["removed"] for item in results)
 
         ops_summary = []
+
         for item in results:
             filename = Path(item["path"]).name
             ops_summary.append(f"{item['operation']}:{filename}")
@@ -140,7 +172,8 @@ class ApplyPatch(Tool):
                 f"Applied patch to {files_changed} file(s): "
                 f"{added} addition(s), {removed} deletion(s). "
                 f"Operations: [{', '.join(ops_summary)}]. "
-                f"Resulting file content is included below."
+                f"Use the returned file preview when available; "
+                f"re-read large files only when necessary."
             ),
             files=results,
             statistics={
@@ -150,12 +183,97 @@ class ApplyPatch(Tool):
             },
         )
 
-    # PATCH PARSING
     def _parse_patch(self, patch: str) -> list[PatchOperation]:
-        lines = patch.splitlines()
+        normalized = self._normalize_patch_text(patch)
+
+        lines = normalized.split("\n")
 
         if not lines:
             raise ValueError("Patch is empty.")
+
+        operations = self._parse_operations(lines)
+
+        if not operations:
+            raise ValueError(
+                "Patch contains no Add File, Update File, or Delete File operation."
+            )
+
+        return operations
+
+    def _normalize_patch_text(self, patch: str) -> str:
+        """
+        Normalize common LLM formatting mistakes without changing the
+        actual Codex-style operation syntax.
+        """
+
+        text = patch.replace("\r\n", "\n").replace("\r", "\n")
+
+        # Remove BOM if present.
+        text = text.lstrip("\ufeff")
+
+        # Remove surrounding whitespace/newlines first.
+        text = text.strip()
+
+        if not text:
+            raise ValueError("Patch is empty.")
+
+        lines = text.split("\n")
+
+        # Accept markdown fences:
+        #
+        # ```patch
+        # *** Begin Patch
+        # ...
+        # *** End Patch
+        # ```
+        if lines:
+            first = lines[0].strip().lower()
+
+            if first.startswith("```"):
+                lines = lines[1:]
+
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+
+        # Remove only surrounding empty lines.
+        while lines and not lines[0].strip():
+            lines.pop(0)
+
+        while lines and not lines[-1].strip():
+            lines.pop()
+
+        if not lines:
+            raise ValueError("Patch is empty.")
+
+        # Be tolerant if the model omitted Begin Patch.
+        if lines[0].strip() != self._BEGIN:
+            if self._is_operation_line(lines[0]):
+                lines.insert(0, self._BEGIN)
+            else:
+                raise ValueError(
+                    f"Patch must start with '{self._BEGIN}' "
+                    f"or directly with a file operation."
+                )
+
+        # Be tolerant if the model omitted End Patch.
+        #
+        # We only auto-add it when there is no existing End marker.
+        # If End exists in the middle, keep parsing strict and report it.
+        end_positions = [
+            index for index, line in enumerate(lines) if line.strip() == self._END
+        ]
+
+        if not end_positions:
+            lines.append(self._END)
+        elif end_positions[-1] != len(lines) - 1:
+            raise ValueError(f"'{self._END}' must be the final patch marker.")
+
+        return "\n".join(lines)
+
+    def _parse_operations(
+        self,
+        lines: list[str],
+    ) -> list[PatchOperation]:
 
         if lines[0].strip() != self._BEGIN:
             raise ValueError(f"Patch must start with '{self._BEGIN}'.")
@@ -170,6 +288,7 @@ class ApplyPatch(Tool):
         while i < len(lines) - 1:
             line = lines[i]
 
+            # Ignore purely empty separator lines between operations.
             if not line.strip():
                 i += 1
                 continue
@@ -182,10 +301,16 @@ class ApplyPatch(Tool):
 
                 i += 1
 
-                hunks, i = self._parse_hunks(lines, i)
+                hunks, i = self._parse_hunks(
+                    lines=lines,
+                    start_index=i,
+                )
 
                 if not hunks:
-                    raise ValueError(f"Update File '{path}' has no hunks.")
+                    raise ValueError(
+                        f"Update File '{path}' has no hunks. "
+                        "Start the update content with '@@'."
+                    )
 
                 operations.append(
                     PatchOperation(
@@ -210,21 +335,37 @@ class ApplyPatch(Tool):
                 while i < len(lines) - 1:
                     current = lines[i]
 
-                    if (
-                        current.startswith(self._UPDATE)
-                        or current.startswith(self._ADD)
-                        or current.startswith(self._DELETE)
-                    ):
+                    if self._is_operation_line(current):
                         break
 
                     if current.startswith("@@"):
-                        raise ValueError(f"Add File '{path}' cannot contain hunks.")
+                        raise ValueError(
+                            f"Add File '{path}' cannot contain hunks. "
+                            "Prefix file content lines with '+'."
+                        )
+
+                    # Important LLM tolerance:
+                    #
+                    # Standard Codex form for an empty line is:
+                    #
+                    # +
+                    #
+                    # Some models emit a truly empty line instead:
+                    #
+                    # <empty>
+                    #
+                    # Accept both.
+                    if current == "":
+                        content_lines.append("")
+                        i += 1
+                        continue
 
                     if not current.startswith("+"):
                         raise ValueError(
                             f"Invalid Add File line in '{path}': "
                             f"{current!r}. "
-                            "Every content line must start with '+'."
+                            "Every non-empty content line must start with '+'. "
+                            "Use '+' for a blank line."
                         )
 
                     content_lines.append(current[1:])
@@ -260,7 +401,14 @@ class ApplyPatch(Tool):
                 i += 1
                 continue
 
-            raise ValueError(f"Unexpected patch line: {line!r}")
+            if line.strip() == self._END:
+                break
+
+            raise ValueError(
+                f"Unexpected patch line: {line!r}. "
+                f"Expected Add File, Update File, Delete File, "
+                f"or '{self._END}'."
+            )
 
         return operations
 
@@ -269,19 +417,20 @@ class ApplyPatch(Tool):
         lines: list[str],
         start_index: int,
     ) -> tuple[list[list[str]], int]:
+
         hunks: list[list[str]] = []
 
         current_hunk: list[str] | None = None
+
         i = start_index
 
         while i < len(lines) - 1:
             line = lines[i]
 
-            if (
-                line.startswith(self._UPDATE)
-                or line.startswith(self._ADD)
-                or line.startswith(self._DELETE)
-            ):
+            if self._is_operation_line(line):
+                break
+
+            if line.strip() == self._END:
                 break
 
             if line.startswith("@@"):
@@ -292,6 +441,7 @@ class ApplyPatch(Tool):
                     hunks.append(current_hunk)
 
                 current_hunk = []
+
                 i += 1
                 continue
 
@@ -299,19 +449,21 @@ class ApplyPatch(Tool):
                 raise ValueError("Update File content must begin with '@@'.")
 
             if line == "":
-                raise ValueError(
-                    "Invalid empty hunk line. "
-                    "Use a leading space for an empty context line."
-                )
+                current_hunk.append(" ")
+                i += 1
+                continue
 
             prefix = line[0]
 
             if prefix not in (" ", "+", "-"):
                 raise ValueError(
-                    f"Invalid hunk line: {line!r}. " "Expected ' ', '+' or '-'."
+                    f"Invalid hunk line: {line!r}. "
+                    "Expected ' ' for context, '-' for removal, "
+                    "or '+' for addition."
                 )
 
             current_hunk.append(line)
+
             i += 1
 
         if current_hunk is not None:
@@ -322,20 +474,33 @@ class ApplyPatch(Tool):
 
         return hunks, i
 
-    # PLAN / VALIDATION
+    @classmethod
+    def _is_operation_line(
+        cls,
+        line: str,
+    ) -> bool:
+        return (
+            line.startswith(cls._UPDATE)
+            or line.startswith(cls._ADD)
+            or line.startswith(cls._DELETE)
+        )
+
     def _build_plan(
         self,
         operations: list[PatchOperation],
     ) -> list[dict[str, Any]]:
 
         seen_paths: set[str] = set()
+
         plan: list[dict[str, Any]] = []
 
         for operation in operations:
             normalized_path = self._normalize_path(operation.path)
 
             if normalized_path in seen_paths:
-                raise ValueError(f"Duplicate operation for path '{operation.path}'.")
+                raise ValueError(
+                    f"Duplicate operation for path " f"'{operation.path}'."
+                )
 
             seen_paths.add(normalized_path)
 
@@ -376,6 +541,7 @@ class ApplyPatch(Tool):
         path: Path,
         operation: PatchOperation,
     ) -> dict[str, Any]:
+
         if path.exists():
             raise ValueError(f"Cannot add '{path}': file already exists.")
 
@@ -397,6 +563,7 @@ class ApplyPatch(Tool):
         path: Path,
         operation: PatchOperation,
     ) -> dict[str, Any]:
+
         if not path.exists():
             raise ValueError(f"Cannot update '{path}': file does not exist.")
 
@@ -426,6 +593,7 @@ class ApplyPatch(Tool):
         self,
         path: Path,
     ) -> dict[str, Any]:
+
         if not path.exists():
             raise ValueError(f"Cannot delete '{path}': file does not exist.")
 
@@ -434,7 +602,9 @@ class ApplyPatch(Tool):
 
         try:
             file_content = path.read_text(encoding="utf-8")
+
             removed_lines = self._count_lines(file_content)
+
         except (UnicodeDecodeError, OSError):
             removed_lines = 0
 
@@ -446,7 +616,6 @@ class ApplyPatch(Tool):
             "removed": removed_lines,
         }
 
-    # HUNK APPLICATION
     def _apply_hunks(
         self,
         original: str,
@@ -493,7 +662,9 @@ class ApplyPatch(Tool):
             if not old_lines:
                 raise ValueError(
                     f"Hunk {hunk_index} in '{path}' "
-                    "does not contain any context or removed lines."
+                    "contains only additions. "
+                    "Add at least one context or removed line "
+                    "so the exact insertion point is unambiguous."
                 )
 
             old_normalized = [self._remove_newline(line) for line in old_lines]
@@ -509,14 +680,18 @@ class ApplyPatch(Tool):
 
             if not forward_matches:
                 raise ValueError(
-                    f"Patch context did not match in '{path}', " f"hunk {hunk_index}."
+                    f"Patch context did not match in '{path}', "
+                    f"hunk {hunk_index}. "
+                    "The file may have changed or the context may be incorrect. "
+                    "Re-read the relevant file section and retry."
                 )
 
             if len(forward_matches) > 1:
                 raise ValueError(
                     f"Ambiguous patch in '{path}', "
                     f"hunk {hunk_index}: "
-                    f"context matched {len(forward_matches)} times."
+                    f"context matched {len(forward_matches)} times. "
+                    "Use more specific context."
                 )
 
             position = forward_matches[0]
@@ -548,6 +723,7 @@ class ApplyPatch(Tool):
         file_lines: list[str],
         target: list[str],
     ) -> list[int]:
+
         if not target:
             return []
 
@@ -568,7 +744,6 @@ class ApplyPatch(Tool):
 
         return matches
 
-    # FILESYSTEM
     def _apply_plan(
         self,
         plan: list[dict[str, Any]],
@@ -594,15 +769,13 @@ class ApplyPatch(Tool):
                 content = item.get("content") or ""
 
                 results.append(
-                    {
-                        "path": str(path),
-                        "operation": "add",
-                        "added": item["added"],
-                        "removed": item["removed"],
-                        "content": content,
-                        "content_preview": self._bounded_preview(content),
-                        "total_lines": item["added"],
-                    }
+                    self._build_file_result(
+                        operation="add",
+                        path=path,
+                        content=content,
+                        added=item["added"],
+                        removed=item["removed"],
+                    )
                 )
 
             elif operation == "update":
@@ -614,15 +787,13 @@ class ApplyPatch(Tool):
                 content = item.get("content") or ""
 
                 results.append(
-                    {
-                        "path": str(path),
-                        "operation": "update",
-                        "added": item["added"],
-                        "removed": item["removed"],
-                        "content": content,
-                        "content_preview": self._bounded_preview(content),
-                        "total_lines": self._count_lines(content),
-                    }
+                    self._build_file_result(
+                        operation="update",
+                        path=path,
+                        content=content,
+                        added=item["added"],
+                        removed=item["removed"],
+                    )
                 )
 
             elif operation == "delete":
@@ -638,13 +809,46 @@ class ApplyPatch(Tool):
                 )
 
             else:
-                raise RuntimeError(f"Unknown planned operation: {operation}")
+                raise RuntimeError(f"Unknown planned operation: " f"{operation}")
 
         return results
 
-    # HELPERS
+    def _build_file_result(
+        self,
+        *,
+        operation: str,
+        path: Path,
+        content: str,
+        added: int,
+        removed: int,
+    ) -> dict[str, Any]:
+
+        result: dict[str, Any] = {
+            "path": str(path),
+            "operation": operation,
+            "added": added,
+            "removed": removed,
+            "content_preview": self._bounded_preview(content),
+            "total_lines": self._count_lines(content),
+        }
+
+        # Do not send huge complete files back into the model context.
+        #
+        # Small files keep the previous convenient behavior.
+        if len(content) <= self.MAX_CONTENT_PREVIEW_CHARS:
+            result["content"] = content
+            result["content_truncated"] = False
+        else:
+            result["content"] = None
+            result["content_truncated"] = True
+
+        return result
+
     @staticmethod
-    def _normalize_path(value: str) -> str:
+    def _normalize_path(
+        value: str,
+    ) -> str:
+
         value = value.strip()
 
         if not value:
@@ -653,14 +857,20 @@ class ApplyPatch(Tool):
         return str(Path(value))
 
     @staticmethod
-    def _detect_newline(content: str) -> str:
+    def _detect_newline(
+        content: str,
+    ) -> str:
+
         if "\r\n" in content:
             return "\r\n"
 
         return "\n"
 
     @staticmethod
-    def _remove_newline(value: str) -> str:
+    def _remove_newline(
+        value: str,
+    ) -> str:
+
         if value.endswith("\r\n"):
             return value[:-2]
 
@@ -677,12 +887,14 @@ class ApplyPatch(Tool):
         line: str,
         newline: str,
     ) -> str:
+
         return ApplyPatch._remove_newline(line) + newline
 
     @staticmethod
     def _join_added_lines(
         lines: list[str],
     ) -> str:
+
         if not lines:
             return ""
 
@@ -692,6 +904,7 @@ class ApplyPatch(Tool):
     def _count_lines(
         content: str,
     ) -> int:
+
         if not content:
             return 0
 
@@ -702,6 +915,7 @@ class ApplyPatch(Tool):
         cls,
         content: str,
     ) -> str:
+
         if not content:
             return ""
 
@@ -711,6 +925,7 @@ class ApplyPatch(Tool):
             return content
 
         head = int(limit * 0.70)
+
         tail = limit - head
 
         omitted = len(content) - head - tail
@@ -723,7 +938,6 @@ class ApplyPatch(Tool):
             + content[-tail:].lstrip()
         )
 
-    # TOOL RESULT CONTRACT
     def _success(
         self,
         *,
@@ -731,6 +945,7 @@ class ApplyPatch(Tool):
         files: list[dict[str, Any]],
         statistics: dict[str, int],
     ) -> ToolResult:
+
         return ToolResult(
             success=True,
             name=self.name,
@@ -750,6 +965,7 @@ class ApplyPatch(Tool):
         error_type: str,
         message: str,
     ) -> ToolResult:
+
         return ToolResult(
             success=False,
             name=self.name,
@@ -763,9 +979,6 @@ class ApplyPatch(Tool):
             },
             metadata={},
         )
-
-    def __repr__(self) -> str:
-        return f"<Tool name='{self.name}'>"
 
     def describe_call(
         self,
@@ -787,11 +1000,8 @@ class ApplyPatch(Tool):
             }
 
         try:
-
             operations = self._parse_patch(patch)
-
         except Exception:
-
             return {
                 "action": "modify",
                 "target": "",
@@ -820,3 +1030,6 @@ class ApplyPatch(Tool):
             "action": action,
             "target": ", ".join(targets),
         }
+
+    def __repr__(self) -> str:
+        return f"<Tool name='{self.name}'>"
