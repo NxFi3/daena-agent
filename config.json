@@ -2,7 +2,7 @@
   "llm": {
     "provider": "ollama",
     "provider_config": {
-      "model_name": "gemma4:e4b",
+      "model_name": "gpt-oss:20b",
       "generation_config": {
         "temperature": 0.5,
         "num_ctx": 20000,

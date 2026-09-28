@@ -29,6 +29,14 @@ class Loop:
     DUPLICATE_BLOCK_THRESHOLD = 5
     EMPTY_RESPONSE_THRESHOLD = 3
 
+    # How many times a single iteration may be retried in place after a
+    # generation failure (provider exception, e.g. Ollama's own tool-call
+    # parser choking on malformed output) or a dispatch failure (the model
+    # returned tool_calls our ToolDispatcher couldn't make sense of).
+    # Without this, a single hiccup used to kill the entire run instantly,
+    # regardless of how much progress had already been made.
+    MAX_GENERATION_RETRIES = 2
+
     DEFAULT_MAX_ITERATIONS = 100
 
     RECENT_CONTEXT_LIMIT = 50
@@ -76,6 +84,8 @@ class Loop:
         self._duplicate_block_streak = 0
 
         self._recent_failure_signatures: list[str] = []
+
+        self._generation_retries = 0
 
         self.max_iterations = self._read_max_iterations()
 
@@ -163,6 +173,33 @@ class Loop:
         self.stm.add(
             session_id=self.session_id,
             event=event,
+        )
+
+    def _store_nudge(
+        self,
+        text: str,
+    ) -> None:
+        """
+        Store a short corrective message as a normal USER turn (not
+        SYSTEM: a mid-conversation system message is a coin-flip across
+        providers, a user turn is universally supported) so the NEXT
+        generation call actually sees different input.
+
+        This matters because, previously, a failed/empty iteration was
+        simply retried with byte-identical context — same messages, same
+        temperature setting, no new information — so the model had no
+        reason to behave differently and would often fail the exact same
+        way 2-3 times in a row before the loop gave up.
+        """
+
+        self._store_event(
+            ContextEvent(
+                role=ContextRole.USER,
+                type=ContextType.MESSAGE,
+                content=text,
+                priority=ContextPriority.HIGH,
+                step=self._next_step(),
+            )
         )
 
     def _assistant_event(
@@ -961,9 +998,36 @@ class Loop:
 
             if llmresult is None:
 
-                return self._stopped_result(
-                    self.agent_state.error or "LLM generation failed."
+                # A provider-level failure (e.g. Ollama's own tool-call
+                # parser choking on malformed model output). Retry a
+                # bounded number of times with a corrective nudge instead
+                # of ending the whole task on the first hiccup.
+                self._generation_retries += 1
+
+                error_message = self.agent_state.error or "LLM generation failed."
+
+                if self._generation_retries > self.MAX_GENERATION_RETRIES:
+
+                    return self._stopped_result(error_message)
+
+                self.logger.warning(
+                    "Generation failed "
+                    f"({self._generation_retries}/"
+                    f"{self.MAX_GENERATION_RETRIES}): "
+                    f"{error_message}"
                 )
+
+                self._store_nudge(
+                    "Your last request failed: "
+                    f"{error_message} "
+                    "Try again — call a tool with valid, well-formed "
+                    "arguments matching its schema exactly, or answer "
+                    "directly if no tool is needed."
+                )
+
+                continue
+
+            self._generation_retries = 0
 
             self.context.calibrate(llmresult)
 
@@ -987,11 +1051,24 @@ class Loop:
                     # under metadata["llm_message"].
                     self._store_event(self._assistant_event(llmresult))
 
-                    self.agent_state.fail("Tool dispatch failed: " f"{exc}")
+                    self._generation_retries += 1
 
-                    return self._stopped_result(
-                        self.agent_state.error or "Tool dispatch failed."
+                    if self._generation_retries > self.MAX_GENERATION_RETRIES:
+
+                        self.agent_state.fail("Tool dispatch failed: " f"{exc}")
+
+                        return self._stopped_result(
+                            self.agent_state.error or "Tool dispatch failed."
+                        )
+
+                    self._store_nudge(
+                        "Your last tool call could not be parsed "
+                        f"({exc}). Reissue it with strictly valid JSON "
+                        "arguments matching the tool's parameter schema "
+                        "exactly, one tool call at a time."
                     )
+
+                    continue
 
                 if not parsed_calls:
 
@@ -1001,11 +1078,23 @@ class Loop:
 
                     self._store_event(self._assistant_event(llmresult))
 
-                    self.agent_state.fail("Tool dispatcher returned " "no calls.")
+                    self._generation_retries += 1
 
-                    return self._stopped_result(
-                        self.agent_state.error or "Tool dispatch failed."
+                    if self._generation_retries > self.MAX_GENERATION_RETRIES:
+
+                        self.agent_state.fail("Tool dispatcher returned " "no calls.")
+
+                        return self._stopped_result(
+                            self.agent_state.error or "Tool dispatch failed."
+                        )
+
+                    self._store_nudge(
+                        "Your last tool call was not recognized. Reissue "
+                        "it using exactly one of the available tools and "
+                        "its documented arguments."
                     )
+
+                    continue
 
                 # Store the canonical calls with stable IDs.
                 self._store_event(
@@ -1052,6 +1141,22 @@ class Loop:
                 self.agent_state.stop(reason)
 
                 return self._stopped_result(reason)
+
+            # Without this, the next iteration would retry with
+            # byte-identical context (same messages, same temperature),
+            # so the model has no reason to behave differently and often
+            # fails the exact same way 2-3 times before the loop gives up.
+            # Nudging with what actually happened gives the retry a real
+            # chance to recover.
+            nudge = "Your last turn produced no reply and no tool call."
+
+            if llmresult.thinking:
+
+                nudge += " You only reasoned silently without acting."
+
+            nudge += " Call a tool now to make progress, or write your final answer."
+
+            self._store_nudge(nudge)
 
         reason = "Maximum iterations reached."
 
@@ -1123,6 +1228,8 @@ class Loop:
         self._duplicate_block_streak = 0
 
         self._recent_failure_signatures.clear()
+
+        self._generation_retries = 0
 
     def close(
         self,

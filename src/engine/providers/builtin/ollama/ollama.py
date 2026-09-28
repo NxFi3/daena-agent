@@ -24,6 +24,22 @@ class OllamaProvider(ProviderBase):
         "num_ctx": 120000,
     }
 
+    # `think` was never being sent to ollama.chat(), so every "thinking"
+    # model (gpt-oss, qwen3, gemma3, deepseek-r1...) fell back to its own
+    # default reasoning behavior, and that default differs per model AND
+    # per Ollama version. Observed effects of leaving it unset:
+    #   - gpt-oss: a turn can end having only reasoned, with BOTH
+    #     message.content and message.tool_calls empty (the harmony
+    #     "final"/tool-call channel is never reached).
+    #   - qwen3: a tool-call attempt can drift into the reasoning text
+    #     instead of structured tool_calls, which then fails to parse.
+    # Explicitly requesting `think` is the documented fix: Ollama then
+    # separates reasoning into message.thinking and leaves
+    # message.content / message.tool_calls as the model's actual answer.
+    # Override per model via generation_config: {"think": false} (or
+    # "low"/"medium"/"high" for models with graded effort) in config.json.
+    DEFAULT_THINK: ClassVar[bool] = True
+
     @staticmethod
     def _prepare_messages(
         messages: list[dict[str, Any]],
@@ -138,6 +154,23 @@ class OllamaProvider(ProviderBase):
 
         return prepared
 
+    @classmethod
+    def _resolve_think(
+        cls,
+        options: dict[str, Any],
+    ) -> Any:
+        """
+        `think` is not a real Ollama chat "option" — it is a top-level
+        ollama.chat() parameter — so it must be popped out of the merged
+        options dict rather than left inside it. Falls back to
+        DEFAULT_THINK when nothing set one explicitly.
+        """
+
+        if "think" in options:
+            return options.pop("think")
+
+        return cls.DEFAULT_THINK
+
     def generate(
         self,
         inputs: LLMInput,
@@ -154,12 +187,15 @@ class OllamaProvider(ProviderBase):
         if inputs.options:
             options.update(inputs.options)
 
+        think = self._resolve_think(options)
+
         try:
 
             chat_response = ollama.chat(
                 model=model_name,
                 messages=messages,
                 tools=tools,
+                think=think,
                 options=options,
             )
 
@@ -210,19 +246,35 @@ class OllamaProvider(ProviderBase):
 
         normalized_message = message.model_dump() if message else {}
 
+        thinking = (
+            getattr(
+                message,
+                "thinking",
+                None,
+            )
+            if message
+            else None
+        )
+
+        response_text = message.content if message else ""
+
+        if not response_text and not tool_calls and thinking:
+
+            # Not fabricating a response here — Loop is responsible for
+            # deciding what to do about an empty turn (see agentloop.py's
+            # nudge-and-retry handling). This log line exists so a
+            # thinking-only turn is distinguishable from a truly broken
+            # one when reading logs.
+            logger.warning(
+                f"Model '{model_name}' produced only reasoning this turn "
+                "(content and tool_calls are both empty, thinking is not)."
+            )
+
         return LLMResult(
-            response=(message.content if message else ""),
+            response=response_text,
             message=normalized_message,
             tool_calls=tool_calls,
-            thinking=(
-                getattr(
-                    message,
-                    "thinking",
-                    None,
-                )
-                if message
-                else None
-            ),
+            thinking=thinking,
             usage=total_tokens,
             raw=chat_response,
         )
