@@ -53,7 +53,7 @@ class FakeLLM:
         )
 
 
-def test_loop_executes_tool_through_security_and_context(tmp_path):
+def test_loop_executes_tool_through_security_and_context(tmp_path, monkeypatch):
     file_path = tmp_path / "hello.txt"
     file_path.write_text("hello baseline", encoding="utf-8")
 
