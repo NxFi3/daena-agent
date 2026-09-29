@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import codecs
 import re
+from io import BytesIO
 from typing import Any
 
 from src.models.ToolResult import ToolResult
@@ -58,7 +59,8 @@ class WebFetch(Tool):
 
     - HTML is converted to plain text (headings, lists, code blocks kept).
     - Text, JSON and XML are returned as they are.
-    - PDFs, images and other binary formats are rejected.
+    - PDFs are parsed with pypdf when they contain a text layer.
+    - Images and other unsupported binary formats are rejected.
     - Long pages are paged with start_char / next_start_char.
     - Requests to localhost, the LAN and cloud metadata are blocked.
     """
@@ -77,11 +79,12 @@ class WebFetch(Tool):
     LINKS_BUDGET = 1500
 
     MAX_URL_CHARS = 2048
+    MAX_PDF_PAGES = 250
 
     description = (
         "Fetch a web page (http/https) and return its readable text. Use it "
         "after web_search to read a result, or to open any URL the user "
-        "gives. Works for HTML, plain text, JSON and XML; not for PDFs or "
+        "gives. Works for HTML, plain text, JSON, XML and text-based PDFs; "
         "images. Long pages are returned in chunks: if the result says "
         "truncated, call again with start_char set to next_start_char. Set "
         "include_links=true to also get the page's links. Local and private "
@@ -177,7 +180,7 @@ class WebFetch(Tool):
                 url=response.url,
             )
 
-        decoded = self._decode(response.body, response.charset)
+        decoded = "" if kind == "pdf" else self._decode(response.body, response.charset)
 
         if kind == "text" and self._looks_like_html(decoded):
             kind = "html"
@@ -186,12 +189,24 @@ class WebFetch(Tool):
         links: list[dict[str, str]] = []
         method = "raw"
 
+        note = ""
+
         if kind == "html":
             page = extract_page(decoded, response.url)
             text = page.text
             title = page.title
             links = page.links
             method = page.method
+        elif kind == "pdf":
+            try:
+                text, title, note = self._extract_pdf(response.body)
+            except ValueError as exc:
+                return self._error(
+                    "pdf_error",
+                    str(exc),
+                    url=response.url,
+                )
+            method = "pypdf"
         else:
             text = decoded.replace("\r\n", "\n").replace("\r", "\n").strip()
 
@@ -263,6 +278,8 @@ class WebFetch(Tool):
 
         if mime in _HTML_TYPES:
             return "html"
+        if mime == "application/pdf":
+            return "pdf"
         if mime.startswith("text/"):
             return "text"
         if mime in _TEXT_APPLICATION_TYPES or mime.endswith(("+json", "+xml")):
@@ -271,6 +288,8 @@ class WebFetch(Tool):
         head = body[:4096]
 
         if mime in _AMBIGUOUS_TYPES:
+            if head.startswith(b"%PDF-"):
+                return "pdf"
             if b"\x00" in head:
                 return None
             return "text"
@@ -301,6 +320,62 @@ class WebFetch(Tool):
                 return "text"
 
         return None
+
+    def _extract_pdf(self, body: bytes) -> tuple[str, str, str]:
+        try:
+            from pypdf import PdfReader
+        except ImportError as exc:
+            raise ValueError("PDF support requires the 'pypdf' package.") from exc
+
+        try:
+            reader = PdfReader(BytesIO(body), strict=False)
+        except Exception as exc:
+            raise ValueError(f"Could not parse PDF: {exc}") from exc
+
+        if getattr(reader, "is_encrypted", False):
+            raise ValueError("The PDF is encrypted and no password was provided.")
+
+        page_count = len(reader.pages)
+        limit = min(page_count, self.MAX_PDF_PAGES)
+        chunks: list[str] = []
+
+        for index in range(limit):
+            try:
+                page_text = reader.pages[index].extract_text() or ""
+            except Exception as exc:
+                page_text = f"[page {index + 1} extraction failed: {exc}]"
+
+            page_text = (
+                str(page_text)
+                .replace("\r\n", "\n")
+                .replace("\r", "\n")
+                .strip()
+            )
+            if page_text:
+                chunks.append(f"[Page {index + 1}]\n{page_text}")
+
+        text = "\n\n".join(chunks).strip()
+        title = ""
+
+        metadata = getattr(reader, "metadata", None)
+        if metadata is not None:
+            candidate = getattr(metadata, "title", None)
+            if candidate:
+                title = str(candidate)
+
+        note = ""
+        if page_count > limit:
+            note = (
+                f"PDF contains {page_count} pages; only the first "
+                f"{limit} pages were extracted."
+            )
+        elif not text:
+            note = (
+                "No extractable text layer was found. This PDF may be scanned "
+                "or image-only; use a vision/OCR pipeline for scanned pages."
+            )
+
+        return text, title, note
 
     @staticmethod
     def _looks_like_html(text: str) -> bool:
