@@ -146,7 +146,7 @@ def test_compaction_is_used_when_latest_task_history_does_not_fit():
     assert any(
         "<compacted_context>" in str(m.get("content", ""))
         for m in messages
-        if m.get("role") == "system"
+        if m.get("role") == "user"
     )
     assert messages[-1] == {"role": "user", "content": "finish the task"}
 

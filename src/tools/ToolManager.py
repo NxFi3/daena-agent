@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from src.models.ToolCall import ToolCall
@@ -36,6 +37,49 @@ class ToolManager:
 
     def _find_tool(self, name: str):
         return self.toolregistry.get(str(name).strip().lower())
+
+    def _normalize_workspace_args(self, toolcall: ToolCall) -> ToolCall:
+        """Turn workspace-relative tool arguments into absolute safe paths.
+
+        Security validation alone is insufficient when a tool interprets a
+        relative path against the process CWD. Normalize after approval so the
+        actual execution target is the same target that policy evaluated.
+        """
+        if not self.security.policy.workspace_only:
+            return toolcall
+
+        args = dict(toolcall.args or {})
+        name = toolcall.name
+
+        if name == "read_file":
+            args["file_path"] = str(self.security.sandbox.resolve(args["file_path"]))
+
+        elif name == "command_exec":
+            args["workdir"] = str(
+                self.security.sandbox.resolve(args.get("workdir") or ".")
+            )
+
+        elif name == "apply_patch":
+            patch = args["patch"]
+            lines = patch.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+            normalized: list[str] = []
+
+            for line in lines:
+                match = re.match(
+                    r"^(\*\*\*\s+(?:Add|Update|Delete) File:\s*)(.+?)\s*$",
+                    line,
+                )
+                if match:
+                    path = match.group(2).strip()
+                    line = match.group(1) + str(
+                        self.security.sandbox.resolve(path)
+                    )
+                normalized.append(line)
+
+            args["patch"] = "\n".join(normalized)
+
+        toolcall.args = args
+        return toolcall
 
     def execute(self, tool_calls: list[ToolCall]) -> dict:
         calls: list[ToolCall] = []
@@ -134,6 +178,8 @@ class ToolManager:
                 continue
 
             try:
+                toolcall = self._normalize_workspace_args(toolcall)
+                calls[-1] = toolcall
                 result = tool.execute(**toolcall.args)
                 if not isinstance(result, ToolResult):
                     result = ToolResult(
