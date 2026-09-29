@@ -630,7 +630,7 @@ Its provider implementation normalizes OpenAI-compatible tool calls and messages
 
 # Security
 
-The repository contains the beginning of a security boundary:
+The repository contains a defense-in-depth security layer:
 
 ```text
 src/security/
@@ -639,9 +639,19 @@ src/security/
 └── securityService.py
 ```
 
-The current security service is still a scaffold and is not a complete policy/sandbox system.
+The security layer enforces:
 
-The long-term goal is to move important execution restrictions into the runtime instead of relying only on model instructions.
+- tool allowlists
+- workspace boundaries
+- blocked executables
+- inline shell/interpreter restrictions
+- background-process permissions
+
+Background execution is denied by default. A host application can approve one exact background command for the current `Agent` session with `approve_background_command(...)`. The approval is scoped to the resolved workspace and exact argv, so changing the command or workspace requires a new approval.
+
+For explicit trusted environments, `security.allow_background=true` can allow background commands without per-command approval. Session approvals are cleared when the `Agent` instance is discarded.
+
+The security layer is a defense-in-depth control, not an operating-system sandbox. The long-term goal is to move important execution restrictions into the runtime instead of relying only on model instructions.
 
 ---
 
