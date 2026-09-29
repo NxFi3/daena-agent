@@ -20,21 +20,19 @@ class PlanStep:
 
 class Plan(Tool):
     """
-    Manage Daena's current execution plan in AgentInstruction/plan.md.
+    Manage Daena's current execution plan.
 
-    The file is the source of truth. ContextBuilder reads it on the next
-    model call, so this tool returns only a minimal operation summary.
+    The plan file is the source of truth.
+    ContextBuilder reads it on the next model call.
     """
 
     name = "plan"
     action = "modify"
 
     description = (
-        "Manage the current execution plan in AgentInstruction/plan.md. "
-        "Use exactly one operation: create, update, or delete. "
-        "Update can change the goal, edit a step, add a step, or remove a step. "
-        "The updated plan is visible through context on the next model call; "
-        "do not expect the tool to return the full plan."
+        "Create, update, or delete the current execution plan. "
+        "Use create for a new plan, update to change the goal or steps, "
+        "and delete to remove the plan."
     )
 
     parameters = {
@@ -43,38 +41,27 @@ class Plan(Tool):
             "operation": {
                 "type": "string",
                 "enum": ["create", "update", "delete"],
-                "description": "Plan operation to perform.",
+                "description": "Plan operation.",
             },
             "goal": {
                 "type": "string",
                 "description": (
-                    "Plan goal. Required for create and for update/set_goal."
+                    "Plan goal. Required when creating a plan. "
+                    "Use it in update to replace the current goal."
                 ),
             },
             "steps": {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Initial plan steps. Required for create; "
-                    "steps start as pending."
+                    "Initial plan steps. Use with create. "
+                    "Each item is a short concrete step."
                 ),
-            },
-            "action": {
-                "type": "string",
-                "enum": [
-                    "set_goal",
-                    "set_step",
-                    "add_step",
-                    "remove_step",
-                ],
-                "description": "Update action. Required when operation is update.",
             },
             "step": {
                 "type": "integer",
                 "minimum": 1,
-                "description": (
-                    "1-based step number for set_step/remove_step."
-                ),
+                "description": ("1-based step number to update or remove."),
             },
             "status": {
                 "type": "string",
@@ -84,21 +71,20 @@ class Plan(Tool):
                     "completed",
                     "blocked",
                 ],
-                "description": "New step status for set_step.",
+                "description": "New status for the selected step.",
             },
-            "description_text": {
+            "description": {
                 "type": "string",
-                "description": (
-                    "New step description for set_step, or step text for add_step."
-                ),
+                "description": ("New description for the selected step."),
             },
-            "after": {
+            "add_step": {
+                "type": "string",
+                "description": ("Add a new step to the end of the plan."),
+            },
+            "remove_step": {
                 "type": "integer",
                 "minimum": 1,
-                "description": (
-                    "Insert the new step after this 1-based step. "
-                    "Omit to append."
-                ),
+                "description": ("Remove the given 1-based step number."),
             },
         },
         "required": ["operation"],
@@ -120,9 +106,7 @@ class Plan(Tool):
     }
 
     _STEP_RE = re.compile(
-        r"^\s*(\d+)\.\s+"
-        r"\[(pending|in_progress|completed|blocked)\]\s+"
-        r"(.+?)\s*$"
+        r"^\s*(\d+)\.\s+" r"\[(pending|in_progress|completed|blocked)\]\s+" r"(.+?)\s*$"
     )
 
     def validate(self, arguments: dict[str, Any]) -> bool:
@@ -130,12 +114,17 @@ class Plan(Tool):
             return False
 
         operation = arguments.get("operation")
+
         if operation not in {"create", "update", "delete"}:
             return False
 
+        # -------------------------
+        # CREATE
+        # -------------------------
         if operation == "create":
             return (
-                self._valid_text(
+                set(arguments).issubset({"operation", "goal", "steps"})
+                and self._valid_text(
                     arguments.get("goal"),
                     self.MAX_GOAL_CHARS,
                 )
@@ -143,88 +132,97 @@ class Plan(Tool):
             )
 
         if operation == "delete":
-            return all(
-                key == "operation" or value is None
-                for key, value in arguments.items()
-            )
+            return set(arguments) == {"operation"}
 
-        action = arguments.get("action")
-        if action not in {
-            "set_goal",
-            "set_step",
+        allowed = {
+            "operation",
+            "goal",
+            "step",
+            "status",
+            "description",
             "add_step",
             "remove_step",
-        }:
+        }
+
+        if not set(arguments).issubset(allowed):
             return False
 
-        if action == "set_goal":
-            return (
-                self._valid_text(
-                    arguments.get("goal"),
-                    self.MAX_GOAL_CHARS,
-                )
-                and set(arguments).issubset({"operation", "action", "goal"})
-            )
+        # Exactly one update mode:
+        #
+        # 1. goal
+        # 2. step + status/description
+        # 3. add_step
+        # 4. remove_step
+        has_goal = arguments.get("goal") is not None
+        has_step_edit = arguments.get("step") is not None and (
+            arguments.get("status") is not None
+            or arguments.get("description") is not None
+        )
+        has_add = arguments.get("add_step") is not None
+        has_remove = arguments.get("remove_step") is not None
 
-        if action == "set_step":
+        modes = sum(
+            (
+                has_goal,
+                has_step_edit,
+                has_add,
+                has_remove,
+            )
+        )
+
+        if modes != 1:
+            return False
+
+        # Goal update
+        if has_goal:
+            return self._valid_text(
+                arguments.get("goal"),
+                self.MAX_GOAL_CHARS,
+            ) and set(arguments).issubset({"operation", "goal"})
+
+        # Step update
+        if has_step_edit:
             step = arguments.get("step")
-            has_description = arguments.get("description_text") is not None
-            has_status = arguments.get("status") is not None
+
+            if type(step) is not int or step < 1:
+                return False
 
             if (
-                type(step) is not int
-                or step < 1
-                or not (has_description or has_status)
+                arguments.get("status") is not None
+                and arguments.get("status") not in self._STATUSES
             ):
                 return False
 
-            if has_description and not self._valid_text(
-                arguments.get("description_text"),
+            if arguments.get("description") is not None and not self._valid_text(
+                arguments.get("description"),
                 self.MAX_STEP_CHARS,
             ):
-                return False
-
-            if has_status and arguments.get("status") not in self._STATUSES:
                 return False
 
             return set(arguments).issubset(
                 {
                     "operation",
-                    "action",
                     "step",
-                    "description_text",
                     "status",
+                    "description",
                 }
             )
 
-        if action == "add_step":
-            if not self._valid_text(
-                arguments.get("description_text"),
+        # Add step
+        if has_add:
+            return set(arguments) == {"operation", "add_step"} and self._valid_text(
+                arguments.get("add_step"),
                 self.MAX_STEP_CHARS,
-            ):
-                return False
-
-            after = arguments.get("after")
-            return (
-                after is None
-                or (type(after) is int and after >= 1)
-            ) and set(arguments).issubset(
-                {
-                    "operation",
-                    "action",
-                    "description_text",
-                    "after",
-                }
             )
 
-        if action == "remove_step":
-            step = arguments.get("step")
+        # Remove step
+        if has_remove:
+            step = arguments.get("remove_step")
+
             return (
-                type(step) is int
+                set(arguments) == {"operation", "remove_step"}
+                and type(step) is int
                 and step >= 1
-                and set(arguments).issubset(
-                    {"operation", "action", "step"}
-                )
             )
 
         return False
@@ -243,23 +241,27 @@ class Plan(Tool):
         operation: str,
         goal: str | None = None,
         steps: list[str] | None = None,
-        action: str | None = None,
         step: int | None = None,
         status: str | None = None,
-        description_text: str | None = None,
-        after: int | None = None,
+        description: str | None = None,
+        add_step: str | None = None,
+        remove_step: int | None = None,
     ) -> ToolResult:
+
         if operation == "create":
-            return self._create(goal, steps)
+            return self._create(
+                goal=goal,
+                steps=steps,
+            )
 
         if operation == "update":
             return self._update(
-                action=action,
                 goal=goal,
                 step=step,
                 status=status,
-                description_text=description_text,
-                after=after,
+                description=description,
+                add_step=add_step,
+                remove_step=remove_step,
             )
 
         if operation == "delete":
@@ -272,10 +274,15 @@ class Plan(Tool):
 
     def _create(
         self,
+        *,
         goal: str | None,
         steps: list[str] | None,
     ) -> ToolResult:
-        if not self._valid_text(goal, self.MAX_GOAL_CHARS):
+
+        if not self._valid_text(
+            goal,
+            self.MAX_GOAL_CHARS,
+        ):
             return self._error(
                 "invalid_argument",
                 "goal must be a non-empty string.",
@@ -298,7 +305,7 @@ class Plan(Tool):
         if existing.strip():
             return self._error(
                 "plan_exists",
-                "A plan already exists. Use update or delete before create.",
+                "A plan already exists. Use update or delete.",
             )
 
         plan_steps = [
@@ -307,12 +314,16 @@ class Plan(Tool):
                 status="pending",
                 description=str(value).strip(),
             )
-            for index, value in enumerate(steps or [], 1)
+            for index, value in enumerate(steps or [], start=1)
         ]
 
-        content = self._render(str(goal).strip(), plan_steps)
+        content = self._render(
+            str(goal).strip(),
+            plan_steps,
+        )
 
         write_error = self._write_atomic(content)
+
         if write_error is not None:
             return write_error
 
@@ -324,13 +335,14 @@ class Plan(Tool):
     def _update(
         self,
         *,
-        action: str | None,
         goal: str | None,
         step: int | None,
         status: str | None,
-        description_text: str | None,
-        after: int | None,
+        description: str | None,
+        add_step: str | None,
+        remove_step: int | None,
     ) -> ToolResult:
+
         try:
             raw = self._read_raw()
         except OSError as exc:
@@ -353,14 +365,18 @@ class Plan(Tool):
                 str(exc),
             )
 
-        if action == "set_goal":
-            if not self._valid_text(goal, self.MAX_GOAL_CHARS):
+        if goal is not None:
+            if not self._valid_text(
+                goal,
+                self.MAX_GOAL_CHARS,
+            ):
                 return self._error(
                     "invalid_argument",
                     "goal must be a non-empty string.",
                 )
 
-            new_goal = str(goal).strip()
+            new_goal = goal.strip()
+
             if new_goal == current_goal:
                 return self._success(
                     "Plan unchanged.",
@@ -368,37 +384,35 @@ class Plan(Tool):
                 )
 
             current_goal = new_goal
+
             summary = "Plan updated: goal changed."
 
-        elif action == "set_step":
-            if (
-                type(step) is not int
-                or not 1 <= step <= len(current_steps)
-            ):
+        elif step is not None:
+            if not 1 <= step <= len(current_steps):
                 return self._error(
                     "invalid_step",
                     f"step must be between 1 and {len(current_steps)}.",
                 )
 
-            if description_text is None and status is None:
-                return self._error(
-                    "invalid_argument",
-                    "set_step requires description_text or status.",
-                )
+            target = current_steps[step - 1]
 
-            if description_text is not None:
+            changed: list[str] = []
+
+            if description is not None:
                 if not self._valid_text(
-                    description_text,
+                    description,
                     self.MAX_STEP_CHARS,
                 ):
                     return self._error(
                         "invalid_argument",
-                        "description_text must be a non-empty string.",
+                        "description must be a non-empty string.",
                     )
 
-                current_steps[step - 1].description = str(
-                    description_text
-                ).strip()
+                new_description = description.strip()
+
+                if new_description != target.description:
+                    target.description = new_description
+                    changed.append("description")
 
             if status is not None:
                 if status not in self._STATUSES:
@@ -407,30 +421,26 @@ class Plan(Tool):
                         "Invalid step status.",
                     )
 
-                current_steps[step - 1].status = status
+                if status != target.status:
+                    target.status = status
+                    changed.append("status")
 
-            parts: list[str] = []
+            if not changed:
+                return self._success(
+                    "Plan unchanged.",
+                    action="update",
+                )
 
-            if status is not None:
-                parts.append(status.replace("_", " "))
+            summary = f"Plan updated: step {step} " + " and ".join(changed) + "."
 
-            if description_text is not None:
-                parts.append("description changed")
-
-            summary = (
-                f"Plan updated: step {step} "
-                + ", ".join(parts)
-                + "."
-            )
-
-        elif action == "add_step":
+        elif add_step is not None:
             if not self._valid_text(
-                description_text,
+                add_step,
                 self.MAX_STEP_CHARS,
             ):
                 return self._error(
                     "invalid_argument",
-                    "description_text must be a non-empty string.",
+                    "add_step must be a non-empty string.",
                 )
 
             if len(current_steps) >= self.MAX_STEPS:
@@ -439,34 +449,20 @@ class Plan(Tool):
                     f"Plan cannot contain more than {self.MAX_STEPS} steps.",
                 )
 
-            if after is not None and (
-                type(after) is not int
-                or not 1 <= after <= len(current_steps)
-            ):
-                return self._error(
-                    "invalid_step",
-                    f"after must be between 1 and {len(current_steps)}.",
-                )
+            new_number = len(current_steps) + 1
 
-            insert_at = len(current_steps) if after is None else after
-            current_steps.insert(
-                insert_at,
+            current_steps.append(
                 PlanStep(
-                    number=0,
+                    number=new_number,
                     status="pending",
-                    description=str(description_text).strip(),
-                ),
+                    description=add_step.strip(),
+                )
             )
-            self._renumber(current_steps)
 
-            added_step = insert_at + 1
-            summary = f"Plan updated: added step {added_step}."
+            summary = f"Plan updated: added step {new_number}."
 
-        elif action == "remove_step":
-            if (
-                type(step) is not int
-                or not 1 <= step <= len(current_steps)
-            ):
+        elif remove_step is not None:
+            if not 1 <= remove_step <= len(current_steps):
                 return self._error(
                     "invalid_step",
                     f"step must be between 1 and {len(current_steps)}.",
@@ -475,23 +471,28 @@ class Plan(Tool):
             if len(current_steps) == 1:
                 return self._error(
                     "invalid_plan",
-                    "A plan must contain at least one step; delete the plan instead.",
+                    "The last step cannot be removed. Delete the plan instead.",
                 )
 
-            current_steps.pop(step - 1)
+            current_steps.pop(remove_step - 1)
             self._renumber(current_steps)
-            summary = f"Plan updated: removed step {step}."
+
+            summary = f"Plan updated: removed step {remove_step}."
 
         else:
             return self._error(
-                "invalid_action",
+                "invalid_argument",
                 (
-                    "update requires set_goal, set_step, "
+                    "Update must specify goal, "
+                    "step with status/description, "
                     "add_step, or remove_step."
                 ),
             )
 
-        content = self._render(current_goal, current_steps)
+        content = self._render(
+            current_goal,
+            current_steps,
+        )
 
         if len(content) > self.MAX_PLAN_CHARS:
             return self._error(
@@ -500,14 +501,20 @@ class Plan(Tool):
             )
 
         write_error = self._write_atomic(content)
+
         if write_error is not None:
             return write_error
 
-        return self._success(summary, action="update")
+        return self._success(
+            summary,
+            action="update",
+        )
 
     def _delete(self) -> ToolResult:
         try:
-            self.PLAN_PATH.unlink(missing_ok=True)
+            self.PLAN_PATH.unlink(
+                missing_ok=True,
+            )
         except OSError as exc:
             return self._error(
                 "delete_error",
@@ -523,9 +530,15 @@ class Plan(Tool):
         if not self.PLAN_PATH.exists():
             return ""
 
-        return self.PLAN_PATH.read_text(encoding="utf-8")
+        return self.PLAN_PATH.read_text(
+            encoding="utf-8",
+        )
 
-    def _write_atomic(self, content: str) -> ToolResult | None:
+    def _write_atomic(
+        self,
+        content: str,
+    ) -> ToolResult | None:
+
         if len(content) > self.MAX_PLAN_CHARS:
             return self._error(
                 "plan_limit",
@@ -548,18 +561,27 @@ class Plan(Tool):
                 suffix=".tmp",
                 delete=False,
             ) as handle:
+
                 temp_path = Path(handle.name)
+
                 handle.write(content)
                 handle.flush()
                 os.fsync(handle.fileno())
 
-            os.replace(temp_path, self.PLAN_PATH)
+            os.replace(
+                temp_path,
+                self.PLAN_PATH,
+            )
+
             return None
 
         except OSError as exc:
+
             if temp_path is not None:
                 try:
-                    temp_path.unlink(missing_ok=True)
+                    temp_path.unlink(
+                        missing_ok=True,
+                    )
                 except OSError:
                     pass
 
@@ -572,26 +594,21 @@ class Plan(Tool):
         self,
         text: str,
     ) -> tuple[str, list[PlanStep]]:
-        lines = (
-            text.replace("\r\n", "\n")
-            .replace("\r", "\n")
-            .split("\n")
-        )
+
+        lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
 
         if not lines or lines[0].strip() != "# Plan":
             raise ValueError("Plan must start with '# Plan'.")
 
         try:
             goal_index = next(
-                i
-                for i, line in enumerate(lines)
-                if line.strip() == "## Goal"
+                i for i, line in enumerate(lines) if line.strip() == "## Goal"
             )
+
             steps_index = next(
-                i
-                for i, line in enumerate(lines)
-                if line.strip() == "## Steps"
+                i for i, line in enumerate(lines) if line.strip() == "## Steps"
             )
+
         except StopIteration as exc:
             raise ValueError(
                 "Plan must contain '## Goal' and '## Steps' sections."
@@ -601,14 +618,15 @@ class Plan(Tool):
             raise ValueError("Plan sections are out of order.")
 
         goal_lines = [
-            line.strip()
-            for line in lines[goal_index + 1 : steps_index]
-            if line.strip()
+            line.strip() for line in lines[goal_index + 1 : steps_index] if line.strip()
         ]
 
         goal = " ".join(goal_lines).strip()
 
-        if not self._valid_text(goal, self.MAX_GOAL_CHARS):
+        if not self._valid_text(
+            goal,
+            self.MAX_GOAL_CHARS,
+        ):
             raise ValueError("Plan goal is missing or invalid.")
 
         plan_steps: list[PlanStep] = []
@@ -618,6 +636,7 @@ class Plan(Tool):
                 continue
 
             match = self._STEP_RE.match(line)
+
             if match is None:
                 raise ValueError("Plan contains an invalid step line.")
 
@@ -625,18 +644,16 @@ class Plan(Tool):
             status = match.group(2)
             description = match.group(3).strip()
 
-            if number != len(plan_steps) + 1:
-                raise ValueError(
-                    "Plan step numbers must be contiguous starting at 1."
-                )
+            expected_number = len(plan_steps) + 1
+
+            if number != expected_number:
+                raise ValueError("Plan step numbers must be contiguous starting at 1.")
 
             if not self._valid_text(
                 description,
                 self.MAX_STEP_CHARS,
             ):
-                raise ValueError(
-                    f"Plan step {number} is missing or too long."
-                )
+                raise ValueError(f"Plan step {number} is missing or too long.")
 
             plan_steps.append(
                 PlanStep(
@@ -650,9 +667,7 @@ class Plan(Tool):
             raise ValueError("Plan must contain at least one step.")
 
         if len(plan_steps) > self.MAX_STEPS:
-            raise ValueError(
-                f"Plan cannot contain more than {self.MAX_STEPS} steps."
-            )
+            raise ValueError(f"Plan cannot contain more than {self.MAX_STEPS} steps.")
 
         return goal, plan_steps
 
@@ -661,6 +676,7 @@ class Plan(Tool):
         goal: str,
         steps: list[PlanStep],
     ) -> str:
+
         lines = [
             "# Plan",
             "",
@@ -672,7 +688,7 @@ class Plan(Tool):
         ]
 
         lines.extend(
-            f"{item.number}. [{item.status}] {item.description}"
+            f"{item.number}. " f"[{item.status}] " f"{item.description}"
             for item in steps
         )
 
@@ -682,7 +698,8 @@ class Plan(Tool):
     def _renumber(
         steps: list[PlanStep],
     ) -> None:
-        for index, item in enumerate(steps, 1):
+
+        for index, item in enumerate(steps, start=1):
             item.number = index
 
     @staticmethod
@@ -690,13 +707,18 @@ class Plan(Tool):
         value: Any,
         limit: int,
     ) -> bool:
+
         return (
             isinstance(value, str)
             and bool(value.strip())
             and len(value.strip()) <= limit
         )
 
-    def _valid_steps(self, steps: Any) -> bool:
+    def _valid_steps(
+        self,
+        steps: Any,
+    ) -> bool:
+
         if not isinstance(steps, list):
             return False
 
@@ -704,7 +726,10 @@ class Plan(Tool):
             return False
 
         return all(
-            self._valid_text(item, self.MAX_STEP_CHARS)
+            self._valid_text(
+                item,
+                self.MAX_STEP_CHARS,
+            )
             for item in steps
         )
 
@@ -714,6 +739,7 @@ class Plan(Tool):
         *,
         action: str,
     ) -> ToolResult:
+
         return ToolResult(
             success=True,
             name=self.name,
@@ -736,6 +762,7 @@ class Plan(Tool):
         error_type: str,
         message: str,
     ) -> ToolResult:
+
         return ToolResult(
             success=False,
             name=self.name,
