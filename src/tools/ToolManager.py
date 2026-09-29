@@ -29,6 +29,32 @@ class ToolManager:
     def set_workspace(self, directory: str) -> None:
         self.security.set_workspace(directory)
 
+    def approve_background_command(
+        self,
+        command: list[str],
+        workdir: str | None = None,
+    ) -> None:
+        """Grant an exact background command for the current session."""
+        self.security.approve_background_command(
+            command=command,
+            workdir=workdir,
+        )
+
+    def revoke_background_command(
+        self,
+        command: list[str],
+        workdir: str | None = None,
+    ) -> None:
+        """Revoke an exact background command approval."""
+        self.security.revoke_background_command(
+            command=command,
+            workdir=workdir,
+        )
+
+    def clear_background_approvals(self) -> None:
+        """Clear all session-scoped background command approvals."""
+        self.security.clear_background_approvals()
+
     def get_tools(self) -> list[dict]:
         if self._definitions is None:
             self.toolregistry.discover()
