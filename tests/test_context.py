@@ -158,3 +158,38 @@ def test_token_budget_uses_configured_num_ctx():
 
     assert builder.tokenbudget.context_length == 4096
     assert builder.tokenbudget.budget == 4096
+
+
+def test_untrusted_orphan_tool_result_is_removed():
+    llm = FakeLLM()
+    builder = ContextBuilder(base_config(), llm)
+
+    task = event(ContextRole.USER, ContextType.MESSAGE, "continue", 1)
+    orphan = event(
+        ContextRole.TOOL,
+        ContextType.TOOL_RESULT,
+        '{"name":"read_file","tool_call_id":"orphan","success":true,"content":{"path":"x"}}',
+        2,
+    )
+
+    messages = builder.build_context(
+        events=[task, orphan],
+        task={"id": str(task.id), "content": task.content},
+    )
+
+    assert not any(m.get("role") == "tool" for m in messages)
+
+
+def test_experience_is_disabled_for_baseline():
+    llm = FakeLLM()
+    builder = ContextBuilder(base_config(), llm)
+
+    task = event(ContextRole.USER, ContextType.MESSAGE, "continue", 1)
+
+    messages = builder.build_context(
+        events=[task],
+        task={"id": str(task.id), "content": task.content},
+    )
+
+    system = messages[0]["content"]
+    assert "<experience>" not in system

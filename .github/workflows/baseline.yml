@@ -23,4 +23,4 @@ jobs:
       - name: Compile
         run: python -m compileall -q src harness tests
       - name: Tests
-        run: python -m pytest -q tests
+        run: python -m pytest -q

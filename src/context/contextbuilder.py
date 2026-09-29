@@ -167,7 +167,7 @@ class ContextBuilder:
 
         self._shrink_old_tool_results(messages)
         self._drop_old_thinking(messages)
-        return messages
+        return self._sanitize_tool_protocol(messages)
 
     def _assistant_message(
         self,
@@ -229,6 +229,61 @@ class ContextBuilder:
         if len(text) > self.MAX_TOOL_CHARS:
             text = text[: self.MAX_TOOL_CHARS] + "\n...[truncated]"
         return text
+
+    def _sanitize_tool_protocol(
+        self,
+        messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Keep only complete assistant-tool-result message groups.
+
+        Provider APIs generally require every assistant tool call to be
+        followed by matching tool results. Retrieval/truncation can otherwise
+        produce orphan tool messages or incomplete tool-call groups.
+        """
+        sanitized: list[dict[str, Any]] = []
+        index = 0
+
+        while index < len(messages):
+            message = messages[index]
+            role = message.get("role")
+
+            if role == "tool":
+                index += 1
+                continue
+
+            tool_calls = message.get("tool_calls")
+            if role != "assistant" or not isinstance(tool_calls, list) or not tool_calls:
+                sanitized.append(message)
+                index += 1
+                continue
+
+            expected = {
+                str(call.get("id"))
+                for call in tool_calls
+                if isinstance(call, dict) and call.get("id")
+            }
+
+            if not expected:
+                index += 1
+                continue
+
+            matched: set[str] = set()
+            end = index + 1
+            group: list[dict[str, Any]] = [message]
+
+            while end < len(messages) and messages[end].get("role") == "tool":
+                tool_id = messages[end].get("tool_call_id")
+                if tool_id:
+                    matched.add(str(tool_id))
+                    group.append(messages[end])
+                end += 1
+
+            if expected.issubset(matched):
+                sanitized.extend(group)
+
+            index = end
+
+        return sanitized
 
     def _shrink_old_tool_results(self, messages: list[dict[str, Any]]) -> None:
         tool_positions = [
@@ -297,7 +352,8 @@ class ContextBuilder:
                 break
             start = index
 
-        return system + rest[start:]
+        fitted = system + rest[start:]
+        return self._sanitize_tool_protocol(fitted)
 
     def _serialize_for_compaction(
         self,
