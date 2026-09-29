@@ -58,11 +58,22 @@ class CommandExec(Tool):
     BACKGROUND_STARTUP_GRACE_MS = 150
 
     description = (
-        "Execute a local command synchronously or in the background. "
-        "The command must be provided as an array of arguments rather than "
-        "a shell command string. Returns structured exit status, bounded "
-        "stdout/stderr, duration, and timeout information. Use background=true "
-        "for long-running processes."
+        "Run a local command given as an argv array (not a shell string). "
+        "Returns exit status, bounded stdout/stderr, duration, and timeout info.\n"
+        "\n"
+        "Foreground (default): use for commands that finish on their own, such as "
+        "installs, builds, tests, scripts, and file or git operations. Set "
+        "timeout_ms for slow ones (max 600000). Never repeat a command that timed "
+        "out unchanged; change something first, for example a larger timeout.\n"
+        "\n"
+        "Background (background=true): use for anything that keeps running until "
+        "stopped, such as servers, watchers, and dev tools. A long-running command "
+        "in the foreground blocks until timeout and is killed, so the tool may "
+        "reject it. Background returns pid and log_file. Read the log to check "
+        "startup, then verify with a short foreground command (for example curl "
+        "with a timeout). Stop it when you are done.\n"
+        "\n"
+        "Always set workdir explicitly."
     )
 
     parameters = {

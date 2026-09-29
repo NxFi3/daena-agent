@@ -24,15 +24,48 @@ class Plan(Tool):
 
     The plan file is the source of truth.
     ContextBuilder reads it on the next model call.
+
+    The generated plan.md also contains explicit execution instructions
+    reminding the agent to keep the plan synchronized with real work.
     """
 
     name = "plan"
     action = "modify"
 
     description = (
-        "Create, update, or delete the current execution plan. "
-        "Use create for a new plan, update to change the goal or steps, "
-        "and delete to remove the plan."
+        "Your execution checklist for multi-step tasks. The current plan is shown "
+        "in your context under <plan>. It is only accurate if you keep it updated. "
+        "A plan whose statuses do not match the real work is a bug.\n"
+        "\n"
+        "WHEN TO UPDATE (this is part of the work, not optional):\n"
+        "- Before starting a step: set it to in_progress. Keep only one step in_progress.\n"
+        "- Right after a step's work succeeds (confirmed by a tool result): set it to "
+        "completed. Do this before starting the next step. Do not batch these up for later.\n"
+        "- If a step fails and you cannot fix it: set it to blocked, then add a step "
+        "for the fix.\n"
+        "- If you discover new required work: add_step before doing it.\n"
+        "- Before your final answer: every step must be completed or blocked.\n"
+        "- Never mark a step completed unless the work actually succeeded.\n"
+        "- Do not repeat an update that would leave the plan unchanged.\n"
+        "- Do not create duplicate steps with the same description.\n"
+        "\n"
+        "OPERATIONS (each update call changes exactly ONE thing):\n"
+        '- create (only when no plan exists): {"operation":"create","goal":"...","steps":["...","..."]}\n'
+        '- start a step: {"operation":"update","step":2,"status":"in_progress"}\n'
+        '- finish a step: {"operation":"update","step":2,"status":"completed"}\n'
+        '- block a step: {"operation":"update","step":2,"status":"blocked"}\n'
+        '- reword a step: {"operation":"update","step":2,"description":"..."}\n'
+        '- append a step: {"operation":"update","add_step":"..."}\n'
+        '- remove a step: {"operation":"update","remove_step":5}\n'
+        '- change the goal: {"operation":"update","goal":"..."}\n'
+        '- delete the plan: {"operation":"delete"}\n'
+        "\n"
+        "Do not combine goal, step, add_step and remove_step in one call. "
+        "Use 1-based step numbers. Statuses: pending, in_progress, completed, blocked.\n"
+        "\n"
+        "WRITING GOOD STEPS: 5-12 concrete steps, ordered the way you will actually "
+        "execute them, each with a clear finish condition. Include verification steps "
+        "(build, tests, running the app), not only implementation."
     )
 
     parameters = {
@@ -61,7 +94,7 @@ class Plan(Tool):
             "step": {
                 "type": "integer",
                 "minimum": 1,
-                "description": ("1-based step number to update or remove."),
+                "description": "1-based step number to update.",
             },
             "status": {
                 "type": "string",
@@ -75,16 +108,16 @@ class Plan(Tool):
             },
             "description": {
                 "type": "string",
-                "description": ("New description for the selected step."),
+                "description": "New description for the selected step.",
             },
             "add_step": {
                 "type": "string",
-                "description": ("Add a new step to the end of the plan."),
+                "description": "Add a new step to the end of the plan.",
             },
             "remove_step": {
                 "type": "integer",
                 "minimum": 1,
-                "description": ("Remove the given 1-based step number."),
+                "description": "Remove the given 1-based step number.",
             },
         },
         "required": ["operation"],
@@ -109,6 +142,25 @@ class Plan(Tool):
         r"^\s*(\d+)\.\s+" r"\[(pending|in_progress|completed|blocked)\]\s+" r"(.+?)\s*$"
     )
 
+    _PLAN_INSTRUCTIONS = [
+        "This is the active execution plan.",
+        "The agent MUST keep this plan synchronized with actual work.",
+        "",
+        "Plan update rules:",
+        "- Before starting a step, mark it as [in_progress].",
+        "- After a step's work succeeds, mark it as [completed] before starting the next step.",
+        "- If a step cannot be completed, mark it as [blocked] and add a step describing the required fix.",
+        "- If new required work is discovered, add a new step before performing that work.",
+        "- Keep only one step [in_progress] at a time.",
+        "- Never mark a step [completed] unless the corresponding work actually succeeded.",
+        "- Do not repeat an update that would leave the plan unchanged.",
+        "- Do not create duplicate steps with the same description.",
+        "- Before finishing the task, all steps must be [completed] or [blocked].",
+        "",
+        "The plan is persistent and represents the current state of the task.",
+        "Do not ignore or silently bypass it.",
+    ]
+
     def validate(self, arguments: dict[str, Any]) -> bool:
         if not isinstance(arguments, dict):
             return False
@@ -118,12 +170,15 @@ class Plan(Tool):
         if operation not in {"create", "update", "delete"}:
             return False
 
-        # -------------------------
-        # CREATE
-        # -------------------------
         if operation == "create":
             return (
-                set(arguments).issubset({"operation", "goal", "steps"})
+                set(arguments).issubset(
+                    {
+                        "operation",
+                        "goal",
+                        "steps",
+                    }
+                )
                 and self._valid_text(
                     arguments.get("goal"),
                     self.MAX_GOAL_CHARS,
@@ -147,17 +202,13 @@ class Plan(Tool):
         if not set(arguments).issubset(allowed):
             return False
 
-        # Exactly one update mode:
-        #
-        # 1. goal
-        # 2. step + status/description
-        # 3. add_step
-        # 4. remove_step
         has_goal = arguments.get("goal") is not None
+
         has_step_edit = arguments.get("step") is not None and (
             arguments.get("status") is not None
             or arguments.get("description") is not None
         )
+
         has_add = arguments.get("add_step") is not None
         has_remove = arguments.get("remove_step") is not None
 
@@ -173,14 +224,15 @@ class Plan(Tool):
         if modes != 1:
             return False
 
-        # Goal update
         if has_goal:
             return self._valid_text(
                 arguments.get("goal"),
                 self.MAX_GOAL_CHARS,
-            ) and set(arguments).issubset({"operation", "goal"})
+            ) and set(arguments) == {
+                "operation",
+                "goal",
+            }
 
-        # Step update
         if has_step_edit:
             step = arguments.get("step")
 
@@ -208,19 +260,24 @@ class Plan(Tool):
                 }
             )
 
-        # Add step
         if has_add:
-            return set(arguments) == {"operation", "add_step"} and self._valid_text(
+            return set(arguments) == {
+                "operation",
+                "add_step",
+            } and self._valid_text(
                 arguments.get("add_step"),
                 self.MAX_STEP_CHARS,
             )
 
-        # Remove step
         if has_remove:
             step = arguments.get("remove_step")
 
             return (
-                set(arguments) == {"operation", "remove_step"}
+                set(arguments)
+                == {
+                    "operation",
+                    "remove_step",
+                }
                 and type(step) is int
                 and step >= 1
             )
@@ -294,6 +351,14 @@ class Plan(Tool):
                 f"steps must contain 1-{self.MAX_STEPS} non-empty strings.",
             )
 
+        normalized_steps = self._normalize_steps(steps or [])
+
+        if self._has_duplicate_values(normalized_steps):
+            return self._error(
+                "duplicate_step",
+                "Plan cannot contain duplicate step descriptions.",
+            )
+
         try:
             existing = self._read_raw()
         except OSError as exc:
@@ -314,7 +379,10 @@ class Plan(Tool):
                 status="pending",
                 description=str(value).strip(),
             )
-            for index, value in enumerate(steps or [], start=1)
+            for index, value in enumerate(
+                steps or [],
+                start=1,
+            )
         ]
 
         content = self._render(
@@ -366,6 +434,7 @@ class Plan(Tool):
             )
 
         if goal is not None:
+
             if not self._valid_text(
                 goal,
                 self.MAX_GOAL_CHARS,
@@ -377,10 +446,14 @@ class Plan(Tool):
 
             new_goal = goal.strip()
 
-            if new_goal == current_goal:
+            if self._same_text(
+                new_goal,
+                current_goal,
+            ):
                 return self._success(
-                    "Plan unchanged.",
+                    "Plan unchanged: goal already has this value.",
                     action="update",
+                    duplicate=True,
                 )
 
             current_goal = new_goal
@@ -388,6 +461,7 @@ class Plan(Tool):
             summary = "Plan updated: goal changed."
 
         elif step is not None:
+
             if not 1 <= step <= len(current_steps):
                 return self._error(
                     "invalid_step",
@@ -396,9 +470,9 @@ class Plan(Tool):
 
             target = current_steps[step - 1]
 
-            changed: list[str] = []
-
+            # Description update
             if description is not None:
+
                 if not self._valid_text(
                     description,
                     self.MAX_STEP_CHARS,
@@ -410,30 +484,105 @@ class Plan(Tool):
 
                 new_description = description.strip()
 
-                if new_description != target.description:
-                    target.description = new_description
-                    changed.append("description")
+                if self._same_text(
+                    new_description,
+                    target.description,
+                ):
+                    return self._success(
+                        f"Plan unchanged: step {step} already has this description.",
+                        action="update",
+                        duplicate=True,
+                    )
 
-            if status is not None:
+                # Prevent duplicate descriptions.
+                if self._description_exists(
+                    current_steps,
+                    new_description,
+                    exclude_index=step - 1,
+                ):
+                    return self._error(
+                        "duplicate_step",
+                        f"Another step already has the description: '{new_description}'.",
+                    )
+
+                target.description = new_description
+
+                summary = f"Plan updated: step {step} description."
+
+            # Status update
+            elif status is not None:
+
                 if status not in self._STATUSES:
                     return self._error(
                         "invalid_status",
                         "Invalid step status.",
                     )
 
-                if status != target.status:
-                    target.status = status
-                    changed.append("status")
+                # Exact duplicate update.
+                if status == target.status:
+                    return self._success(
+                        (f"Plan unchanged: step {step} " f"is already {status}."),
+                        action="update",
+                        duplicate=True,
+                    )
 
-            if not changed:
-                return self._success(
-                    "Plan unchanged.",
-                    action="update",
+                # Prevent multiple active steps.
+                if status == "in_progress":
+
+                    active_step = self._find_in_progress(current_steps)
+
+                    if active_step is not None and active_step.number != step:
+                        return self._error(
+                            "active_step_exists",
+                            (
+                                f"Step {active_step.number} is already "
+                                "in_progress. Complete or block it before "
+                                f"starting step {step}."
+                            ),
+                        )
+
+                # Prevent reopening finalized steps accidentally.
+                if (
+                    target.status
+                    in {
+                        "completed",
+                        "blocked",
+                    }
+                    and status == "in_progress"
+                ):
+                    return self._error(
+                        "invalid_transition",
+                        (
+                            f"Step {step} is already {target.status} "
+                            "and cannot be started again."
+                        ),
+                    )
+
+                # Only allow sensible lifecycle transitions.
+                if not self._valid_status_transition(
+                    current=target.status,
+                    new=status,
+                ):
+                    return self._error(
+                        "invalid_transition",
+                        (
+                            f"Cannot change step {step} "
+                            f"from {target.status} to {status}."
+                        ),
+                    )
+
+                target.status = status
+
+                summary = f"Plan updated: step {step} status."
+
+            else:
+                return self._error(
+                    "invalid_argument",
+                    "Step update requires status or description.",
                 )
 
-            summary = f"Plan updated: step {step} " + " and ".join(changed) + "."
-
         elif add_step is not None:
+
             if not self._valid_text(
                 add_step,
                 self.MAX_STEP_CHARS,
@@ -449,19 +598,31 @@ class Plan(Tool):
                     f"Plan cannot contain more than {self.MAX_STEPS} steps.",
                 )
 
+            normalized_description = add_step.strip()
+
+            if self._description_exists(
+                current_steps,
+                normalized_description,
+            ):
+                return self._error(
+                    "duplicate_step",
+                    ("A step with the same description " "already exists."),
+                )
+
             new_number = len(current_steps) + 1
 
             current_steps.append(
                 PlanStep(
                     number=new_number,
                     status="pending",
-                    description=add_step.strip(),
+                    description=normalized_description,
                 )
             )
 
             summary = f"Plan updated: added step {new_number}."
 
         elif remove_step is not None:
+
             if not 1 <= remove_step <= len(current_steps):
                 return self._error(
                     "invalid_step",
@@ -471,13 +632,16 @@ class Plan(Tool):
             if len(current_steps) == 1:
                 return self._error(
                     "invalid_plan",
-                    "The last step cannot be removed. Delete the plan instead.",
+                    ("The last step cannot be removed. " "Delete the plan instead."),
                 )
 
-            current_steps.pop(remove_step - 1)
+            removed = current_steps.pop(remove_step - 1)
+
             self._renumber(current_steps)
 
-            summary = f"Plan updated: removed step {remove_step}."
+            summary = (
+                f"Plan updated: removed step {remove_step} " f"({removed.description})."
+            )
 
         else:
             return self._error(
@@ -565,6 +729,7 @@ class Plan(Tool):
                 temp_path = Path(handle.name)
 
                 handle.write(content)
+
                 handle.flush()
                 os.fsync(handle.fileno())
 
@@ -579,9 +744,7 @@ class Plan(Tool):
 
             if temp_path is not None:
                 try:
-                    temp_path.unlink(
-                        missing_ok=True,
-                    )
+                    temp_path.unlink(missing_ok=True)
                 except OSError:
                     pass
 
@@ -600,19 +763,29 @@ class Plan(Tool):
         if not lines or lines[0].strip() != "# Plan":
             raise ValueError("Plan must start with '# Plan'.")
 
-        try:
-            goal_index = next(
-                i for i, line in enumerate(lines) if line.strip() == "## Goal"
-            )
+        section_indices: dict[str, int] = {}
 
-            steps_index = next(
-                i for i, line in enumerate(lines) if line.strip() == "## Steps"
-            )
+        for index, line in enumerate(lines):
 
-        except StopIteration as exc:
-            raise ValueError(
-                "Plan must contain '## Goal' and '## Steps' sections."
-            ) from exc
+            stripped = line.strip()
+
+            if stripped.startswith("## "):
+
+                section_name = stripped[3:].strip()
+
+                if section_name in section_indices:
+                    raise ValueError(f"Duplicate plan section: '{section_name}'.")
+
+                section_indices[section_name] = index
+
+        if "Goal" not in section_indices:
+            raise ValueError("Plan must contain a '## Goal' section.")
+
+        if "Steps" not in section_indices:
+            raise ValueError("Plan must contain a '## Steps' section.")
+
+        goal_index = section_indices["Goal"]
+        steps_index = section_indices["Steps"]
 
         if goal_index >= steps_index:
             raise ValueError("Plan sections are out of order.")
@@ -629,9 +802,16 @@ class Plan(Tool):
         ):
             raise ValueError("Plan goal is missing or invalid.")
 
+        next_sections = [
+            index for name, index in section_indices.items() if index > steps_index
+        ]
+
+        steps_end = min(next_sections) if next_sections else len(lines)
+
         plan_steps: list[PlanStep] = []
 
-        for line in lines[steps_index + 1 :]:
+        for line in lines[steps_index + 1 : steps_end]:
+
             if not line.strip():
                 continue
 
@@ -641,19 +821,23 @@ class Plan(Tool):
                 raise ValueError("Plan contains an invalid step line.")
 
             number = int(match.group(1))
+
             status = match.group(2)
+
             description = match.group(3).strip()
 
             expected_number = len(plan_steps) + 1
 
             if number != expected_number:
-                raise ValueError("Plan step numbers must be contiguous starting at 1.")
+                raise ValueError(
+                    ("Plan step numbers must be " "contiguous starting at 1.")
+                )
 
             if not self._valid_text(
                 description,
                 self.MAX_STEP_CHARS,
             ):
-                raise ValueError(f"Plan step {number} is missing or too long.")
+                raise ValueError((f"Plan step {number} " "is missing or too long."))
 
             plan_steps.append(
                 PlanStep(
@@ -667,12 +851,23 @@ class Plan(Tool):
             raise ValueError("Plan must contain at least one step.")
 
         if len(plan_steps) > self.MAX_STEPS:
-            raise ValueError(f"Plan cannot contain more than {self.MAX_STEPS} steps.")
+            raise ValueError(
+                (f"Plan cannot contain more than " f"{self.MAX_STEPS} steps.")
+            )
+
+        if self._has_duplicate_values([item.description for item in plan_steps]):
+            raise ValueError("Plan contains duplicate step descriptions.")
+
+        active_steps = [item for item in plan_steps if item.status == "in_progress"]
+
+        if len(active_steps) > 1:
+            raise ValueError("Plan cannot contain more than one in_progress step.")
 
         return goal, plan_steps
 
-    @staticmethod
+    @classmethod
     def _render(
+        cls,
         goal: str,
         steps: list[PlanStep],
     ) -> str:
@@ -680,15 +875,25 @@ class Plan(Tool):
         lines = [
             "# Plan",
             "",
-            "## Goal",
-            goal,
-            "",
-            "## Steps",
+            "## Instructions",
             "",
         ]
 
+        lines.extend(cls._PLAN_INSTRUCTIONS)
+
         lines.extend(
-            f"{item.number}. " f"[{item.status}] " f"{item.description}"
+            [
+                "",
+                "## Goal",
+                goal,
+                "",
+                "## Steps",
+                "",
+            ]
+        )
+
+        lines.extend(
+            (f"{item.number}. " f"[{item.status}] " f"{item.description}")
             for item in steps
         )
 
@@ -699,8 +904,99 @@ class Plan(Tool):
         steps: list[PlanStep],
     ) -> None:
 
-        for index, item in enumerate(steps, start=1):
+        for index, item in enumerate(
+            steps,
+            start=1,
+        ):
             item.number = index
+
+    @staticmethod
+    def _normalize_text(
+        value: str,
+    ) -> str:
+
+        return " ".join(value.strip().split()).casefold()
+
+    @classmethod
+    def _same_text(
+        cls,
+        left: str,
+        right: str,
+    ) -> bool:
+
+        return cls._normalize_text(left) == cls._normalize_text(right)
+
+    @classmethod
+    def _description_exists(
+        cls,
+        steps: list[PlanStep],
+        description: str,
+        *,
+        exclude_index: int | None = None,
+    ) -> bool:
+
+        normalized = cls._normalize_text(description)
+
+        for index, item in enumerate(steps):
+
+            if exclude_index is not None and index == exclude_index:
+                continue
+
+            if cls._normalize_text(item.description) == normalized:
+                return True
+
+        return False
+
+    @classmethod
+    def _normalize_steps(
+        cls,
+        steps: list[str],
+    ) -> list[str]:
+
+        return [cls._normalize_text(item) for item in steps]
+
+    @staticmethod
+    def _has_duplicate_values(
+        values: list[str],
+    ) -> bool:
+
+        return len(values) != len(set(values))
+
+    @staticmethod
+    def _find_in_progress(
+        steps: list[PlanStep],
+    ) -> PlanStep | None:
+
+        for item in steps:
+            if item.status == "in_progress":
+                return item
+
+        return None
+
+    @staticmethod
+    def _valid_status_transition(
+        *,
+        current: str,
+        new: str,
+    ) -> bool:
+
+        allowed: dict[str, set[str]] = {
+            "pending": {
+                "in_progress",
+                "blocked",
+            },
+            "in_progress": {
+                "completed",
+                "blocked",
+            },
+            "completed": set(),
+            "blocked": set(),
+        }
+
+        return new in allowed.get(
+            current,
+            set(),
+        )
 
     @staticmethod
     def _valid_text(
@@ -719,7 +1015,10 @@ class Plan(Tool):
         steps: Any,
     ) -> bool:
 
-        if not isinstance(steps, list):
+        if not isinstance(
+            steps,
+            list,
+        ):
             return False
 
         if not 1 <= len(steps) <= self.MAX_STEPS:
@@ -738,6 +1037,7 @@ class Plan(Tool):
         summary: str,
         *,
         action: str,
+        duplicate: bool = False,
     ) -> ToolResult:
 
         return ToolResult(
@@ -746,6 +1046,7 @@ class Plan(Tool):
             content={
                 "success": True,
                 "summary": summary,
+                "duplicate": duplicate,
             },
             metadata={
                 "effects": [

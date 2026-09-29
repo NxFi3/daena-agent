@@ -14,6 +14,8 @@ def RemovePlan() -> None:
 
     try:
         plan_path.unlink(missing_ok=True)
+        with open(plan_path, "w") as f:
+            f.write("")
     except OSError:
         # Plan cleanup should never prevent Daena from starting.
         pass
