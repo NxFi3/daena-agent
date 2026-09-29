@@ -65,6 +65,9 @@ class ContextBuilder:
             min(target, self.tokenbudget.budget),
         )
 
+        experience_config = config.get("experience") or {}
+        self.experience_enabled = bool(experience_config.get("enabled", False))
+
     @staticmethod
     def _safe_json(value: Any) -> str:
         try:
@@ -255,8 +258,9 @@ class ContextBuilder:
         learned_experience: str | None,
     ) -> None:
         self.window.set_system(self.system_instruction)
+        experience = ExperienceReader() if self.experience_enabled else ""
         self.window.set_experience(
-            self._truncate(ExperienceReader(), self.MAX_EXPERIENCE_CHARS)
+            self._truncate(experience, self.MAX_EXPERIENCE_CHARS)
         )
         self.window.set_learned_experience(
             self._truncate(

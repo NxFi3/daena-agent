@@ -121,3 +121,21 @@ def test_policy_blocks_unknown_tools():
 
     assert decision.allowed is False
     assert decision.rule == "tool_allowlist"
+
+
+def test_inline_python_evaluation_is_blocked(tmp_path):
+    service = make_service(tmp_path)
+    call = ToolCall(
+        name="command_exec",
+        id="c7",
+        valid=True,
+        args={
+            "command": ["python", "-c", "print('outside')"],
+            "workdir": str(tmp_path),
+        },
+    )
+
+    checked = service.check(call)
+
+    assert checked.approved is False
+    assert checked.security_rule == "inline_eval_blocked"

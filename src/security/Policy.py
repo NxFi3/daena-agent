@@ -215,5 +215,13 @@ class SecurityPolicy:
                 "Inline Node evaluation is blocked.",
                 "inline_eval_blocked",
             )
+        if executable_name in {"python", "python3", "pypy", "pypy3"} and any(
+            flag in lowered for flag in {"-c", "--command"}
+        ):
+            return SecurityDecision(
+                False,
+                "Inline Python evaluation is blocked; execute a workspace file instead.",
+                "inline_eval_blocked",
+            )
 
         return SecurityDecision(True, "Command is allowed inside the workspace.", "workspace_command")
