@@ -16,6 +16,15 @@ DEFAULT_INSTRUCTION = (
 
 SYSTEM_INSTRUCTION_PATH = Path("AgentInstruction/systeminstruction.md")
 EXPERIENCE_PATH = Path("AgentInstruction/experience.md")
+PLANS_PATH = Path("AgentInstruction/plan.md")
+
+
+def PlanReader() -> str:
+    try:
+        text = PLANS_PATH.read_text(encoding="utf-8").strip()
+    except (FileNotFoundError, OSError):
+        return ""
+    return text
 
 
 def SystemInstructionReader() -> str:
@@ -51,9 +60,7 @@ class ContextBuilder:
         self.tokenbudget = TokenBudget(config, self.llm)
         self.compactor = Compactor(self.llm)
         context_config = config.get("context") or {}
-        self.compaction_enabled = bool(
-            context_config.get("compaction_enabled", True)
-        )
+        self.compaction_enabled = bool(context_config.get("compaction_enabled", True))
 
         target = int(
             context_config.get(
@@ -185,7 +192,13 @@ class ContextBuilder:
 
         if raw.get("tool_calls"):
             message["tool_calls"] = raw["tool_calls"]
-        for key in ("reasoning_details", "reasoning", "refusal", "annotations", "audio"):
+        for key in (
+            "reasoning_details",
+            "reasoning",
+            "refusal",
+            "annotations",
+            "audio",
+        ):
             if raw.get(key) is not None:
                 message[key] = raw[key]
 
@@ -199,7 +212,9 @@ class ContextBuilder:
 
     def _tool_payload(self, event_content: dict[str, Any]) -> str:
         inner = event_content.get("content")
-        payload = dict(inner) if isinstance(inner, dict) else {"message": str(inner or "")}
+        payload = (
+            dict(inner) if isinstance(inner, dict) else {"message": str(inner or "")}
+        )
         payload["success"] = bool(event_content.get("success", False))
 
         blocks: list[str] = []
@@ -214,11 +229,13 @@ class ContextBuilder:
             for item in files:
                 if not isinstance(item, dict):
                     continue
-                slim_files.append({
-                    key: value
-                    for key, value in item.items()
-                    if key not in ("content", "content_preview")
-                })
+                slim_files.append(
+                    {
+                        key: value
+                        for key, value in item.items()
+                        if key not in ("content", "content_preview")
+                    }
+                )
                 text = item.get("content")
                 if isinstance(text, str) and text.strip():
                     blocks.append(f"[file: {item.get('path', '')}]\n{text}")
@@ -253,7 +270,11 @@ class ContextBuilder:
                 continue
 
             tool_calls = message.get("tool_calls")
-            if role != "assistant" or not isinstance(tool_calls, list) or not tool_calls:
+            if (
+                role != "assistant"
+                or not isinstance(tool_calls, list)
+                or not tool_calls
+            ):
                 sanitized.append(message)
                 index += 1
                 continue
@@ -288,12 +309,13 @@ class ContextBuilder:
 
     def _shrink_old_tool_results(self, messages: list[dict[str, Any]]) -> None:
         tool_positions = [
-            index for index, message in enumerate(messages)
+            index
+            for index, message in enumerate(messages)
             if message.get("role") == "tool"
         ]
         if len(tool_positions) <= self.FULL_TOOL_RESULTS:
             return
-        for index in tool_positions[:-self.FULL_TOOL_RESULTS]:
+        for index in tool_positions[: -self.FULL_TOOL_RESULTS]:
             content = messages[index].get("content", "")
             if isinstance(content, str) and len(content) > self.OLD_TOOL_CHARS:
                 messages[index]["content"] = (
@@ -324,20 +346,15 @@ class ContextBuilder:
                 self.MAX_LEARNED_EXPERIENCE_CHARS,
             )
         )
+        self.window.set_plan(PlanReader())
         self.window.set_runtime(workspace)
-        self.window.set_conversation(
-            self._build_conversation(events, task)
-        )
+        self.window.set_conversation(self._build_conversation(events, task))
 
     def _fit_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        system = [
-            message for message in messages
-            if message.get("role") == "system"
-        ][:1]
-        rest = [
-            message for message in messages
-            if message.get("role") != "system"
+        system = [message for message in messages if message.get("role") == "system"][
+            :1
         ]
+        rest = [message for message in messages if message.get("role") != "system"]
 
         latest_user = self._last_index(rest, "user")
         if latest_user < 0:
@@ -370,9 +387,7 @@ class ContextBuilder:
                 f"{self._safe_json(message.get('content', ''))}"
             )
             if message.get("tool_calls"):
-                chunks.append(
-                    "Tool calls:\n" + self._safe_json(message["tool_calls"])
-                )
+                chunks.append("Tool calls:\n" + self._safe_json(message["tool_calls"]))
         return "\n\n".join(chunks)
 
     def _compaction_input(self, text: str) -> str:
@@ -400,18 +415,13 @@ class ContextBuilder:
             (message for message in messages if message.get("role") == "system"),
             None,
         )
-        rest = [
-            message for message in messages
-            if message.get("role") != "system"
-        ]
+        rest = [message for message in messages if message.get("role") != "system"]
         latest_user_index = self._last_index(rest, "user")
         if latest_user_index < 0:
             return None
 
-        history = rest[:latest_user_index] + rest[latest_user_index + 1:]
-        history_text = self._compaction_input(
-            self._serialize_for_compaction(history)
-        )
+        history = rest[:latest_user_index] + rest[latest_user_index + 1 :]
+        history_text = self._compaction_input(self._serialize_for_compaction(history))
         if not history_text.strip():
             return None
 
@@ -422,16 +432,18 @@ class ContextBuilder:
         if not summary.strip():
             return None
 
-        base_system = dict(system) if system else {
-            "role": "system",
-            "content": "",
-        }
+        base_system = (
+            dict(system)
+            if system
+            else {
+                "role": "system",
+                "content": "",
+            }
+        )
         summary_limit = int(
             max(
                 1024,
-                self.tokenbudget.budget
-                * self.tokenbudget.chars_per_token
-                * 0.75,
+                self.tokenbudget.budget * self.tokenbudget.chars_per_token * 0.75,
             )
         )
         summary = self._truncate(summary, summary_limit)
@@ -449,10 +461,14 @@ class ContextBuilder:
             ),
         }
 
-        base_system = dict(system) if system else {
-            "role": "system",
-            "content": "",
-        }
+        base_system = (
+            dict(system)
+            if system
+            else {
+                "role": "system",
+                "content": "",
+            }
+        )
 
         return [base_system, compacted_context, latest_user]
 

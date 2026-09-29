@@ -38,7 +38,7 @@ class ContextWindow:
         self.system_instruction: str = ""
         self.experience: str = ""
         self.learned_experience: str = ""
-
+        self.plan: str = ""
         self.runtime: dict[str, Any] = self._base_runtime()
 
         self.conversation: list[Message] = []
@@ -67,6 +67,20 @@ class ContextWindow:
         so changes apply on the next model call with no restart needed.
         """
         self.experience = str(text or "").strip()
+
+    def set_plan(
+        self,
+        text: str,
+    ) -> None:
+        """
+        Sets the current file-backed execution plan (plan.md).
+
+        ContextBuilder loads the plan and refreshes it on each turn,
+        so changes made by the planning tool are reflected in the
+        next model call without requiring a restart.
+        """
+
+        self.plan = str(text or "").strip()
 
     def set_learned_experience(
         self,
@@ -124,7 +138,8 @@ class ContextWindow:
 
         if self.system_instruction:
             sections.append(self.system_instruction)
-
+        if self.plan:
+            sections.append(self._section("plan", self.plan))
         if self.experience:
             sections.append(self._section("experience", self.experience))
 
