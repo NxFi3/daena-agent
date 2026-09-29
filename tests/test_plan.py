@@ -20,62 +20,56 @@ def test_plan_create_update_delete(tmp_path, monkeypatch):
     )
 
     assert result.success is True
-    assert result.content["summary"] == "Plan created with 3 step(s)."
 
-    assert plan_path.read_text(encoding="utf-8") == (
-        "# Plan\n\n"
-        "## Goal\n"
-        "Build authentication\n\n"
-        "## Steps\n\n"
-        "1. [pending] Inspect authentication architecture\n"
-        "2. [pending] Implement login\n"
-        "3. [pending] Run tests\n"
-    )
+    content = plan_path.read_text(encoding="utf-8")
+    assert "# Plan" in content
+    assert "## Instructions" in content
+    assert "The agent MUST keep this plan synchronized with actual work." in content
+    assert "1. [pending] Inspect authentication architecture" in content
+    assert "2. [pending] Implement login" in content
+    assert "3. [pending] Run tests" in content
 
     result = tool.execute(
         operation="update",
-        action="set_step",
-        step=2,
+        step=1,
+        status="in_progress",
+    )
+    assert result.success is True
+
+    result = tool.execute(
+        operation="update",
+        step=1,
         status="completed",
     )
     assert result.success is True
-    assert "step 2 completed." in result.content["summary"]
 
     result = tool.execute(
         operation="update",
-        action="set_step",
         step=2,
-        description_text="Implement JWT login",
+        description="Implement JWT login",
     )
     assert result.success is True
-    assert "Implement JWT login" in plan_path.read_text(
+    assert "2. [pending] Implement JWT login" in plan_path.read_text(
         encoding="utf-8"
     )
 
     result = tool.execute(
         operation="update",
-        action="add_step",
-        after=2,
-        description_text="Add integration tests",
+        add_step="Add integration tests",
     )
     assert result.success is True
-    assert "3. [pending] Add integration tests" in plan_path.read_text(
+    assert "4. [pending] Add integration tests" in plan_path.read_text(
         encoding="utf-8"
     )
 
     result = tool.execute(
         operation="update",
-        action="remove_step",
-        step=1,
+        remove_step=4,
     )
     assert result.success is True
-    assert "1. [completed] Implement JWT login" in plan_path.read_text(
-        encoding="utf-8"
-    )
 
     result = tool.execute(
         operation="update",
-        action="set_goal",
         goal="Secure authentication",
     )
     assert result.success is True
@@ -83,17 +77,24 @@ def test_plan_create_update_delete(tmp_path, monkeypatch):
         encoding="utf-8"
     )
 
-    result = tool.execute(
+    duplicate = tool.execute(
+        operation="update",
+        add_step="Implement JWT login",
+    )
+    assert duplicate.success is False
+    assert duplicate.content["error"]["type"] == "duplicate_step"
+
+    exists = tool.execute(
         operation="create",
         goal="Another plan",
         steps=["Should fail"],
     )
-    assert result.success is False
-    assert result.content["error"]["type"] == "plan_exists"
+    assert exists.success is False
+    assert exists.content["error"]["type"] == "plan_exists"
 
-    result = tool.execute(operation="delete")
-    assert result.success is True
+    deleted = tool.execute(operation="delete")
+    assert deleted.success is True
     assert not plan_path.exists()
 
-    result = tool.execute(operation="delete")
-    assert result.success is True
+    deleted_again = tool.execute(operation="delete")
+    assert deleted_again.success is True

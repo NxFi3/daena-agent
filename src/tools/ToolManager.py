@@ -64,6 +64,11 @@ class ToolManager:
     def _find_tool(self, name: str):
         return self.toolregistry.get(str(name).strip().lower())
 
+    def get_tool(self, name: str):
+        if not self.toolregistry.tools:
+            self.toolregistry.discover()
+        return self._find_tool(name)
+
     def _normalize_workspace_args(self, toolcall: ToolCall) -> ToolCall:
         """Turn workspace-relative tool arguments into absolute safe paths.
 

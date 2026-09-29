@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from src.agent.planstate import PlanState, PlanStepState
 from src.models.ToolResult import ToolResult
 from src.tools.Tool import Tool
 
@@ -292,6 +293,47 @@ class Plan(Tool):
             "action": "modify",
             "target": str(self.PLAN_PATH),
         }
+
+    def snapshot(
+        self,
+    ) -> PlanState:
+        """
+        Return the current plan as an immutable runtime snapshot.
+
+        PlanState does not persist independently; plan.md remains the only
+        source of truth.
+        """
+        try:
+            raw = self._read_raw()
+        except OSError as exc:
+            return PlanState(
+                exists=True,
+                error=f"Could not read the plan: {exc}",
+            )
+
+        if not raw.strip():
+            return PlanState.empty()
+
+        try:
+            goal, steps = self._parse(raw)
+        except ValueError as exc:
+            return PlanState(
+                exists=True,
+                error=str(exc),
+            )
+
+        return PlanState(
+            exists=True,
+            goal=goal,
+            steps=tuple(
+                PlanStepState(
+                    number=item.number,
+                    status=item.status,
+                    description=item.description,
+                )
+                for item in steps
+            ),
+        )
 
     def execute(
         self,

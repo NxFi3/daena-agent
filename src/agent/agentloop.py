@@ -8,6 +8,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from src.agent.agentstate import AgentState
+from src.agent.planstate import PlanState
 from src.context.contextservice import ContextService
 from src.context.workingset import WorkingSet
 from src.engine.LlmProviderManager import LlmProvider
@@ -75,6 +76,8 @@ class Loop:
         self.agent_state = AgentState()
 
         self.working_set = WorkingSet()
+
+        self._plan_step_work_started = False
 
         self.workspace_revision = 0
 
@@ -593,6 +596,193 @@ class Loop:
 
         return result
 
+    def _read_plan_state(
+        self,
+    ) -> PlanState:
+        try:
+            plan_tool = self.tool.get_tool("plan")
+            snapshot = getattr(plan_tool, "snapshot", None)
+
+            if callable(snapshot):
+                state = snapshot()
+
+                if isinstance(state, PlanState):
+                    return state
+
+        except Exception as exc:
+            self.logger.warning("Could not read plan state: " f"{exc}")
+
+        return PlanState.empty()
+
+    @staticmethod
+    def _is_plan_call(
+        call,
+    ) -> bool:
+        return str(getattr(call, "name", "")).strip().lower() == "plan"
+
+    @staticmethod
+    def _plan_transition(
+        call,
+    ) -> str | None:
+        if str(getattr(call, "name", "")).strip().lower() != "plan":
+            return None
+
+        arguments = getattr(call, "args", {}) or {}
+
+        if not isinstance(arguments, dict):
+            return None
+
+        if arguments.get("operation") == "create":
+            return "create"
+
+        if arguments.get("operation") != "update":
+            return None
+
+        status = arguments.get("status")
+
+        if status in {"in_progress", "completed", "blocked"}:
+            return str(status)
+
+        return None
+
+    @staticmethod
+    def _plan_gate_result(
+        call,
+        error_type: str,
+        message: str,
+    ) -> ToolResult:
+        name = str(getattr(call, "name", "unknown")).strip() or "unknown"
+
+        return ToolResult(
+            success=False,
+            name=name,
+            content={
+                "success": False,
+                "error": {
+                    "type": error_type,
+                    "message": message,
+                },
+            },
+            metadata={
+                "plan_gate": True,
+            },
+            summary=message,
+        )
+
+    def _plan_gate_message(
+        self,
+        call,
+        state: PlanState,
+    ) -> tuple[str, str] | None:
+        """
+        Return an execution-order violation for a non-plan call, or None.
+
+        Planning itself remains model-directed. Once a plan exists, however,
+        the runtime enforces the step lifecycle and prevents work from jumping
+        across plan boundaries.
+        """
+        if self._is_plan_call(call):
+            return None
+
+        if state.error:
+            return (
+                "plan_invalid",
+                "The current plan is invalid. Repair the plan before continuing.",
+            )
+
+        if not state.exists:
+            return None
+
+        if state.is_complete:
+            return (
+                "plan_complete",
+                "The current plan is already complete. Use the plan tool only if cleanup is required.",
+            )
+
+        if state.current_step is None:
+            return (
+                "step_start_required",
+                "A plan exists but no step is in_progress. Start the next pending step with the plan tool before doing other work.",
+            )
+
+        return None
+
+    def _validate_plan_transition(
+        self,
+        call,
+        state: PlanState,
+    ) -> tuple[str, str] | None:
+        transition = self._plan_transition(call)
+
+        if transition is None:
+            return None
+
+        arguments = getattr(call, "args", {}) or {}
+        if not isinstance(arguments, dict):
+            return (
+                "invalid_plan_update",
+                "Plan update arguments must be an object.",
+            )
+
+        if state.error and transition != "create":
+            return (
+                "plan_invalid",
+                "The current plan is invalid. Repair or replace it before continuing.",
+            )
+
+        if transition == "create":
+            if state.exists:
+                return (
+                    "plan_exists",
+                    "A plan already exists. Use update instead.",
+                )
+            return None
+
+        step_number = arguments.get("step")
+        if type(step_number) is not int or step_number < 1:
+            return (
+                "invalid_step",
+                "Plan status updates require a valid 1-based step number.",
+            )
+
+        current = state.current_step
+
+        if transition == "in_progress":
+            if current is not None:
+                return (
+                    "active_step_exists",
+                    f"Step {current.number} is already in_progress. Complete or block it before starting another step.",
+                )
+
+            expected = state.next_pending_step
+            if expected is not None and step_number != expected.number:
+                return (
+                    "wrong_step_order",
+                    f"Step {step_number} cannot start yet. Start step {expected.number} next.",
+                )
+
+            return None
+
+        if current is None:
+            return (
+                "no_active_step",
+                "There is no in_progress step to finalize.",
+            )
+
+        if step_number != current.number:
+            return (
+                "not_current_step",
+                f"Step {step_number} is not the current in_progress step. Current step is {current.number}.",
+            )
+
+        if transition == "completed" and not self._plan_step_work_started:
+            return (
+                "completion_requires_work",
+                "The current step cannot be marked completed yet. Perform and successfully verify work for this step first.",
+            )
+
+        return None
+
     def _classify_calls(
         self,
         parsed_calls: list,
@@ -602,13 +792,29 @@ class Loop:
     ]:
 
         allowed_indices: list[int] = []
-
-        blocked_results: dict[
-            int,
-            ToolResult,
-        ] = {}
+        blocked_results: dict[int, ToolResult] = {}
 
         current_response_keys: set[str] = set()
+
+        plan_state = self._read_plan_state()
+
+        valid_plan_calls = [
+            call
+            for call in parsed_calls
+            if getattr(call, "valid", False) and self._is_plan_call(call)
+        ]
+
+        plan_transition_present = any(
+            self._plan_transition(call) is not None
+            for call in valid_plan_calls
+        )
+
+        plan_create_present = any(
+            self._plan_transition(call) == "create"
+            for call in valid_plan_calls
+        )
+
+        plan_calls_allowed = 0
 
         for index, call in enumerate(parsed_calls):
 
@@ -617,15 +823,12 @@ class Loop:
                 "valid",
                 False,
             ):
-
                 blocked_results[index] = self._invalid_result(call)
-
                 continue
 
             key = self._tool_call_key(call)
 
             if key in current_response_keys:
-
                 blocked_results[index] = self._duplicate_result(
                     call,
                     (
@@ -635,7 +838,6 @@ class Loop:
                         "in this response."
                     ),
                 )
-
                 continue
 
             current_response_keys.add(key)
@@ -646,7 +848,6 @@ class Loop:
                 previous_revision is not None
                 and previous_revision == self.workspace_revision
             ):
-
                 blocked_results[index] = self._duplicate_result(
                     call,
                     (
@@ -657,7 +858,64 @@ class Loop:
                         "workspace revision."
                     ),
                 )
+                continue
 
+            if self._is_plan_call(call):
+
+                if plan_calls_allowed >= 1:
+                    blocked_results[index] = self._plan_gate_result(
+                        call,
+                        "duplicate_plan_call",
+                        "Only one plan update is allowed per model response. Continue from the updated plan on the next turn.",
+                    )
+                    continue
+
+                transition_error = self._validate_plan_transition(
+                    call,
+                    plan_state,
+                )
+
+                if transition_error is not None:
+                    error_type, message = transition_error
+                    blocked_results[index] = self._plan_gate_result(
+                        call,
+                        error_type,
+                        message,
+                    )
+                    continue
+
+                allowed_indices.append(index)
+                plan_calls_allowed += 1
+                continue
+
+            if plan_create_present:
+                blocked_results[index] = self._plan_gate_result(
+                    call,
+                    "plan_required_first",
+                    "A plan operation is present in this response. Execute the plan update first; continue other work on the next turn.",
+                )
+                continue
+
+            gate = self._plan_gate_message(
+                call,
+                plan_state,
+            )
+
+            if gate is not None:
+                error_type, message = gate
+                blocked_results[index] = self._plan_gate_result(
+                    call,
+                    error_type,
+                    message,
+                )
+                continue
+
+            if plan_transition_present:
+                blocked_results[index] = self._plan_gate_result(
+                    call,
+                    "plan_update_required_first",
+                    "Complete the plan state transition first. Continue other work on the next turn.",
+                )
                 continue
 
             allowed_indices.append(index)
@@ -735,6 +993,12 @@ class Loop:
         iteration: int,
     ) -> None:
 
+        plan_before = (
+            self._read_plan_state()
+            if self._is_plan_call(call)
+            else None
+        )
+
         self.logger.info(
             f"Tool result ← "
             f"{result.name} "
@@ -769,6 +1033,9 @@ class Loop:
         if isinstance(result.metadata, dict) and result.metadata.get("duplicate_action"):
             self.metrics["tool_blocks"] = self.metrics.get("tool_blocks", 0) + 1
 
+        if isinstance(result.metadata, dict) and result.metadata.get("plan_gate"):
+            self.metrics["plan_blocks"] = self.metrics.get("plan_blocks", 0) + 1
+
         if result.success:
 
             key = self._tool_call_key(call)
@@ -781,6 +1048,52 @@ class Loop:
                 result,
             )
         )
+
+        self._sync_plan_runtime_state(
+            call=call,
+            result=result,
+            plan_before=plan_before,
+        )
+
+    def _sync_plan_runtime_state(
+        self,
+        call,
+        result: ToolResult,
+        plan_before: PlanState | None = None,
+    ) -> None:
+        if not isinstance(result, ToolResult) or not result.success:
+            return
+
+        if isinstance(result.metadata, dict) and result.metadata.get("plan_gate"):
+            return
+
+        if self._is_plan_call(call):
+            plan_after = self._read_plan_state()
+
+            before_current = (
+                plan_before.current_step
+                if isinstance(plan_before, PlanState)
+                else None
+            )
+            after_current = plan_after.current_step
+
+            if after_current is None:
+                self._plan_step_work_started = False
+                return
+
+            if (
+                before_current is None
+                or before_current.number != after_current.number
+                or before_current.status != after_current.status
+            ):
+                self._plan_step_work_started = False
+
+            return
+
+        state = self._read_plan_state()
+
+        if state.current_step is not None:
+            self._plan_step_work_started = True
 
     def _check_failure_stuck(
         self,
@@ -1278,6 +1591,8 @@ class Loop:
 
         self._successful_tool_calls.clear()
 
+        self._plan_step_work_started = False
+
         self._last_duplicate_key = None
 
         self._duplicate_block_streak = 0
@@ -1295,6 +1610,7 @@ class Loop:
             "tool_successes": 0,
             "tool_failures": 0,
             "tool_blocks": 0,
+            "plan_blocks": 0,
             "completed": False,
             "stop_reason": "",
             "duration_ms": 0.0,
