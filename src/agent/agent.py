@@ -55,6 +55,32 @@ class Agent:
             workspace_directory=self.workingdirectory,
         )
 
+    def approve_background_command(
+        self,
+        command: list[str],
+        workdir: str | None = None,
+    ) -> None:
+        """Approve one exact background command for this Agent session."""
+        self.loop.tool.approve_background_command(
+            command=command,
+            workdir=workdir,
+        )
+
+    def revoke_background_command(
+        self,
+        command: list[str],
+        workdir: str | None = None,
+    ) -> None:
+        """Revoke one exact background command approval."""
+        self.loop.tool.revoke_background_command(
+            command=command,
+            workdir=workdir,
+        )
+
+    def clear_background_approvals(self) -> None:
+        """Clear all background command approvals for this session."""
+        self.loop.tool.clear_background_approvals()
+
     def set_workingdirectory(
         self,
         directory: str,
