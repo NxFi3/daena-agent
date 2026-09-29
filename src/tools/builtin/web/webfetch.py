@@ -220,6 +220,10 @@ class WebFetch(Tool):
         total = len(text)
 
         if total == 0:
+            empty_note = note or (
+                "No readable text found. The page may need JavaScript "
+                "or be empty."
+            )
             return self._success(
                 url=response.url,
                 requested_url=url,
@@ -232,10 +236,7 @@ class WebFetch(Tool):
                 method=method,
                 links=shown_links,
                 with_links=with_links,
-                note=(
-                    "No readable text found. The page may need JavaScript "
-                    "or be empty."
-                ),
+                note=empty_note,
             )
 
         if start_char >= total:
