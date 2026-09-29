@@ -184,13 +184,6 @@ class SecurityPolicy:
                 "command_allowlist",
             )
 
-        if bool(args.get("background", False)) and not self.allow_background:
-            return SecurityDecision(
-                False,
-                "Background processes are disabled by the security policy.",
-                "background_disabled",
-            )
-
         workdir = args.get("workdir")
         if workdir is not None and not isinstance(workdir, str):
             return SecurityDecision(False, "workdir must be a string.", "workdir_type")
@@ -223,6 +216,13 @@ class SecurityPolicy:
                 False,
                 "Inline Python evaluation is blocked; execute a workspace file instead.",
                 "inline_eval_blocked",
+            )
+
+        if bool(args.get("background", False)) and not self.allow_background:
+            return SecurityDecision(
+                False,
+                "Background processes require explicit approval.",
+                "background_disabled",
             )
 
         return SecurityDecision(True, "Command is allowed inside the workspace.", "workspace_command")
