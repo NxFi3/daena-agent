@@ -20,12 +20,27 @@ class TokenBudget:
 
         self.llm_provider = llm_provider
 
-        context_length = self.llm_provider.model.defaultConfig.get(
-            "num_ctx",
-            120000,
+        provider_defaults = getattr(
+            getattr(self.llm_provider, "model", None),
+            "defaultConfig",
+            {},
+        ) or {}
+
+        llm_config = config.get("llm") or {}
+        provider_config = llm_config.get("provider_config") or {}
+        generation_config = provider_config.get("generation_config") or {}
+
+        context_length = (
+            generation_config.get("num_ctx")
+            or provider_config.get("num_ctx")
+            or provider_defaults.get("num_ctx")
+            or 120000
         )
 
-        self.context_length = int(context_length)
+        try:
+            self.context_length = max(128, int(context_length))
+        except (TypeError, ValueError):
+            self.context_length = 120000
 
         self.safe_margin = int(
             self.config.get(

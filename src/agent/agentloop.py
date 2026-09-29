@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -39,8 +40,8 @@ class Loop:
 
     DEFAULT_MAX_ITERATIONS = 100
 
-    RECENT_CONTEXT_LIMIT = 50
-    SEARCH_CONTEXT_TOP_K = 5
+    RECENT_CONTEXT_LIMIT = 40
+    SEARCH_CONTEXT_TOP_K = 3
 
     def __init__(
         self,
@@ -60,7 +61,10 @@ class Loop:
 
         self._context_step = 0
 
-        self.tool = ToolManager()
+        self.tool = ToolManager(config=self.config)
+
+        self._run_started_at: float | None = None
+        self.metrics: dict[str, Any] = {}
 
         self.context = ContextService(
             config=self.config,
@@ -583,6 +587,9 @@ class Loop:
         )
 
         self._store_event(self._assistant_event(result))
+        self.metrics["completed"] = False
+        self.metrics["stop_reason"] = reason
+        self.metrics["duration_ms"] = self._duration_ms()
 
         return result
 
@@ -755,6 +762,14 @@ class Loop:
             self.workspace_revision += 1
 
         if result.success:
+            self.metrics["tool_successes"] = self.metrics.get("tool_successes", 0) + 1
+        else:
+            self.metrics["tool_failures"] = self.metrics.get("tool_failures", 0) + 1
+
+        if isinstance(result.metadata, dict) and result.metadata.get("duplicate_action"):
+            self.metrics["tool_blocks"] = self.metrics.get("tool_blocks", 0) + 1
+
+        if result.success:
 
             key = self._tool_call_key(call)
 
@@ -828,6 +843,10 @@ class Loop:
         if not parsed_calls:
 
             return False
+
+        self.metrics["tool_call_attempts"] = (
+            self.metrics.get("tool_call_attempts", 0) + len(parsed_calls)
+        )
 
         (
             allowed_indices,
@@ -962,6 +981,8 @@ class Loop:
             raise TypeError("user_task must be " "a ContextEvent.")
 
         self._reset_run_state()
+        self._run_started_at = time.perf_counter()
+        self.set_workspace(workspace_directory)
 
         # Must run AFTER _reset_run_state()
         # and BEFORE the first _next_step().
@@ -986,6 +1007,7 @@ class Loop:
             iteration_number = iteration + 1
 
             self.agent_state.iteration = iteration_number
+            self.metrics["iterations"] = iteration_number
 
             self.logger.info(
                 f"Iteration " f"{iteration_number}/" f"{self.max_iterations}"
@@ -1117,11 +1139,14 @@ class Loop:
 
                 continue
 
-            if llmresult.response:
+            if isinstance(llmresult.response, str) and llmresult.response.strip():
 
                 self._store_event(self._assistant_event(llmresult))
 
                 self.agent_state.complete()
+                self.metrics["completed"] = True
+                self.metrics["stop_reason"] = ""
+                self.metrics["duration_ms"] = self._duration_ms()
 
                 return llmresult
 
@@ -1161,6 +1186,8 @@ class Loop:
         reason = "Maximum iterations reached."
 
         self.agent_state.stop(reason)
+        self.metrics["completed"] = False
+        self.metrics["stop_reason"] = reason
 
         return self._stopped_result(reason)
 
@@ -1186,6 +1213,8 @@ class Loop:
             search_top_k=(self.SEARCH_CONTEXT_TOP_K),
         )
 
+        self.metrics["llm_calls"] = self.metrics.get("llm_calls", 0) + 1
+
         try:
 
             result = self.llm.generate(
@@ -1195,6 +1224,9 @@ class Loop:
 
         except Exception as exc:
 
+            self.metrics["generation_failures"] = (
+                self.metrics.get("generation_failures", 0) + 1
+            )
             self.logger.error(f"LLM generation failed: {exc}")
 
             self.agent_state.fail(str(exc))
@@ -1203,11 +1235,34 @@ class Loop:
 
         if result is None:
 
+            self.metrics["generation_failures"] = (
+                self.metrics.get("generation_failures", 0) + 1
+            )
             self.agent_state.fail("LLM returned None.")
 
             return None
 
+        self.metrics["tokens"] = (
+            self.metrics.get("tokens", 0)
+            + max(0, int(getattr(result, "usage", 0) or 0))
+        )
+
         return result
+
+    def set_workspace(
+        self,
+        workspace_directory: str,
+    ) -> None:
+
+        self.tool.set_workspace(workspace_directory)
+
+    def get_metrics(self) -> dict[str, Any]:
+        return dict(self.metrics)
+
+    def _duration_ms(self) -> float:
+        if self._run_started_at is None:
+            return 0.0
+        return round((time.perf_counter() - self._run_started_at) * 1000.0, 2)
 
     def _reset_run_state(
         self,
@@ -1230,6 +1285,20 @@ class Loop:
         self._recent_failure_signatures.clear()
 
         self._generation_retries = 0
+        self._run_started_at = None
+        self.metrics = {
+            "iterations": 0,
+            "llm_calls": 0,
+            "tokens": 0,
+            "generation_failures": 0,
+            "tool_call_attempts": 0,
+            "tool_successes": 0,
+            "tool_failures": 0,
+            "tool_blocks": 0,
+            "completed": False,
+            "stop_reason": "",
+            "duration_ms": 0.0,
+        }
 
     def close(
         self,

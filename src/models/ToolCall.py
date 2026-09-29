@@ -18,3 +18,6 @@ class ToolCall:
 
     action: str = "execute"
     target: str = ""
+
+    security_reason: str = ""
+    security_rule: str = ""

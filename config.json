@@ -10,16 +10,15 @@
       }
     }
   },
-
   "context": {
     "safe_margin": -1,
-    "compaction_target_tokens": 16360
+    "recent_event_limit": 40,
+    "compaction_enabled": true,
+    "compaction_target_tokens": 4096
   },
-
   "retrieval": {
-    "top_k": 10
+    "top_k": 3
   },
-
   "models": {
     "embedding": {
       "model_name": "intfloat/multilingual-e5-base"
@@ -28,6 +27,11 @@
       "model_name": "BAAI/bge-reranker-v2-m3"
     }
   },
-
+  "security": {
+    "workspace_only": true,
+    "allow_background": false,
+    "allow_network_tools": true,
+    "force_approve": false
+  },
   "max_agent_iterations": 100
 }

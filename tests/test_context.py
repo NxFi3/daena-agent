@@ -1,0 +1,160 @@
+from uuid import uuid4
+
+from src.context.contextbuilder import ContextBuilder
+from src.models.ContextEvent import ContextEvent, ContextRole, ContextType
+from src.models.LLMResult import LLMResult
+
+
+class FakeModel:
+    defaultConfig = {"num_ctx": 4096}
+
+
+class FakeLLM:
+    def __init__(self):
+        self.model = FakeModel()
+        self.calls = 0
+
+    def generate(self, messages, tools=None):
+        self.calls += 1
+        return LLMResult(
+            response="Compact state.",
+            message={"role": "assistant", "content": "Compact state."},
+            tool_calls=[],
+            thinking=None,
+            usage=10,
+        )
+
+
+def event(role, event_type, content, step):
+    return ContextEvent(
+        id=uuid4(),
+        role=role,
+        type=event_type,
+        content=content,
+        step=step,
+    )
+
+
+def base_config():
+    return {
+        "llm": {
+            "provider_config": {
+                "generation_config": {"num_ctx": 4096},
+            }
+        },
+        "context": {
+            "safe_margin": 0,
+            "compaction_enabled": True,
+            "compaction_target_tokens": 256,
+        },
+    }
+
+
+def test_current_task_is_not_duplicated():
+    llm = FakeLLM()
+    builder = ContextBuilder(base_config(), llm)
+    task = event(ContextRole.USER, ContextType.MESSAGE, "fix the parser", 1)
+
+    messages = builder.build_context(
+        events=[task],
+        task={
+            "id": str(task.id),
+            "content": task.content,
+        },
+    )
+
+    user_messages = [
+        m for m in messages if m.get("role") == "user"
+    ]
+    assert [m["content"] for m in user_messages] == ["fix the parser"]
+
+
+def test_tool_call_and_id_are_preserved():
+    llm = FakeLLM()
+    builder = ContextBuilder(base_config(), llm)
+    task = event(ContextRole.USER, ContextType.MESSAGE, "inspect file", 1)
+    assistant = event(
+        ContextRole.ASSISTANT,
+        ContextType.MESSAGE,
+        "",
+        2,
+    )
+    assistant.metadata = {
+        "llm_message": {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "call_123",
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "arguments": '{"file_path":"main.py"}',
+                },
+            }],
+        }
+    }
+    tool = event(
+        ContextRole.TOOL,
+        ContextType.TOOL_RESULT,
+        '{"name":"read_file","tool_call_id":"call_123","success":true,"content":{"path":"main.py","content":"ok"}}',
+        3,
+    )
+
+    messages = builder.build_context(
+        events=[task, assistant, tool],
+        task={"id": str(task.id), "content": task.content},
+    )
+
+    assistant_messages = [
+        m for m in messages if m.get("role") == "assistant"
+    ]
+    tool_messages = [
+        m for m in messages if m.get("role") == "tool"
+    ]
+
+    assert assistant_messages[0]["tool_calls"][0]["id"] == "call_123"
+    assert tool_messages[0]["tool_call_id"] == "call_123"
+
+
+def test_compaction_is_used_when_latest_task_history_does_not_fit():
+    llm = FakeLLM()
+    builder = ContextBuilder(base_config(), llm)
+    task = event(
+        ContextRole.USER,
+        ContextType.MESSAGE,
+        "finish the task",
+        1,
+    )
+    events = [task]
+
+    for i in range(2, 35):
+        events.append(
+            event(
+                ContextRole.ASSISTANT if i % 2 == 0 else ContextRole.TOOL,
+                ContextType.MESSAGE if i % 2 == 0 else ContextType.TOOL_RESULT,
+                "x" * 1000,
+                i,
+            )
+        )
+
+    messages = builder.build_context(
+        events=events,
+        task={"id": str(task.id), "content": task.content},
+    )
+
+    assert llm.calls == 1
+    assert any(
+        "<compacted_context>" in str(m.get("content", ""))
+        for m in messages
+        if m.get("role") == "system"
+    )
+    assert messages[-1] == {"role": "user", "content": "finish the task"}
+
+
+def test_token_budget_uses_configured_num_ctx():
+    llm = FakeLLM()
+    config = base_config()
+    builder = ContextBuilder(config, llm)
+
+    assert builder.tokenbudget.context_length == 4096
+    assert builder.tokenbudget.budget == 4096
