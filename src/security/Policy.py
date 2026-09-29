@@ -30,6 +30,7 @@ DEFAULT_BLOCKED_COMMANDS = {
 }
 
 DEFAULT_ALLOWED_TOOLS = {
+    "plan",
     "read_file",
     "apply_patch",
     "command_exec",
