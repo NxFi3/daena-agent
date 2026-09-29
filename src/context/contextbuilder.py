@@ -47,6 +47,7 @@ class ContextBuilder:
         self.config = config
         self.llm = llm_provider
         self.window = ContextWindow()
+        self.system_instruction = SystemInstructionReader()
         self.tokenbudget = TokenBudget(config, self.llm)
         self.compactor = Compactor(self.llm)
         context_config = config.get("context") or {}
