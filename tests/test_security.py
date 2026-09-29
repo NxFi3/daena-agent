@@ -139,3 +139,131 @@ def test_inline_python_evaluation_is_blocked(tmp_path):
 
     assert checked.approved is False
     assert checked.security_rule == "inline_eval_blocked"
+
+
+
+def test_background_command_can_be_approved_for_session(tmp_path):
+    service = make_service(tmp_path)
+    command = ["python", "-m", "http.server", "8000"]
+
+    service.approve_background_command(
+        command,
+        workdir=str(tmp_path),
+    )
+
+    call = ToolCall(
+        name="command_exec",
+        id="c8",
+        valid=True,
+        args={
+            "command": command,
+            "workdir": str(tmp_path),
+            "background": True,
+        },
+    )
+
+    checked = service.check(call)
+
+    assert checked.approved is True
+    assert checked.security_rule == "background_session_approval"
+
+
+def test_background_approval_is_exact(tmp_path):
+    service = make_service(tmp_path)
+    service.approve_background_command(
+        ["python", "-m", "http.server", "8000"],
+        workdir=str(tmp_path),
+    )
+
+    different_command = ToolCall(
+        name="command_exec",
+        id="c9",
+        valid=True,
+        args={
+            "command": ["python", "-m", "http.server", "9000"],
+            "workdir": str(tmp_path),
+            "background": True,
+        },
+    )
+
+    checked = service.check(different_command)
+
+    assert checked.approved is False
+    assert checked.security_rule == "background_disabled"
+
+
+def test_background_approval_does_not_bypass_workspace_boundary(tmp_path):
+    service = make_service(tmp_path)
+    service.approve_background_command(
+        ["python", "-m", "http.server", "8000"],
+        workdir=str(tmp_path),
+    )
+
+    escaping = ToolCall(
+        name="command_exec",
+        id="c10",
+        valid=True,
+        args={
+            "command": ["python", "-m", "http.server", "8000"],
+            "workdir": str(tmp_path / ".."),
+            "background": True,
+        },
+    )
+
+    checked = service.check(escaping)
+
+    assert checked.approved is False
+    assert checked.security_rule == "workspace_boundary"
+
+
+def test_background_approval_does_not_bypass_blocked_executable(tmp_path):
+    service = make_service(tmp_path)
+    command = ["rm", "-rf", str(tmp_path)]
+
+    service.approve_background_command(
+        command,
+        workdir=str(tmp_path),
+    )
+
+    call = ToolCall(
+        name="command_exec",
+        id="c11",
+        valid=True,
+        args={
+            "command": command,
+            "workdir": str(tmp_path),
+            "background": True,
+        },
+    )
+
+    checked = service.check(call)
+
+    assert checked.approved is False
+    assert checked.security_rule == "blocked_executable"
+
+
+def test_clear_background_approvals(tmp_path):
+    service = make_service(tmp_path)
+    command = ["python", "-m", "http.server", "8000"]
+
+    service.approve_background_command(
+        command,
+        workdir=str(tmp_path),
+    )
+    service.clear_background_approvals()
+
+    call = ToolCall(
+        name="command_exec",
+        id="c12",
+        valid=True,
+        args={
+            "command": command,
+            "workdir": str(tmp_path),
+            "background": True,
+        },
+    )
+
+    checked = service.check(call)
+
+    assert checked.approved is False
+    assert checked.security_rule == "background_disabled"
