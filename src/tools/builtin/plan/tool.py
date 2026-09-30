@@ -39,9 +39,9 @@ class Plan(Tool):
         "A plan whose statuses do not match the real work is a bug.\n"
         "\n"
         "WHEN TO UPDATE (this is part of the work, not optional):\n"
-        "- Before starting a step: set it to in_progress. Keep only one step in_progress.\n"
+        "- Creating a plan automatically starts the first step as in_progress.\n"
         "- Right after a step's work succeeds (confirmed by a tool result): set it to "
-        "completed. Do this before starting the next step. Do not batch these up for later.\n"
+        "completed. The next pending step is then automatically started as in_progress.\n"
         "- If a step fails and you cannot fix it: set it to blocked, then add a step "
         "for the fix.\n"
         "- If you discover new required work: add_step before doing it.\n"
@@ -52,7 +52,7 @@ class Plan(Tool):
         "\n"
         "OPERATIONS (each update call changes exactly ONE thing):\n"
         '- create (only when no plan exists): {"operation":"create","goal":"...","steps":["...","..."]}\n'
-        '- start a step: {"operation":"update","step":2,"status":"in_progress"}\n'
+        '- manually start a step only for recovery or plan repair: {"operation":"update","step":2,"status":"in_progress"}\n'
         '- finish a step: {"operation":"update","step":2,"status":"completed"}\n'
         '- block a step: {"operation":"update","step":2,"status":"blocked"}\n'
         '- reword a step: {"operation":"update","step":2,"description":"..."}\n'
@@ -418,7 +418,7 @@ class Plan(Tool):
         plan_steps = [
             PlanStep(
                 number=index,
-                status="pending",
+                status=("in_progress" if index == 1 else "pending"),
                 description=str(value).strip(),
             )
             for index, value in enumerate(
@@ -614,6 +614,12 @@ class Plan(Tool):
                     )
 
                 target.status = status
+
+                if status == "completed":
+                    for next_step in current_steps:
+                        if next_step.status == "pending":
+                            next_step.status = "in_progress"
+                            break
 
                 summary = f"Plan updated: step {step} status."
 
