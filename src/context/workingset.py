@@ -498,11 +498,21 @@ class WorkingSet:
             result=result,
         )
 
+        validation_source_key = "tool:" + json.dumps(
+            {
+                "tool": str(getattr(tool_call, "name", result.name)).strip().lower(),
+                "action": str(getattr(tool_call, "action", "")).strip().lower(),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
         remaining: list[str] = []
 
         for item in self.unresolved:
 
-            if self._unresolved_keys.get(item) == source_key:
+            item_key = self._unresolved_keys.get(item)
+            if item_key == source_key or item_key == validation_source_key:
                 self._unresolved_keys.pop(item, None)
                 continue
 
@@ -557,6 +567,16 @@ class WorkingSet:
                 )
 
         target = str(getattr(tool_call, "target", "")).strip()
+
+        if not target:
+            return "tool:" + json.dumps(
+                {
+                    "tool": tool_name,
+                    "action": str(getattr(tool_call, "action", "")).strip().lower(),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
 
         return "target:" + json.dumps(
             {
