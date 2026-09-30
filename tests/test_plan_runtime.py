@@ -136,12 +136,11 @@ def test_failed_verification_blocks_step_completion_until_resolved():
 def test_incomplete_plan_blocks_final_response():
     loop = Loop.__new__(Loop)
 
-    gate = loop._final_response_gate.__get__(loop)
     # The helper reads runtime plan state; replace it with a deterministic
     # snapshot for this unit test.
     loop._read_plan_state = lambda: active_plan()
 
-    result = gate()
+    result = loop._final_response_gate()
 
     assert result is not None
     assert result[0] == "plan_incomplete"
