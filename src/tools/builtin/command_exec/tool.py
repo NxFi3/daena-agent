@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-import os
-import signal
 import subprocess
 import time
-import uuid
 from pathlib import Path
 from typing import Any
 
 from src.models.ToolResult import ToolResult
 from src.tools.Tool import Tool
+from src.tools.builtin.command_exec.process_manager import PROCESS_MANAGER
 
 _EXIT_CODE_HINTS: dict[str, dict[int, str]] = {
     "pytest": {
@@ -48,8 +46,8 @@ class CommandExec(Tool):
     name = "command_exec"
     action = "run"
 
-    DEFAULT_TIMEOUT_MS = 120_000
-    MAX_TIMEOUT_MS = 600_000
+    DEFAULT_YIELD_TIME_MS = 1_000
+    MAX_YIELD_TIME_MS = 30_000
 
     DEFAULT_MAX_OUTPUT_CHARS = 8_000
     MAX_OUTPUT_CHARS = 32_000
@@ -59,19 +57,17 @@ class CommandExec(Tool):
 
     description = (
         "Run a local command given as an argv array (not a shell string). "
-        "Returns exit status, bounded stdout/stderr, duration, and timeout info.\n"
+        "The command waits up to yield_time_ms (default 1000ms). If it exits in that "
+        "window, the result contains exit_code and completed output. If it is still "
+        "running, the process is kept alive and the result returns status=running "
+        "with an opaque process_id. Use process_poll to wait for completion or inspect "
+        "new output, process_write for stdin, and process_stop to terminate it. "
+        "A slow one-shot command and a long-lived server use the same process lifecycle; "
+        "do not treat elapsed time as proof that a command is a server.\n"
         "\n"
-        "Foreground (default): use for commands that finish on their own, such as "
-        "installs, builds, tests, scripts, and file or git operations. Set "
-        "timeout_ms for slow ones (max 600000). Never repeat a command that timed "
-        "out unchanged; change something first, for example a larger timeout.\n"
-        "\n"
-        "Background (background=true): use for anything that keeps running until "
-        "stopped, such as servers, watchers, and dev tools. A long-running command "
-        "in the foreground blocks until timeout and is killed, so the tool may "
-        "reject it. Background returns pid and log_file. Read the log to check "
-        "startup, then verify with a short foreground command (for example curl "
-        "with a timeout). Stop it when you are done.\n"
+        "Set background=true only when you want the command to return immediately "
+        "without the initial yield wait. Managed processes are never killed merely "
+        "because they remain alive.\n"
         "\n"
         "Always set workdir explicitly."
     )
@@ -98,15 +94,15 @@ class CommandExec(Tool):
                     "working directory is inherited."
                 ),
             },
-            "timeout_ms": {
+            "yield_time_ms": {
                 "type": "integer",
                 "description": (
-                    "Maximum execution time for foreground commands in "
-                    f"milliseconds. Default: {DEFAULT_TIMEOUT_MS}."
+                    "How long to wait synchronously before returning a managed "
+                    "process_id when the command is still running."
                 ),
-                "default": DEFAULT_TIMEOUT_MS,
-                "minimum": 1,
-                "maximum": MAX_TIMEOUT_MS,
+                "default": DEFAULT_YIELD_TIME_MS,
+                "minimum": 0,
+                "maximum": MAX_YIELD_TIME_MS,
             },
             "max_output_chars": {
                 "type": "integer",
@@ -135,14 +131,14 @@ class CommandExec(Tool):
         self,
         command: list[str],
         workdir: str | None = None,
-        timeout_ms: int = DEFAULT_TIMEOUT_MS,
+        yield_time_ms: int = DEFAULT_YIELD_TIME_MS,
         max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS,
         background: bool = False,
     ) -> ToolResult:
 
         validation_error = self._validate_arguments(
             command=command,
-            timeout_ms=timeout_ms,
+            yield_time_ms=yield_time_ms,
             max_output_chars=max_output_chars,
             background=background,
         )
@@ -155,17 +151,10 @@ class CommandExec(Tool):
         if workdir_error is not None:
             return workdir_error
 
-        if background:
-            return self._execute_background(
-                command=command,
-                workdir=resolved_workdir,
-                max_output_chars=max_output_chars,
-            )
-
-        return self._execute_foreground(
+        return self._execute_managed(
             command=command,
             workdir=resolved_workdir,
-            timeout_ms=timeout_ms,
+            yield_time_ms=(0 if background else yield_time_ms),
             max_output_chars=max_output_chars,
         )
 
@@ -173,7 +162,7 @@ class CommandExec(Tool):
         self,
         *,
         command: Any,
-        timeout_ms: Any,
+        yield_time_ms: Any,
         max_output_chars: Any,
         background: Any,
     ) -> ToolResult | None:
@@ -202,16 +191,19 @@ class CommandExec(Tool):
                 message="The executable cannot be empty.",
             )
 
-        if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int):
+        if isinstance(yield_time_ms, bool) or not isinstance(yield_time_ms, int):
             return self._error(
                 error_type="invalid_argument",
-                message="timeout_ms must be an integer.",
+                message="yield_time_ms must be an integer.",
             )
 
-        if not (1 <= timeout_ms <= self.MAX_TIMEOUT_MS):
+        if not (0 <= yield_time_ms <= self.MAX_YIELD_TIME_MS):
             return self._error(
                 error_type="invalid_argument",
-                message=("timeout_ms must be between 1 and " f"{self.MAX_TIMEOUT_MS}."),
+                message=(
+                    "yield_time_ms must be between 0 and "
+                    f"{self.MAX_YIELD_TIME_MS}."
+                ),
             )
 
         if isinstance(max_output_chars, bool) or not isinstance(max_output_chars, int):
@@ -238,23 +230,24 @@ class CommandExec(Tool):
 
         return None
 
-    def _execute_foreground(
+    def _execute_managed(
         self,
         *,
         command: list[str],
         workdir: Path | None,
-        timeout_ms: int,
+        yield_time_ms: int,
         max_output_chars: int,
     ) -> ToolResult:
-
         started = time.perf_counter()
 
         try:
-            process = self._spawn(
+            result = PROCESS_MANAGER.start(
                 command=command,
                 workdir=workdir,
+                yield_time_ms=yield_time_ms,
+                max_output_chars=max_output_chars,
+                pipe_stdin=True,
             )
-
         except FileNotFoundError as exc:
             return self._execution_error(
                 command=command,
@@ -263,7 +256,6 @@ class CommandExec(Tool):
                 error_type="command_not_found",
                 message=str(exc),
             )
-
         except PermissionError as exc:
             return self._execution_error(
                 command=command,
@@ -272,7 +264,6 @@ class CommandExec(Tool):
                 error_type="permission_error",
                 message=str(exc),
             )
-
         except OSError as exc:
             return self._execution_error(
                 command=command,
@@ -281,7 +272,6 @@ class CommandExec(Tool):
                 error_type="execution_error",
                 message=str(exc),
             )
-
         except Exception as exc:
             return self._execution_error(
                 command=command,
@@ -291,430 +281,39 @@ class CommandExec(Tool):
                 message=str(exc),
             )
 
-        try:
-            stdout_bytes, stderr_bytes = process.communicate(
-                timeout=timeout_ms / 1000.0
-            )
-
-        except subprocess.TimeoutExpired as exc:
-            self._terminate_process_tree(process)
-
-            stdout_bytes, stderr_bytes = process.communicate()
-
-            stdout = self._decode(
-                stdout_bytes if stdout_bytes is not None else exc.stdout
-            )
-
-            stderr = self._decode(
-                stderr_bytes if stderr_bytes is not None else exc.stderr
-            )
-
-            stdout, stdout_truncated = self._truncate(
-                stdout,
-                max_output_chars,
-            )
-
-            stderr, stderr_truncated = self._truncate(
-                stderr,
-                max_output_chars,
-            )
-
-            return ToolResult(
-                success=False,
-                name=self.name,
-                content={
-                    "success": False,
-                    "command": command,
-                    "workdir": self._stringify_workdir(workdir),
-                    "exit_code": None,
-                    "exit_code_hint": "",
-                    "stdout": stdout,
-                    "stderr": stderr,
-                    "timed_out": True,
-                    "background": False,
-                    "duration_ms": self._duration_ms(started),
-                    "stdout_truncated": stdout_truncated,
-                    "stderr_truncated": stderr_truncated,
-                },
-                metadata={},
-            )
-
-        except Exception as exc:
-            return self._execution_error(
-                command=command,
-                workdir=workdir,
-                started=started,
-                error_type="communication_error",
-                message=str(exc),
-            )
-
-        stdout = self._decode(stdout_bytes)
-        stderr = self._decode(stderr_bytes)
-
-        stdout, stdout_truncated = self._truncate(
-            stdout,
-            max_output_chars,
+        status = result.get("status")
+        success = status in {"running", "exited"} and (
+            status == "running" or result.get("exit_code") == 0
         )
 
-        stderr, stderr_truncated = self._truncate(
-            stderr,
-            max_output_chars,
-        )
-
-        exit_code = process.returncode
-
-        hint = self._exit_code_hint(
-            command,
-            exit_code,
-        )
+        hint = self._exit_code_hint(command, result.get("exit_code"))
 
         return ToolResult(
-            success=(exit_code == 0),
+            success=success,
             name=self.name,
             content={
-                "success": exit_code == 0,
+                "success": success,
                 "command": command,
                 "workdir": self._stringify_workdir(workdir),
-                "exit_code": exit_code,
+                "exit_code": result.get("exit_code"),
                 "exit_code_hint": hint,
-                "stdout": stdout,
-                "stderr": stderr,
+                "stdout": result.get("stdout", ""),
+                "stderr": result.get("stderr", ""),
                 "timed_out": False,
-                "background": False,
-                "duration_ms": self._duration_ms(started),
-                "stdout_truncated": stdout_truncated,
-                "stderr_truncated": stderr_truncated,
-            },
-            metadata={},
-        )
-
-    def _execute_background(
-        self,
-        *,
-        command: list[str],
-        workdir: Path | None,
-        max_output_chars: int,
-    ) -> ToolResult:
-
-        started = time.perf_counter()
-
-        log_directory = workdir if workdir is not None else Path.cwd()
-
-        try:
-            log_directory.mkdir(
-                parents=True,
-                exist_ok=True,
-            )
-
-        except OSError as exc:
-            return self._execution_error(
-                command=command,
-                workdir=workdir,
-                started=started,
-                error_type="log_directory_error",
-                message=str(exc),
-                extra={
-                    "background": True,
-                },
-            )
-
-        log_path = log_directory / f".evana_command_{uuid.uuid4().hex}.log"
-
-        log_file = None
-
-        try:
-            log_file = open(
-                log_path,
-                "w",
-                encoding="utf-8",
-                errors="replace",
-            )
-
-            process = self._spawn(
-                command=command,
-                workdir=workdir,
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-            )
-
-        except FileNotFoundError as exc:
-            if log_file is not None:
-                log_file.close()
-
-            return self._execution_error(
-                command=command,
-                workdir=workdir,
-                started=started,
-                error_type="command_not_found",
-                message=str(exc),
-                extra={
-                    "background": True,
-                },
-            )
-
-        except PermissionError as exc:
-            if log_file is not None:
-                log_file.close()
-
-            return self._execution_error(
-                command=command,
-                workdir=workdir,
-                started=started,
-                error_type="permission_error",
-                message=str(exc),
-                extra={
-                    "background": True,
-                },
-            )
-
-        except OSError as exc:
-            if log_file is not None:
-                log_file.close()
-
-            return self._execution_error(
-                command=command,
-                workdir=workdir,
-                started=started,
-                error_type="execution_error",
-                message=str(exc),
-                extra={
-                    "background": True,
-                },
-            )
-
-        except Exception as exc:
-            if log_file is not None:
-                log_file.close()
-
-            return self._execution_error(
-                command=command,
-                workdir=workdir,
-                started=started,
-                error_type="unexpected_error",
-                message=str(exc),
-                extra={
-                    "background": True,
-                },
-            )
-
-        finally:
-            if log_file is not None:
-                log_file.close()
-
-        time.sleep(self.BACKGROUND_STARTUP_GRACE_MS / 1000.0)
-
-        exit_code = process.poll()
-
-        if exit_code is not None:
-            log = self._read_log(
-                log_path,
-                max_output_chars,
-            )
-
-            success = exit_code == 0
-
-            hint = self._exit_code_hint(
-                command,
-                exit_code,
-            )
-
-            return ToolResult(
-                success=success,
-                name=self.name,
-                content={
-                    "success": success,
-                    "command": command,
-                    "workdir": self._stringify_workdir(workdir),
-                    "exit_code": exit_code,
-                    "exit_code_hint": hint,
-                    "stdout": log["content"],
-                    "stderr": "",
-                    "timed_out": False,
-                    "background": True,
-                    "status": "exited",
-                    "pid": process.pid,
-                    "log_file": str(log_path),
-                    "duration_ms": self._duration_ms(started),
-                    "stdout_truncated": log["truncated"],
-                    "stderr_truncated": False,
-                },
-                metadata={},
-            )
-
-        return ToolResult(
-            success=True,
-            name=self.name,
-            content={
-                "success": True,
-                "command": command,
-                "workdir": self._stringify_workdir(workdir),
-                "exit_code": None,
-                "exit_code_hint": "",
-                "stdout": "",
-                "stderr": "",
-                "timed_out": False,
-                "background": True,
-                "status": "running",
-                "pid": process.pid,
-                "log_file": str(log_path),
-                "duration_ms": self._duration_ms(started),
+                "background": status == "running",
+                "managed": True,
+                "status": status,
+                "process_id": result.get("process_id"),
+                "pid": result.get("pid"),
+                "duration_ms": result.get(
+                    "duration_ms",
+                    self._duration_ms(started),
+                ),
                 "stdout_truncated": False,
                 "stderr_truncated": False,
             },
             metadata={},
         )
-
-    def _spawn(
-        self,
-        *,
-        command: list[str],
-        workdir: Path | None,
-        stdout: Any = subprocess.PIPE,
-        stderr: Any = subprocess.PIPE,
-    ) -> subprocess.Popen:
-
-        kwargs: dict[str, Any] = {
-            "args": command,
-            "cwd": str(workdir) if workdir is not None else None,
-            "stdin": subprocess.DEVNULL,
-            "stdout": stdout,
-            "stderr": stderr,
-            "text": False,
-        }
-
-        if os.name == "nt":
-            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-        else:
-            kwargs["start_new_session"] = True
-
-        return subprocess.Popen(**kwargs)
-
-    @staticmethod
-    def _exit_code_hint(
-        command: list[str],
-        exit_code: int | None,
-    ) -> str:
-
-        if exit_code is None or not command:
-            return ""
-
-        exe = ""
-
-        for i, arg in enumerate(command):
-            if arg in ("-m", "-c", "--module"):
-                if i + 1 < len(command):
-                    exe = command[i + 1]
-                    break
-            elif not arg.startswith("-"):
-                exe = arg.split("/")[-1]
-                break
-
-        exe = exe.lower().replace(".py", "")
-
-        hints = _EXIT_CODE_HINTS.get(exe)
-
-        if not hints:
-            return ""
-
-        return hints.get(exit_code, "")
-
-    @staticmethod
-    def _terminate_process_tree(
-        process: subprocess.Popen,
-    ) -> None:
-
-        if process.poll() is not None:
-            return
-
-        try:
-            if os.name == "nt":
-
-                try:
-                    process.send_signal(signal.CTRL_BREAK_EVENT)
-                except (
-                    OSError,
-                    ValueError,
-                ):
-                    pass
-
-                try:
-                    process.wait(timeout=2.0)
-                    return
-                except subprocess.TimeoutExpired:
-                    pass
-
-                try:
-                    process.kill()
-                except (
-                    ProcessLookupError,
-                    OSError,
-                ):
-                    pass
-
-                try:
-                    process.wait(timeout=2.0)
-                except (
-                    subprocess.TimeoutExpired,
-                    ProcessLookupError,
-                    OSError,
-                ):
-                    pass
-
-                return
-
-            try:
-                os.killpg(
-                    process.pid,
-                    signal.SIGTERM,
-                )
-            except ProcessLookupError:
-                pass
-
-            try:
-                process.wait(timeout=2.0)
-                return
-            except subprocess.TimeoutExpired:
-                pass
-
-            try:
-                os.killpg(
-                    process.pid,
-                    signal.SIGKILL,
-                )
-            except ProcessLookupError:
-                pass
-
-            try:
-                process.wait(timeout=2.0)
-            except (
-                subprocess.TimeoutExpired,
-                ProcessLookupError,
-                OSError,
-            ):
-                pass
-
-        except (
-            ProcessLookupError,
-            PermissionError,
-            OSError,
-        ):
-            try:
-                process.kill()
-            except (
-                ProcessLookupError,
-                PermissionError,
-                OSError,
-            ):
-                pass
-
-            try:
-                process.wait(timeout=2.0)
-            except (
-                subprocess.TimeoutExpired,
-                ProcessLookupError,
-                OSError,
-            ):
-                pass
 
     def _resolve_workdir(
         self,
