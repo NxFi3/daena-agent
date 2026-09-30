@@ -478,6 +478,10 @@ class WorkingSet:
             ),
         }
 
+        diagnostic = result.evidence.get("diagnostic_excerpt")
+        if isinstance(diagnostic, str) and diagnostic.strip():
+            verification["diagnostic_excerpt"] = self._truncate(diagnostic, 1600)
+
         self.verification = verification
 
         # A failed verification is durable state. Keep it until the same
