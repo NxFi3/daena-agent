@@ -86,6 +86,7 @@ class Loop:
         self.working_set = WorkingSet()
 
         self._plan_step_work_started = False
+        self._plan_step_has_unresolved_failure = False
 
         self.workspace_revision = 0
 
@@ -876,6 +877,12 @@ class Loop:
                 "The current step cannot be marked completed yet. Perform and successfully verify work for this step first.",
             )
 
+        if transition == "completed" and self._plan_step_has_unresolved_failure:
+            return (
+                "completion_has_unresolved_failure",
+                "The current step cannot be marked completed while the latest tool action is still failed. Resolve the failure with a successful action or verification first.",
+            )
+
         return None
 
     def _classify_calls(
@@ -1164,6 +1171,18 @@ class Loop:
                 self.metrics.get("loop_guard_blocks", 0) + 1
             )
 
+        if (
+            not self._is_plan_call(call)
+            and not (
+                isinstance(result.metadata, dict)
+                and result.metadata.get("plan_gate")
+            )
+        ):
+            if result.success:
+                self._plan_step_has_unresolved_failure = False
+            else:
+                self._plan_step_has_unresolved_failure = True
+
         guard_decision = self._tool_loop_guard.after_call(
             call=call,
             result=result,
@@ -1247,6 +1266,7 @@ class Loop:
                 or before_current.status != after_current.status
             ):
                 self._plan_step_work_started = False
+                self._plan_step_has_unresolved_failure = False
 
             return
 
@@ -1254,6 +1274,7 @@ class Loop:
 
         if state.current_step is not None:
             self._plan_step_work_started = True
+            self._plan_step_has_unresolved_failure = False
 
     def _check_failure_stuck(
         self,
