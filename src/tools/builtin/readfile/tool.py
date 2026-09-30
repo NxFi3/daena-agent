@@ -76,6 +76,34 @@ class ReadFile(Tool):
         "additionalProperties": False,
     }
 
+    def duplicate_key(
+        self,
+        arguments: dict[str, Any],
+        *,
+        workspace_root: str | None = None,
+    ) -> dict[str, Any]:
+        normalized = super().duplicate_key(
+            arguments,
+            workspace_root=workspace_root,
+        )
+
+        raw_path = normalized.get("file_path")
+        if isinstance(raw_path, str) and raw_path.strip():
+            candidate = Path(raw_path).expanduser()
+            try:
+                if candidate.is_absolute():
+                    normalized["file_path"] = str(candidate.resolve(strict=False))
+                elif workspace_root:
+                    normalized["file_path"] = str(
+                        (Path(workspace_root).resolve() / candidate).resolve(
+                            strict=False
+                        )
+                    )
+            except (OSError, RuntimeError):
+                pass
+
+        return normalized
+
     def execute(
         self,
         file_path: str,
