@@ -40,6 +40,9 @@ def test_dispatcher_normalizes_alias_and_generates_id():
     assert call.target == "main.py"
     assert call.id
 
+from src.tools.builtin.command_exec.tool import CommandExec
+
+
 class FakeCommandTool:
     parameters = {
         "type": "object",
@@ -78,3 +81,54 @@ def test_dispatcher_keeps_legacy_command_timeout_alias():
     assert call.valid is True
     assert call.args["yield_time_ms"] == 5000
     assert "timeout_ms" not in call.args
+
+
+def test_dispatcher_clamps_numeric_command_options():
+    dispatcher = ToolDispatcher(type("Registry", (), {
+        "is_available": lambda self, name: name == "command_exec",
+        "get": lambda self, name: CommandExec() if name == "command_exec" else None,
+    })())
+
+    calls = dispatcher.dispatch({
+        "name": "command_exec",
+        "arguments": {
+            "command": ["npm", "test"],
+            "timeout_ms": "120000",
+            "max_output_chars": "64000",
+        },
+    })
+
+    call = calls[0]
+    assert call.valid is True
+    assert call.args["yield_time_ms"] == 30_000
+    assert call.args["max_output_chars"] == 32_000
+    assert call.normalization_notes
+
+
+class StrictTool(FakeTool):
+    parameters = {
+        "type": "object",
+        "properties": {
+            "file_path": {"type": "string"},
+        },
+        "additionalProperties": False,
+    }
+
+
+class StrictRegistry:
+    def is_available(self, name):
+        return name == "read_file"
+
+    def get(self, name):
+        return StrictTool() if name == "read_file" else None
+
+
+def test_dispatcher_rejects_unknown_args_for_strict_tools():
+    dispatcher = ToolDispatcher(StrictRegistry())
+    call = dispatcher.dispatch({
+        "name": "read_file",
+        "arguments": '{"file_path":"main.py","timeout":1000}',
+    })[0]
+
+    assert call.valid is False
+    assert "Unknown argument" in call.validation_error
