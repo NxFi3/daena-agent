@@ -21,6 +21,39 @@ class Tool(ABC):
     # Default semantic action for new tools.
     action: ClassVar[str] = "execute"
 
+    # When true, a successful identical call is still meaningful at the same
+    # workspace revision. This is used by dynamic observations such as
+    # process polling, where external state can change without a workspace edit.
+    allow_same_revision_repeat: ClassVar[bool] = False
+
+    def duplicate_key(
+        self,
+        arguments: dict[str, Any],
+        *,
+        workspace_root: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Return the semantic arguments used by the loop's duplicate detector.
+
+        Defaults declared by the tool schema are material: omitted defaults and
+        explicitly supplied defaults should produce the same duplicate key.
+        Concrete tools can override this when a path or other argument needs
+        workspace-aware canonicalization.
+        """
+        normalized = dict(arguments or {})
+        properties = self.parameters.get("properties", {})
+        if isinstance(properties, dict):
+            for key, schema in properties.items():
+                if (
+                    key not in normalized
+                    and isinstance(schema, dict)
+                    and "default" in schema
+                ):
+                    normalized[key] = schema["default"]
+
+        del workspace_root
+        return normalized
+
     @abstractmethod
     def execute(
         self,
