@@ -66,8 +66,10 @@ class CommandExec(Tool):
         "do not treat elapsed time as proof that a command is a server.\n"
         "\n"
         "Set background=true only when you want the command to return immediately "
-        "without the initial yield wait. Managed processes are never killed merely "
-        "because they remain alive.\n"
+        "without the initial yield wait. Set pipe_stdin=true only for processes that "
+        "need later stdin input through process_write; it is false by default so normal "
+        "commands receive EOF and do not wait on an unused stdin pipe. Managed processes "
+        "are never killed merely because they remain alive.\n"
         "\n"
         "Always set workdir explicitly."
     )
@@ -117,8 +119,15 @@ class CommandExec(Tool):
             "background": {
                 "type": "boolean",
                 "description": (
-                    "Start the command without waiting for it to finish. "
-                    "The result returns the process ID and log file path."
+                    "Start the command without the initial yield wait."
+                ),
+                "default": False,
+            },
+            "pipe_stdin": {
+                "type": "boolean",
+                "description": (
+                    "Keep stdin writable for process_write. Defaults to false so "
+                    "normal commands receive EOF on stdin."
                 ),
                 "default": False,
             },
@@ -134,6 +143,7 @@ class CommandExec(Tool):
         yield_time_ms: int = DEFAULT_YIELD_TIME_MS,
         max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS,
         background: bool = False,
+        pipe_stdin: bool = False,
     ) -> ToolResult:
 
         validation_error = self._validate_arguments(
@@ -141,6 +151,7 @@ class CommandExec(Tool):
             yield_time_ms=yield_time_ms,
             max_output_chars=max_output_chars,
             background=background,
+            pipe_stdin=pipe_stdin,
         )
 
         if validation_error is not None:
@@ -156,6 +167,7 @@ class CommandExec(Tool):
             workdir=resolved_workdir,
             yield_time_ms=(0 if background else yield_time_ms),
             max_output_chars=max_output_chars,
+            pipe_stdin=pipe_stdin,
         )
 
     def _validate_arguments(
@@ -165,6 +177,7 @@ class CommandExec(Tool):
         yield_time_ms: Any,
         max_output_chars: Any,
         background: Any,
+        pipe_stdin: Any,
     ) -> ToolResult | None:
 
         if not isinstance(command, list):
@@ -228,6 +241,12 @@ class CommandExec(Tool):
                 message="background must be a boolean.",
             )
 
+        if not isinstance(pipe_stdin, bool):
+            return self._error(
+                error_type="invalid_argument",
+                message="pipe_stdin must be a boolean.",
+            )
+
         return None
 
     def _execute_managed(
@@ -237,6 +256,7 @@ class CommandExec(Tool):
         workdir: Path | None,
         yield_time_ms: int,
         max_output_chars: int,
+        pipe_stdin: bool = False,
     ) -> ToolResult:
         started = time.perf_counter()
 
