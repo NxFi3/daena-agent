@@ -33,8 +33,9 @@ def test_long_running_command_returns_managed_process():
         yield_time_ms=25,
     )
 
-    assert result.success is True
+    assert result.success is False
     assert result.content["status"] == "running"
+    assert result.content["operation_complete"] is False
     process_id = result.content["process_id"]
     assert isinstance(process_id, str)
     assert process_id.startswith("proc-")
@@ -64,7 +65,7 @@ def test_incremental_output_and_process_write():
         pipe_stdin=True,
     )
 
-    assert result.success is True
+    assert result.success is False
     assert result.content["status"] == "running"
     process_id = result.content["process_id"]
     assert isinstance(process_id, str)
@@ -123,11 +124,11 @@ def test_duplicate_running_command_reuses_existing_process():
     ]
 
     first = tool.execute(command=command, yield_time_ms=25)
-    assert first.success is True
+    assert first.success is False
     assert first.content["status"] == "running"
 
     second = tool.execute(command=command, yield_time_ms=25)
-    assert second.success is True
+    assert second.success is False
     assert second.content["status"] == "running"
     assert second.content["process_id"] == first.content["process_id"]
     assert second.content.get("reused_existing_process") is True
