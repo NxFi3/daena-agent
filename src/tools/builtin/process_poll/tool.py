@@ -8,6 +8,7 @@ from src.tools.builtin.command_exec.process_manager import PROCESS_MANAGER
 
 
 class ProcessPoll(Tool):
+    # ToolManager replaces this with its session-scoped ProcessManager.\n    process_manager = PROCESS_MANAGER
     name = "process_poll"
     action = "inspect"
 
@@ -59,7 +60,7 @@ class ProcessPoll(Tool):
         if not isinstance(max_output_chars, int) or isinstance(max_output_chars, bool) or not 512 <= max_output_chars <= 32_000:
             return self._error("invalid_argument", "max_output_chars must be between 512 and 32000.")
 
-        result = PROCESS_MANAGER.poll(
+        result = self.process_manager.poll(
             process_id=process_id.strip(),
             wait_ms=wait_ms,
             max_output_chars=max_output_chars,
