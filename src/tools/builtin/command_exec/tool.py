@@ -354,9 +354,14 @@ class CommandExec(Tool):
         }
 
         if failure_type:
+            diagnostic = self._failure_diagnostic(
+                stdout=stdout,
+                stderr=stderr,
+            )
             content["error"] = {
                 "type": failure_type,
-                "message": "The process reported a known execution failure.",
+                "message": diagnostic
+                or "The process reported a known execution failure.",
             }
 
         return ToolResult(
