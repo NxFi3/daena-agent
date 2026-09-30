@@ -189,7 +189,7 @@ class ToolLoopGuard:
 
         if name not in self.REPEATABLE_TOOLS:
             cycle = self.cycle_decision()
-            if cycle.action != "allow":
+            if cycle.should_block:
                 return cycle
 
         if (
