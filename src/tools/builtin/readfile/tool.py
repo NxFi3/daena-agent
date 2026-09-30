@@ -26,6 +26,10 @@ class ReadFile(Tool):
     name = "read_file"
     action = "inspect"
 
+    # Reads are observations and can be repeated when the model needs to
+    # re-check evidence; the loop still bounds identical observations.
+    allow_same_revision_repeat = True
+
     DEFAULT_MAX_OUTPUT_CHARS = 8_000
     MAX_OUTPUT_CHARS = 32_000
     MIN_OUTPUT_CHARS = 512
