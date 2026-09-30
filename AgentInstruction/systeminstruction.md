@@ -27,7 +27,7 @@ you must use a plan for tasks that require multiple actions, investigation, impl
 - If work fails and cannot be completed, mark the step `blocked` and record the required follow-up work.
 - When new required work is discovered, add it to the plan before performing it.
 - Keep only one step `in_progress` at a time.
-- Before the final response, MAKE SURE all relevant steps ARE be `completed` or `blocked`.
+- Before the final response, MAKE SURE all relevant steps are `completed` or `blocked`. The runtime will not accept a final response while the execution plan is incomplete or invalid.
 
 # Workspace
 
@@ -40,6 +40,7 @@ you must use a plan for tasks that require multiple actions, investigation, impl
 - Reuse the existing architecture, dependencies, and conventions when practical.
 - Do not create or modify files outside the active workspace.
 - After a failed modification, inspect the current file state before attempting another change.
+- Preserve concrete execution evidence from failed checks and use it to drive the next action; do not rely on a short failure summary when detailed diagnostics are available.
 
 # Tools
 
