@@ -39,6 +39,7 @@ class ContextWindow:
         self.experience: str = ""
         self.learned_experience: str = ""
         self.plan: str = ""
+        self.execution_state: str = ""
         self.runtime: dict[str, Any] = self._base_runtime()
 
         self.conversation: list[Message] = []
@@ -95,6 +96,12 @@ class ContextWindow:
         """
         self.learned_experience = str(text or "").strip()
 
+    def set_execution_state(
+        self,
+        state: str | None,
+    ) -> None:
+        self.execution_state = str(state or "").strip()
+
     def set_runtime(
         self,
         workspace: str | None = None,
@@ -147,6 +154,9 @@ class ContextWindow:
             sections.append(
                 self._section("learned_experience", self.learned_experience)
             )
+
+        if self.execution_state:
+            sections.append(self._section("execution_state", self.execution_state))
 
         sections.append(self._section("runtime", self.runtime))
 
