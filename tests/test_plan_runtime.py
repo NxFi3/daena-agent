@@ -54,7 +54,7 @@ def test_plan_completion_requires_successful_terminal_work():
     )
 
     assert error is not None
-    assert error[0] == "completion_requires_work"
+    assert error[0] == "completion_requires_success"
 
 
 def test_plan_completion_allows_successful_terminal_work():
@@ -139,21 +139,24 @@ def test_failed_verification_does_not_create_a_runtime_semantic_gate():
             "stdout": "FAIL one",
         },
     )
-    loop.working_set.update(
+    loop._plan_progress.record(
         ToolCall(
             name="command_exec",
             id="test-1",
             valid=True,
-            args={"command": ["npm", "test"], "workdir": "."},
+            action="run",
         ),
         failed,
-        1,
+        iteration=1,
     )
 
-    assert loop._validate_plan_transition(
+    error = loop._validate_plan_transition(
         plan_completion_call(),
         active_plan(),
-    ) is None
+    )
+
+    assert error is not None
+    assert error[0] == "completion_requires_success"
 
 
 def complete_plan() -> PlanState:
