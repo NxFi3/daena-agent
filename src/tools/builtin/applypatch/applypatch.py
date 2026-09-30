@@ -772,20 +772,28 @@ class ApplyPatch(Tool):
 
         normalized_file = [self._remove_newline(line) for line in file_lines]
 
-        matches: list[int] = []
-
-        limit = len(normalized_file) - len(target) + 1
-
-        if limit <= 0:
+        def find(
+            haystack: list[str],
+            needle: list[str],
+        ) -> list[int]:
+            matches: list[int] = []
+            limit = len(haystack) - len(needle) + 1
+            if limit <= 0:
+                return matches
+            for position in range(limit):
+                if haystack[position : position + len(needle)] == needle:
+                    matches.append(position)
             return matches
 
-        for position in range(limit):
-            candidate = normalized_file[position : position + len(target)]
+        # Exact matching is preferred. Only when it produces no match do we
+        # tolerate harmless trailing-whitespace drift in the model's context.
+        exact = find(normalized_file, target)
+        if exact:
+            return exact
 
-            if candidate == target:
-                matches.append(position)
-
-        return matches
+        whitespace_tolerant_file = [line.rstrip() for line in normalized_file]
+        whitespace_tolerant_target = [line.rstrip() for line in target]
+        return find(whitespace_tolerant_file, whitespace_tolerant_target)
 
     def _apply_plan(
         self,
