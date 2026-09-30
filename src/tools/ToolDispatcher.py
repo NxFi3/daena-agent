@@ -26,7 +26,9 @@ class ToolDispatcher:
             "cmd": "command",
             "working_dir": "workdir",
             "cwd": "workdir",
-            "timeout": "timeout_ms",
+            # Backward-compatible names used by older model trajectories.
+            "timeout": "yield_time_ms",
+            "timeout_ms": "yield_time_ms",
         },
     }
 
