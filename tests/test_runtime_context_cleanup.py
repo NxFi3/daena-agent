@@ -173,3 +173,75 @@ def test_context_does_not_feed_provider_thinking_back_to_model():
     assert message is not None
     assert "thinking" not in message
     assert "tool_calls" in message
+
+
+def test_working_set_tracks_process_receipt():
+    working_set = WorkingSet()
+    call = ToolCall(name="command_exec", action="run")
+    result = ToolResult(
+        success=True,
+        name="command_exec",
+        content={
+            "status": "running",
+            "process_id": "proc-test",
+            "pid": 123,
+            "command": ["node", "server.js"],
+            "workdir": "/workspace",
+            "exit_code": None,
+        },
+    )
+
+    working_set.update(call, result, iteration=4)
+
+    process = working_set.context()["processes"]["proc-test"]
+    assert process["status"] == "running"
+    assert process["command"] == ["node", "server.js"]
+
+
+def test_context_keeps_failed_verification_before_artifacts():
+    builder = ContextBuilder.__new__(ContextBuilder)
+    working = {
+        "last_failed_verification": {
+            "command": ["pytest", "-q"],
+            "success": False,
+            "exit_code": 1,
+            "output_excerpt": "Expected: 200\\nReceived: 500",
+        },
+        "artifacts": {
+            f"file-{i}.js": {
+                "status": "known",
+                "known": True,
+                "preview": "x" * 600,
+            }
+            for i in range(6)
+        },
+    }
+    text = builder._compact_execution_state(
+        agent_state=None,
+        progress=None,
+        working_set=working,
+        observation=None,
+        recent_actions=None,
+    )
+    assert "last_failed_verification" in text
+    assert "Expected: 200" in text
+    assert "Received: 500" in text
+
+
+def test_context_includes_plan_progress():
+    builder = ContextBuilder.__new__(ContextBuilder)
+    text = builder._compact_execution_state(
+        agent_state=None,
+        progress=None,
+        working_set={
+            "plan_progress": {
+                "step": 3,
+                "successful_actions": 2,
+                "failed_actions": 1,
+            }
+        },
+        observation=None,
+        recent_actions=None,
+    )
+    assert "plan_progress" in text
+    assert '"step": 3' in text

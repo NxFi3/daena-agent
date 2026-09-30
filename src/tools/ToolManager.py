@@ -163,6 +163,11 @@ class ToolManager:
                 "for Node projects prefer the package script (for example npm test) "
                 "or npx when appropriate."
             ),
+            "resource_in_use": (
+                "The command reached an existing resource such as a listening address. "
+                "Inspect the active process state or choose the intended existing process "
+                "before starting another instance."
+            ),
             "invalid_argument": (
                 "Reissue the call with schema-valid arguments. Optional arguments "
                 "can be omitted instead of guessing."

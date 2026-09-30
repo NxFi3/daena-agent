@@ -43,10 +43,9 @@ class Plan(Tool):
         "WHEN TO UPDATE (this is part of the work, not optional):\n"
         "- The plan is workspace-scoped; never use a repository-root or installation-level plan file.\n"
         "- Creating a plan automatically starts the first step as in_progress.\n"
-        "- Right after a step's work succeeds (confirmed by a tool result): set it to "
-        "completed. The next pending step is then automatically started as in_progress.\n"
-        "- If a step fails and you cannot fix it: set it to blocked, then add a step "
-        "for the fix.\n"
+        "- Complete the active step when you judge its work finished; completion automatically advances the next pending step.\n"
+        "- Use an in_progress update only to repair a plan that has no active step; normal execution does not need manual starts.\n"
+        "- If a step cannot be completed, mark it blocked and continue with the next pending step.\n"
         "- If you discover new required work: add_step before doing it.\n"
         "- Before your final answer: every step must be completed or blocked. After the plan is complete, normal workspace tools remain available for verification, cleanup, and final checks.\n"
         "- Never mark a step completed unless the work actually succeeded.\n"
@@ -165,9 +164,10 @@ class Plan(Tool):
         "The agent MUST keep this plan synchronized with actual work.",
         "",
         "Plan update rules:",
-        "- Before starting a step, mark it as [in_progress].",
-        "- After a step's work succeeds, mark it as [completed] before starting the next step.",
-        "- If a step cannot be completed, mark it as [blocked] and add a step describing the required fix.",
+        "- The first step becomes [in_progress] when the plan is created.",
+        "- Completing the active step automatically advances the next pending step to [in_progress].",
+        "- Manually starting [in_progress] is only for repairing a plan with no active step.",
+        "- If a step cannot be completed, mark it [blocked] and continue with the next pending step.",
         "- If new required work is discovered, add a new step before performing that work.",
         "- Keep only one step [in_progress] at a time.",
         "- Never mark a step [completed] unless the corresponding work actually succeeded.",

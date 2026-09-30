@@ -28,6 +28,7 @@ class ToolDispatcher:
             "cwd": "workdir",
             "timeout": "yield_time_ms",
             "timeout_ms": "yield_time_ms",
+            "yield_time": "yield_time_ms",
         },
     }
 

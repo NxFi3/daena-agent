@@ -338,3 +338,23 @@ def test_failed_verification_evidence_is_visible_to_model():
     assert "last_failed_verification" in system
     assert "Expected: 200" in system
     assert "Received: 500" in system
+
+
+def test_tool_result_keeps_compact_diagnostic_evidence():
+    from src.models.ToolResult import ToolResult
+
+    result = ToolResult(
+        success=False,
+        name="command_exec",
+        content={
+            "command": ["npm", "test"],
+            "status": "exited",
+            "exit_code": 1,
+            "stdout": "FAIL tests/api.test.js\\nExpected: 200\\nReceived: 500\\nRan all test suites.",
+            "stderr": "",
+        },
+    )
+
+    assert "diagnostic_excerpt" in result.evidence
+    assert "Expected: 200" in result.evidence["diagnostic_excerpt"]
+    assert "Received: 500" in result.evidence["diagnostic_excerpt"]

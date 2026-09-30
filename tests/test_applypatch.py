@@ -45,3 +45,20 @@ def test_patch_context_failure_does_not_apply_other_operations(tmp_path):
     assert result.content["error"]["type"] == "patch_context_mismatch"
     assert good.read_text(encoding="utf-8") == "before\n"
     assert target.read_text(encoding="utf-8") == "actual\n"
+
+
+def test_patch_context_tolerates_trailing_whitespace_drift(tmp_path):
+    path = tmp_path / "app.js"
+    path.write_text("const value = 1;   \nnext();\n", encoding="utf-8")
+
+    result = ApplyPatch().execute(
+        f"""*** Begin Patch
+*** Update File: {path}
+@@
+-const value = 1;
++const value = 2;
+*** End Patch"""
+    )
+
+    assert result.success is True
+    assert path.read_text(encoding="utf-8") == "const value = 2;\nnext();\n"

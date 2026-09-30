@@ -793,12 +793,9 @@ class Loop:
         # A completed plan is a planning milestone, not a runtime shutdown signal.
         # The agent must still be able to run verification, inspect results, perform
         # cleanup, or make other final workspace changes after the last plan step.
-        if not state.is_complete and state.current_step is None:
-            return (
-                "step_start_required",
-                "A plan exists but no step is in_progress. Start the next pending step with the plan tool before doing other work.",
-            )
-
+        # A missing active step is a recoverable plan-state inconsistency.
+        # Non-plan work remains available so the model can inspect/repair state
+        # instead of being trapped behind a hard gate.
         return None
 
     def _final_response_gate(
@@ -907,18 +904,9 @@ class Loop:
                 f"Step {step_number} is not the current in_progress step. Current step is {current.number}.",
             )
 
-        if transition == "completed" and not self._plan_progress.has_work(step_number):
-            return (
-                "completion_requires_work",
-                "The current step cannot be marked completed yet. Perform successful work for this step first.",
-            )
-
-        if transition == "completed" and self.working_set.last_failed_verification:
-            return (
-                "completion_has_unresolved_failure",
-                "The plan still has an unresolved failed execution. Resolve the failure and obtain a successful result for that verification before completing the step.",
-            )
-
+        # Completion is intentionally structural rather than semantic. The runtime
+        # cannot reliably infer whether arbitrary natural-language step work was
+        # completed from a tool type or a previous verification result.
         return None
 
     def _classify_calls(
@@ -1726,11 +1714,14 @@ class Loop:
 
             raise RuntimeError("No active session.")
 
+        working_context = self.working_set.context()
+        working_context["plan_progress"] = self._plan_progress.context()
+
         context = self.context.get_context(
             session_id=self.session_id,
             user_task=user_task,
             agent_state=self.agent_state,
-            working_set=(self.working_set.context()),
+            working_set=working_context,
             observation=(self.working_set.observation_context()),
             recent_actions=(self.working_set.recent_actions_context()),
             workspace_directory=(workspace_directory),

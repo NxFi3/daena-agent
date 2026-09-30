@@ -344,6 +344,15 @@ class ToolResult:
                     self.MAX_STDERR_CHARS,
                 )
 
+            if not self.success and (isinstance(stdout, str) or isinstance(stderr, str)):
+                diagnostic = self._failure_excerpt(
+                    stderr=stderr if isinstance(stderr, str) else "",
+                    stdout=stdout if isinstance(stdout, str) else "",
+                    limit=1600,
+                )
+                if diagnostic:
+                    evidence["diagnostic_excerpt"] = diagnostic
+
             return evidence
 
         # Multi-file patch / filesystem result.

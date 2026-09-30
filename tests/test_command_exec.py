@@ -152,3 +152,14 @@ def test_poll_result_preserves_command_metadata():
     assert finished["command"] == command
     assert "workdir" in finished
     PROCESS_MANAGER.stop(process_id=process_id)
+
+
+def test_subprocess_resource_failure_is_structured():
+    from src.tools.builtin.command_exec.tool import CommandExec
+
+    failure_type = CommandExec._classify_failure(
+        stdout="",
+        stderr="Error: listen EADDRINUSE: address already in use :::3000",
+    )
+
+    assert failure_type == "resource_in_use"

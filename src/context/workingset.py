@@ -38,6 +38,7 @@ class WorkingSet:
     MAX_UNRESOLVED = 6
     MAX_RECENT_ACTIONS = 10
     MAX_OBSERVATIONS = 3
+    MAX_PROCESSES = 6
     MAX_VERIFICATION_EXCERPT_CHARS = 3200
 
     # Common command flags that change presentation rather than
@@ -85,6 +86,10 @@ class WorkingSet:
 
         self.observations: list[dict[str, Any]] = []
 
+        # Compact process receipts keep active and recently finished managed
+        # processes visible to the next model turn without exposing internals.
+        self.processes: OrderedDict[str, dict[str, Any]] = OrderedDict()
+
     def update(
         self,
         tool_call: ToolCall,
@@ -115,6 +120,7 @@ class WorkingSet:
         )
 
         self._record_observation(result)
+        self._update_process_state(result=result, iteration=iteration)
 
         for effect in result.effects:
             self._apply_effect(
@@ -207,6 +213,43 @@ class WorkingSet:
 
         if len(self.observations) > self.MAX_OBSERVATIONS:
             del self.observations[: len(self.observations) - self.MAX_OBSERVATIONS]
+
+    def _update_process_state(
+        self,
+        result: ToolResult,
+        iteration: int,
+    ) -> None:
+        content = result.content if isinstance(result.content, dict) else {}
+        process_id = str(content.get("process_id", "") or "").strip()
+        if not process_id:
+            return
+
+        status = str(content.get("status", "") or "").strip().lower()
+        receipt = dict(self.processes.get(process_id, {}))
+        receipt.update(
+            {
+                "process_id": process_id,
+                "status": status or receipt.get("status", ""),
+                "exit_code": content.get("exit_code", receipt.get("exit_code")),
+                "pid": content.get("pid", receipt.get("pid")),
+                "iteration": iteration,
+                "tool": result.name,
+                "success": result.success,
+            }
+        )
+
+        for key in ("command", "workdir"):
+            if content.get(key) is not None:
+                receipt[key] = content[key]
+        for key in ("stdout", "stderr"):
+            value = content.get(key)
+            if isinstance(value, str) and value.strip():
+                receipt[key] = self._truncate(value, 1200)
+
+        self.processes.pop(process_id, None)
+        self.processes[process_id] = receipt
+        while len(self.processes) > self.MAX_PROCESSES:
+            self.processes.popitem(last=False)
 
     def _apply_effect(
         self,
@@ -435,6 +478,10 @@ class WorkingSet:
             ),
         }
 
+        diagnostic = result.evidence.get("diagnostic_excerpt")
+        if isinstance(diagnostic, str) and diagnostic.strip():
+            verification["diagnostic_excerpt"] = self._truncate(diagnostic, 1600)
+
         self.verification = verification
 
         # A failed verification is durable state. Keep it until the same
@@ -644,9 +691,13 @@ class WorkingSet:
             "artifacts": dict(self.artifacts),
             "verification": dict(self.verification),
             "last_failed_verification": dict(self.last_failed_verification),
+            "processes": dict(self.processes),
             "facts": list(self.facts),
             "unresolved": list(self.unresolved),
         }
+
+    def process_context(self) -> dict[str, Any]:
+        return {"items": list(self.processes.values())}
 
     def observation_context(self) -> dict[str, Any]:
         return {

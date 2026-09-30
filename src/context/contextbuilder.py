@@ -329,6 +329,8 @@ class ContextBuilder:
         observation: dict[str, Any] | None,
         recent_actions: dict[str, Any] | None,
     ) -> str:
+        # Keep decision-critical state first. The final budget truncation should
+        # never hide the latest failed verification behind an artifact list.
         state: dict[str, Any] = {}
 
         if isinstance(agent_state, dict):
@@ -338,16 +340,89 @@ class ContextBuilder:
                 if agent_state.get(key) not in (None, "", [])
             }
 
-        if isinstance(progress, dict):
-            items = progress.get("items")
-            if isinstance(items, list) and items:
-                state["progress"] = [str(item) for item in items[-8:]]
-
         if isinstance(working_set, dict):
+            plan_progress = working_set.get("plan_progress")
+            if isinstance(plan_progress, dict) and plan_progress:
+                state["plan_progress"] = {
+                    key: plan_progress.get(key)
+                    for key in (
+                        "step",
+                        "started_iteration",
+                        "started_revision",
+                        "successful_actions",
+                        "failed_actions",
+                    )
+                    if plan_progress.get(key) not in (None, "", [])
+                }
+
+            last_failed = working_set.get("last_failed_verification")
+            if isinstance(last_failed, dict) and last_failed:
+                compact_failed = dict(last_failed)
+                compact_failed["output_excerpt"] = self._truncate(
+                    str(compact_failed.get("output_excerpt", "")),
+                    3200,
+                )
+                if isinstance(compact_failed.get("diagnostic_excerpt"), str):
+                    compact_failed["diagnostic_excerpt"] = self._truncate(
+                        compact_failed["diagnostic_excerpt"],
+                        1600,
+                    )
+                compact_failed.pop("scope_key", None)
+                state["last_failed_verification"] = compact_failed
+
+            verification = working_set.get("verification")
+            if isinstance(verification, dict) and verification:
+                compact_verification = dict(verification)
+                compact_verification["output_excerpt"] = self._truncate(
+                    str(compact_verification.get("output_excerpt", "")),
+                    1200,
+                )
+                if isinstance(compact_verification.get("diagnostic_excerpt"), str):
+                    compact_verification["diagnostic_excerpt"] = self._truncate(
+                        compact_verification["diagnostic_excerpt"],
+                        1000,
+                    )
+                state["verification"] = compact_verification
+
+            processes = working_set.get("processes")
+            if isinstance(processes, dict) and processes:
+                compact_processes: dict[str, Any] = {}
+                for process_id, item in list(processes.items())[-6:]:
+                    if not isinstance(item, dict):
+                        continue
+                    compact = {
+                        key: item.get(key)
+                        for key in (
+                            "process_id",
+                            "status",
+                            "exit_code",
+                            "pid",
+                            "iteration",
+                            "command",
+                            "workdir",
+                            "success",
+                        )
+                        if item.get(key) not in (None, "", [])
+                    }
+                    for key in ("stdout", "stderr"):
+                        if isinstance(item.get(key), str) and item[key].strip():
+                            compact[key] = self._truncate(item[key], 500)
+                    compact_processes[str(process_id)] = compact
+                if compact_processes:
+                    state["processes"] = compact_processes
+
+            facts = working_set.get("facts")
+            if isinstance(facts, list) and facts:
+                state["facts"] = [str(item) for item in facts[-6:]]
+
+            unresolved = working_set.get("unresolved")
+            if isinstance(unresolved, list) and unresolved:
+                state["unresolved"] = [str(item) for item in unresolved[-6:]]
+
             artifacts = working_set.get("artifacts")
             if isinstance(artifacts, dict) and artifacts:
                 compact_artifacts: dict[str, Any] = {}
-                for path, item in list(artifacts.items())[-8:]:
+                for path, item in list(artifacts.items())[-6:]:
                     if not isinstance(item, dict):
                         continue
                     compact = {
@@ -357,37 +432,15 @@ class ContextBuilder:
                     }
                     preview = item.get("preview")
                     if isinstance(preview, str) and preview.strip():
-                        compact["preview"] = self._truncate(preview, 900)
+                        compact["preview"] = self._truncate(preview, 600)
                     compact_artifacts[str(path)] = compact
                 if compact_artifacts:
                     state["artifacts"] = compact_artifacts
 
-            verification = working_set.get("verification")
-            if isinstance(verification, dict) and verification:
-                compact_verification = dict(verification)
-                compact_verification["output_excerpt"] = self._truncate(
-                    str(compact_verification.get("output_excerpt", "")),
-                    1800,
-                )
-                state["verification"] = compact_verification
-
-            last_failed = working_set.get("last_failed_verification")
-            if isinstance(last_failed, dict) and last_failed:
-                compact_failed = dict(last_failed)
-                compact_failed["output_excerpt"] = self._truncate(
-                    str(compact_failed.get("output_excerpt", "")),
-                    4200,
-                )
-                compact_failed.pop("scope_key", None)
-                state["last_failed_verification"] = compact_failed
-
-            facts = working_set.get("facts")
-            if isinstance(facts, list) and facts:
-                state["facts"] = [str(item) for item in facts[-8:]]
-
-            unresolved = working_set.get("unresolved")
-            if isinstance(unresolved, list) and unresolved:
-                state["unresolved"] = [str(item) for item in unresolved[-6:]]
+        if isinstance(progress, dict):
+            items = progress.get("items")
+            if isinstance(items, list) and items:
+                state["progress"] = [str(item) for item in items[-6:]]
 
         if isinstance(recent_actions, dict):
             items = recent_actions.get("items")
@@ -405,7 +458,7 @@ class ContextBuilder:
                         )
                         if item.get(key) not in (None, "")
                     }
-                    for item in items[-8:]
+                    for item in items[-6:]
                     if isinstance(item, dict)
                 ]
 
@@ -413,7 +466,7 @@ class ContextBuilder:
             items = observation.get("items")
             if isinstance(items, list) and items:
                 compact_observations: list[dict[str, Any]] = []
-                for item in items[-3:]:
+                for item in items[-2:]:
                     if not isinstance(item, dict):
                         continue
                     compact = {
@@ -424,16 +477,12 @@ class ContextBuilder:
                     evidence = item.get("evidence")
                     if isinstance(evidence, dict):
                         evidence_copy = dict(evidence)
-                        if isinstance(evidence_copy.get("content"), str):
-                            evidence_copy["content"] = self._truncate(
-                                evidence_copy["content"],
-                                900,
-                            )
-                        if isinstance(evidence_copy.get("stdout"), str):
-                            evidence_copy["stdout"] = self._truncate(
-                                evidence_copy["stdout"],
-                                900,
-                            )
+                        for key in ("content", "stdout", "stderr", "diagnostic_excerpt"):
+                            if isinstance(evidence_copy.get(key), str):
+                                evidence_copy[key] = self._truncate(
+                                    evidence_copy[key],
+                                    700,
+                                )
                         compact["evidence"] = evidence_copy
                     compact_observations.append(compact)
                 if compact_observations:
