@@ -64,6 +64,11 @@ class Search(Tool):
                 "minimum": 1,
                 "maximum": MAX_RESULTS,
             },
+            "use_regex": {
+                "type": "boolean",
+                "description": "Interpret query as a regular expression instead of literal text.",
+                "default": False,
+            },
             "context_lines": {
                 "type": "integer",
                 "description": "Number of surrounding lines to include for each match.",
@@ -87,6 +92,7 @@ class Search(Tool):
         max_results: int = DEFAULT_MAX_RESULTS,
         context_lines: int = DEFAULT_CONTEXT_LINES,
         file_pattern: str | None = None,
+        use_regex: bool = False,
     ) -> ToolResult:
         if not isinstance(query, str) or not query.strip():
             return self._error("invalid_argument", "query is required.")
@@ -111,9 +117,16 @@ class Search(Tool):
             )
 
         patterns = self._patterns(file_pattern)
-        try:
-            matcher = re.compile(query, re.IGNORECASE | re.MULTILINE)
-        except re.error:
+
+        if isinstance(use_regex, bool) and use_regex:
+            try:
+                matcher = re.compile(query, re.IGNORECASE | re.MULTILINE)
+            except re.error as exc:
+                return self._error(
+                    "invalid_regex",
+                    f"Invalid regular expression: {exc}",
+                )
+        else:
             matcher = re.compile(re.escape(query), re.IGNORECASE | re.MULTILINE)
 
         root = Path(path).expanduser().resolve(strict=False)
