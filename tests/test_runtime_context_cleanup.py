@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from src.context.contextbuilder import ContextBuilder, PlanReader
+from src.context.contextwindow import ContextWindow
 from src.context.workingset import WorkingSet
 from src.models.ToolCall import ToolCall
 from src.models.ToolResult import ToolResult
@@ -46,6 +47,30 @@ def test_plan_reader_uses_workspace_scope(tmp_path):
     plan_path.write_text("workspace plan", encoding="utf-8")
 
     assert PlanReader(tmp_path) == "workspace plan"
+
+
+def test_context_builder_loads_workspace_plan_automatically(tmp_path):
+    plan_path = tmp_path / ".daena" / "plan.md"
+    plan_path.parent.mkdir(parents=True)
+    plan_path.write_text(
+        "# Plan\n\n## Goal\nKeep the project organized\n",
+        encoding="utf-8",
+    )
+
+    builder = ContextBuilder.__new__(ContextBuilder)
+    builder.window = ContextWindow()
+    builder.system_instruction = ""
+    builder.experience_enabled = False
+
+    builder._populate_window(
+        events=[],
+        task=None,
+        workspace=str(tmp_path),
+        learned_experience=None,
+        execution_state=None,
+    )
+
+    assert "Keep the project organized" in builder.window.plan
 
 
 def test_working_set_resolves_relative_paths_from_workspace(tmp_path):
