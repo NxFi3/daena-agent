@@ -29,8 +29,13 @@ from src.utils.logger import get_logger
 class Loop:
 
     FAILURE_STUCK_THRESHOLD = 3
-    DUPLICATE_BLOCK_THRESHOLD = 5
+    DUPLICATE_BLOCK_THRESHOLD = 3
     EMPTY_RESPONSE_THRESHOLD = 3
+
+    # Read/search are observations rather than mutations. They may legitimately
+    # be repeated while the workspace revision is unchanged, but an identical
+    # observation should not become an infinite loop.
+    OBSERVATION_REPEAT_LIMIT = 3
 
     # How many times a single iteration may be retried in place after a
     # generation failure (provider exception, e.g. Ollama's own tool-call
@@ -91,6 +96,9 @@ class Loop:
         self._last_duplicate_key: str | None = None
 
         self._duplicate_block_streak = 0
+
+        # key -> (workspace_revision, successful_repeat_count)
+        self._same_revision_call_counts: dict[str, tuple[int, int]] = {}
 
         self._recent_failure_signatures: list[str] = []
 
@@ -358,6 +366,16 @@ class Loop:
                 "valid",
                 False,
             ),
+            "validation_error": getattr(
+                call,
+                "validation_error",
+                "",
+            ),
+            "normalization_notes": getattr(
+                call,
+                "normalization_notes",
+                [],
+            ),
             "approved": getattr(
                 call,
                 "approved",
@@ -535,6 +553,11 @@ class Loop:
             },
             metadata={
                 "duplicate_action": True,
+                "recovery_hint": (
+                    "Do not repeat the blocked call unchanged. "
+                    "Choose a different tool or change the arguments based on the "
+                    "last tool result."
+                ),
             },
             summary=summary,
         )
@@ -552,6 +575,22 @@ class Loop:
             )
         )
 
+        validation_error = str(
+            getattr(
+                call,
+                "validation_error",
+                "",
+            )
+        ).strip()
+
+        message = validation_error or "Invalid tool call."
+
+        notes = getattr(
+            call,
+            "normalization_notes",
+            [],
+        )
+
         return ToolResult(
             success=False,
             name=name,
@@ -559,11 +598,17 @@ class Loop:
                 "success": False,
                 "error": {
                     "type": "invalid_tool_call",
-                    "message": "Invalid tool call.",
+                    "message": message,
                 },
             },
-            metadata={},
-            summary="Invalid tool call.",
+            metadata={
+                "recovery_hint": (
+                    "Reissue the tool call with arguments matching the documented "
+                    "schema exactly. Do not repeat an invalid call unchanged."
+                ),
+                "normalization_notes": notes,
+            },
+            summary=message,
         )
 
     @staticmethod
@@ -867,21 +912,34 @@ class Loop:
             ) if tool is not None else False
 
             if (
-                not allow_same_revision_repeat
-                and previous_revision is not None
+                previous_revision is not None
                 and previous_revision == self.workspace_revision
             ):
-                blocked_results[index] = self._duplicate_result(
-                    call,
-                    (
-                        "An identical "
-                        "successful call "
-                        "already ran at "
-                        "the current "
-                        "workspace revision."
-                    ),
-                )
-                continue
+                if allow_same_revision_repeat:
+                    _, repeat_count = self._same_revision_call_counts.get(
+                        key,
+                        (self.workspace_revision, 0),
+                    )
+                    if repeat_count >= self.OBSERVATION_REPEAT_LIMIT:
+                        blocked_results[index] = self._duplicate_result(
+                            call,
+                            (
+                                "This observation has already been performed "
+                                f"{self.OBSERVATION_REPEAT_LIMIT} times at the "
+                                "same workspace revision. Inspect the returned "
+                                "evidence and choose a different action."
+                            ),
+                        )
+                        continue
+                else:
+                    blocked_results[index] = self._duplicate_result(
+                        call,
+                        (
+                            "An identical successful call already ran at the "
+                            "current workspace revision."
+                        ),
+                    )
+                    continue
 
             if self._is_plan_call(call):
 
@@ -1064,6 +1122,27 @@ class Loop:
             key = self._tool_call_key(call)
 
             self._successful_tool_calls[key] = self.workspace_revision
+
+            tool = self.tool.get_tool(call.name)
+            if bool(
+                getattr(
+                    tool,
+                    "allow_same_revision_repeat",
+                    False,
+                )
+            ):
+                previous_revision, previous_count = self._same_revision_call_counts.get(
+                    key,
+                    (self.workspace_revision, 0),
+                )
+                if previous_revision == self.workspace_revision:
+                    count = previous_count + 1
+                else:
+                    count = 1
+                self._same_revision_call_counts[key] = (
+                    self.workspace_revision,
+                    count,
+                )
 
         self._store_event(
             self._tool_result_event(
@@ -1287,6 +1366,13 @@ class Loop:
 
             self._duplicate_block_streak = 0
             self._last_duplicate_key = None
+
+        if self._duplicate_block_streak >= 2:
+            self._store_nudge(
+                "The last tool action was blocked because it repeated an earlier "
+                "action without progress. Do not repeat it unchanged. Diagnose the "
+                "last result and choose a different tool or arguments."
+            )
 
         if self._duplicate_block_streak >= self.DUPLICATE_BLOCK_THRESHOLD:
 
@@ -1614,6 +1700,7 @@ class Loop:
         self._context_step = 0
 
         self._successful_tool_calls.clear()
+        self._same_revision_call_counts.clear()
 
         self._plan_step_work_started = False
 
