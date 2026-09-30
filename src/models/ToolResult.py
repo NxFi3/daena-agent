@@ -183,9 +183,16 @@ class ToolResult:
             stderr = content.get("stderr", "")
             timed_out = content.get("timed_out", False)
             hint = content.get("exit_code_hint", "")
+            status = content.get("status")
+            process_id = content.get("process_id")
 
             if timed_out:
                 return f"Command timed out (exit_code={exit_code})."
+
+            if status == "running":
+                if process_id:
+                    return f"Command is still running (process_id={process_id})."
+                return "Command is still running."
 
             if self.success:
                 if isinstance(stdout, str) and stdout.strip():
@@ -274,6 +281,10 @@ class ToolResult:
 
             if "exit_code" in content:
                 evidence["exit_code"] = content["exit_code"]
+
+            for key in ("status", "process_id", "pid", "managed"):
+                if key in content:
+                    evidence[key] = content[key]
 
             if "exit_code_hint" in content and content["exit_code_hint"]:
                 evidence["exit_code_hint"] = content["exit_code_hint"]
