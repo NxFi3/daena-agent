@@ -125,9 +125,9 @@ class Plan(Tool):
         "additionalProperties": False,
     }
 
-    # Relative fallback kept for direct unit tests and standalone use. Runtime
-    # callers set the active workspace through set_workspace().
-    PLAN_PATH = Path("AgentInstruction") / "plan.md"
+    # Plan state belongs to the active workspace, not Daena's installation.
+    # Runtime callers set the active workspace through set_workspace().
+    PLAN_PATH = Path(".daena") / "plan.md"
 
     def __init__(self) -> None:
         self._workspace_root: Path | None = None
