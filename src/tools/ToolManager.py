@@ -141,6 +141,11 @@ class ToolManager:
                 "Reissue the call with schema-valid arguments. Optional arguments "
                 "can be omitted instead of guessing."
             ),
+            "tool_argument_error": (
+                "The tool rejected the argument contract at execution time. "
+                "Re-read the documented parameters and provide all required "
+                "arguments with the correct types."
+            ),
             "invalid_tool_call": (
                 "Reissue the call with the documented tool name and argument schema; "
                 "do not repeat the malformed call unchanged."
@@ -313,8 +318,42 @@ class ToolManager:
 
                 results.append(result)
 
+            except TypeError as exc:
+                self.logger.error(
+                    "Tool '%s' rejected its execution arguments: %s",
+                    toolcall.name,
+                    exc,
+                )
+                results.append(
+                    ToolResult(
+                        success=False,
+                        name=toolcall.name,
+                        content={
+                            "success": False,
+                            "error": {
+                                "type": "tool_argument_error",
+                                "message": (
+                                    f"Tool '{toolcall.name}' rejected the provided "
+                                    f"arguments: {exc}"
+                                ),
+                            },
+                        },
+                        metadata={
+                            "tool_call_id": toolcall.id,
+                            "recovery_hint": (
+                                "Treat this as an argument/contract error. "
+                                "Re-read the tool schema and provide the required "
+                                "arguments instead of retrying unchanged."
+                            ),
+                        },
+                    )
+                )
             except Exception as exc:
-                self.logger.error("Tool '%s' failed: %s", toolcall.name, exc)
+                self.logger.error(
+                    "Tool '%s' failed: %s",
+                    toolcall.name,
+                    exc,
+                )
                 results.append(
                     ToolResult(
                         success=False,
@@ -323,10 +362,20 @@ class ToolManager:
                             "success": False,
                             "error": {
                                 "type": "tool_execution_error",
-                                "message": f"Unexpected error while using tool: {exc}",
+                                "message": (
+                                    f"Unexpected error while using tool "
+                                    f"{type(exc).__name__}: {exc}"
+                                ),
                             },
                         },
-                        metadata={"tool_call_id": toolcall.id},
+                        metadata={
+                            "tool_call_id": toolcall.id,
+                            "recovery_hint": (
+                                "Inspect the concrete runtime error and choose "
+                                "a corrected action or different tool. Do not "
+                                "blindly repeat the same call."
+                            ),
+                        },
                     )
                 )
 
