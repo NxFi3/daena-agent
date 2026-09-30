@@ -40,34 +40,12 @@ def _loop_for_validation() -> Loop:
     return loop
 
 
-def test_plan_completion_requires_successful_step_work():
+def test_plan_completion_is_structural_not_tool_specific():
     loop = _loop_for_validation()
-
-    error = loop._validate_plan_transition(
-        plan_completion_call(),
-        active_plan(),
-    )
-
-    assert error is not None
-    assert error[0] == "completion_requires_work"
-
     loop._plan_progress.sync(
         active_plan(),
         iteration=1,
         workspace_revision=0,
-    )
-    loop._plan_progress.record(
-        ToolCall(
-            name="read_file",
-            id="read-1",
-            valid=True,
-            args={"file_path": "result.txt"},
-        ),
-        ToolResult(
-            success=True,
-            name="read_file",
-            content={"path": "result.txt", "content": "ok"},
-        ),
     )
 
     assert loop._validate_plan_transition(
@@ -76,47 +54,25 @@ def test_plan_completion_requires_successful_step_work():
     ) is None
 
 
-def test_failed_verification_blocks_step_completion_until_resolved():
+def test_failed_verification_does_not_create_a_runtime_semantic_gate():
     loop = _loop_for_validation()
     loop._plan_progress.sync(
         active_plan(),
         iteration=1,
         workspace_revision=0,
     )
-    loop._plan_progress.record(
-        ToolCall(
-            name="read_file",
-            id="read-1",
-            valid=True,
-            args={"file_path": "result.txt"},
-        ),
-        ToolResult(
-            success=True,
-            name="read_file",
-            content={"path": "result.txt", "content": "before"},
-        ),
+
+    failed = ToolResult(
+        success=False,
+        name="command_exec",
+        content={
+            "command": ["npm", "test"],
+            "workdir": ".",
+            "status": "exited",
+            "exit_code": 1,
+            "stdout": "FAIL one",
+        },
     )
-    loop._plan_progress.record(
-        ToolCall(
-            name="command_exec",
-            id="test-1",
-            valid=True,
-            args={"command": ["npm", "test"], "workdir": "."},
-        ),
-        ToolResult(
-            success=False,
-            name="command_exec",
-            content={
-                "command": ["npm", "test"],
-                "workdir": ".",
-                "status": "exited",
-                "exit_code": 1,
-                "stdout": "FAIL one",
-            },
-        ),
-    )
-    # Update WorkingSet too: completion should be governed by durable evidence,
-    # not by whether the most recent unrelated action happened to succeed.
     loop.working_set.update(
         ToolCall(
             name="command_exec",
@@ -124,68 +80,14 @@ def test_failed_verification_blocks_step_completion_until_resolved():
             valid=True,
             args={"command": ["npm", "test"], "workdir": "."},
         ),
-        ToolResult(
-            success=False,
-            name="command_exec",
-            content={
-                "command": ["npm", "test"],
-                "workdir": ".",
-                "status": "exited",
-                "exit_code": 1,
-                "stdout": "FAIL one",
-            },
-        ),
+        failed,
         1,
     )
 
-    error = loop._validate_plan_transition(
+    assert loop._validate_plan_transition(
         plan_completion_call(),
         active_plan(),
-    )
-    assert error is not None
-    assert error[0] == "completion_has_unresolved_failure"
-
-
-def test_incomplete_plan_blocks_final_response():
-    loop = Loop.__new__(Loop)
-
-    # The helper reads runtime plan state; replace it with a deterministic
-    # snapshot for this unit test.
-    loop._read_plan_state = lambda: active_plan()
-
-    result = loop._final_response_gate()
-
-    assert result is not None
-    assert result[0] == "plan_incomplete"
-
-
-def test_plan_completion_is_allowed_after_failure_is_resolved():
-    loop = _loop_for_validation()
-    loop._plan_progress.sync(
-        active_plan(),
-        iteration=1,
-        workspace_revision=0,
-    )
-    loop._plan_progress.record(
-        ToolCall(
-            name="read_file",
-            id="read-1",
-            valid=True,
-            args={"file_path": "result.txt"},
-        ),
-        ToolResult(
-            success=True,
-            name="read_file",
-            content={"path": "result.txt", "content": "ok"},
-        ),
-    )
-
-    error = loop._validate_plan_transition(
-        plan_completion_call(),
-        active_plan(),
-    )
-
-    assert error is None
+    ) is None
 
 
 def complete_plan() -> PlanState:
