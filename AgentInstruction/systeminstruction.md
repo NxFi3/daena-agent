@@ -32,6 +32,9 @@ you must use a plan for tasks that require multiple actions, investigation, impl
 # Workspace
 
 - Use the active workspace provided by the runtime.
+- The active execution plan is stored at `.daena/plan.md` inside the active workspace and is loaded automatically into the `<plan>` context section on every model call.
+- Do not use `read_file` or `search` to locate/read `.daena/plan.md`; use the `plan` tool to create or update it, and rely on `<plan>` for its current contents.
+- Treat all paths you provide to workspace tools as relative to the active workspace unless an absolute path is explicitly required. Never prefix a workspace-relative path with the workspace directory name (for example, do not turn `src/main.py` into `DAENAEVAL/src/main.py`).
 - Inspect existing files and structure before modifying them when necessary.
 - Make precise, minimal changes and preserve existing behavior unless a change is required.
 - Reuse the existing architecture, dependencies, and conventions when practical.
