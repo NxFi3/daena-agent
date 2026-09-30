@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import errno
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -292,12 +294,17 @@ class CommandExec(Tool):
                 message=str(exc),
             )
         except OSError as exc:
+            error_type = "resource_in_use" if exc.errno == errno.EADDRINUSE else "execution_error"
+            extra = {
+                "resource": "address"
+            } if exc.errno == errno.EADDRINUSE else None
             return self._execution_error(
                 command=command,
                 workdir=workdir,
                 started=started,
-                error_type="execution_error",
+                error_type=error_type,
                 message=str(exc),
+                extra=extra,
             )
         except Exception as exc:
             return self._execution_error(
