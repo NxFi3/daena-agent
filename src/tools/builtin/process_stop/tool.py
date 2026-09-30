@@ -6,7 +6,8 @@ from src.tools.builtin.command_exec.process_manager import PROCESS_MANAGER
 
 
 class ProcessStop(Tool):
-    # ToolManager replaces this with its session-scoped ProcessManager.\n    process_manager = PROCESS_MANAGER
+    # ToolManager replaces this with its session-scoped ProcessManager.
+    process_manager = PROCESS_MANAGER
     name = "process_stop"
     action = "modify"
 
