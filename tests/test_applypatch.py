@@ -62,3 +62,30 @@ def test_patch_context_tolerates_trailing_whitespace_drift(tmp_path):
 
     assert result.success is True
     assert path.read_text(encoding="utf-8") == "const value = 2;\nnext();\n"
+
+
+
+def test_add_file_tolerates_unprefixed_model_content(tmp_path):
+    path = tmp_path / "public" / "style.css"
+
+    result = ApplyPatch().execute(
+        f"""*** Begin Patch
+*** Add File: {path}
+body {{
+  margin: 0;
+}}
+.form {{
+  display: block;
+}}
+*** End Patch"""
+    )
+
+    assert result.success is True
+    assert path.read_text(encoding="utf-8") == (
+        "body {\n"
+        "  margin: 0;\n"
+        "}\n"
+        ".form {\n"
+        "  display: block;\n"
+        "}\n"
+    )
