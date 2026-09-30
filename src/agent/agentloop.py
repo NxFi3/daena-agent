@@ -615,6 +615,35 @@ class Loop:
         )
 
     @staticmethod
+    def _loop_guard_result(
+        call,
+        code: str,
+        message: str,
+        count: int = 0,
+    ) -> ToolResult:
+        name = str(getattr(call, "name", "unknown")).strip() or "unknown"
+        return ToolResult(
+            success=False,
+            name=name,
+            content={
+                "success": False,
+                "error": {
+                    "type": code,
+                    "message": message,
+                },
+            },
+            metadata={
+                "loop_guard_block": True,
+                "count": count,
+                "recovery_hint": (
+                    "Do not repeat the blocked action. Inspect the latest "
+                    "verification result and choose a different corrective action."
+                ),
+            },
+            summary=message,
+        )
+
+    @staticmethod
     def _missing_result(
         call,
     ) -> ToolResult:
