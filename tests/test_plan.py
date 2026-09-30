@@ -25,16 +25,9 @@ def test_plan_create_update_delete(tmp_path, monkeypatch):
     assert "# Plan" in content
     assert "## Instructions" in content
     assert "The agent MUST keep this plan synchronized with actual work." in content
-    assert "1. [pending] Inspect authentication architecture" in content
+    assert "1. [in_progress] Inspect authentication architecture" in content
     assert "2. [pending] Implement login" in content
     assert "3. [pending] Run tests" in content
-
-    result = tool.execute(
-        operation="update",
-        step=1,
-        status="in_progress",
-    )
-    assert result.success is True
 
     result = tool.execute(
         operation="update",
@@ -43,13 +36,17 @@ def test_plan_create_update_delete(tmp_path, monkeypatch):
     )
     assert result.success is True
 
+    content = plan_path.read_text(encoding="utf-8")
+    assert "1. [completed] Inspect authentication architecture" in content
+    assert "2. [in_progress] Implement login" in content
+
     result = tool.execute(
         operation="update",
         step=2,
         description="Implement JWT login",
     )
     assert result.success is True
-    assert "2. [pending] Implement JWT login" in plan_path.read_text(
+    assert "2. [in_progress] Implement JWT login" in plan_path.read_text(
         encoding="utf-8"
     )
 
@@ -76,6 +73,27 @@ def test_plan_create_update_delete(tmp_path, monkeypatch):
     assert "Secure authentication" in plan_path.read_text(
         encoding="utf-8"
     )
+
+    result = tool.execute(
+        operation="update",
+        step=2,
+        status="completed",
+    )
+    assert result.success is True
+
+    content = plan_path.read_text(encoding="utf-8")
+    assert "2. [completed] Implement JWT login" in content
+    assert "3. [in_progress] Run tests" in content
+
+    result = tool.execute(
+        operation="update",
+        step=3,
+        status="blocked",
+    )
+    assert result.success is True
+
+    plan_state = tool.snapshot()
+    assert plan_state.is_complete is True
 
     duplicate = tool.execute(
         operation="update",
