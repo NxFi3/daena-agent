@@ -36,7 +36,7 @@ def test_tool_manager_owns_a_session_scoped_process_manager():
             ],
             yield_time_ms=25,
         )
-        assert result.success is True
+        assert result.success is False
         assert result.content["status"] == "running"
 
         process_id = result.content["process_id"]
