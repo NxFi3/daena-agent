@@ -51,6 +51,12 @@ you must use a plan for tasks that require multiple actions, investigation, impl
   workdir. Do not invent shell quoting/heredoc syntax for argv arguments.
 - Let long-running commands return a process_id and use process_poll to observe them;
   do not start the same command again while an existing managed process is running.
+- command_exec receives argv directly, not an implicit shell command. Shell syntax such as
+  >, |, &&, ||, $(...), and heredocs has no shell meaning unless you explicitly invoke
+  sh/bash. Use apply_patch for file creation/editing.
+- After a verification or test failure, inspect its concrete output before editing again.
+  If you have made several edits to the same target without rerunning the failed
+  verification, rerun the verification instead of continuing a patch burst.
 - For project tests, prefer the project's package-manager script such as npm test
   or npx <tool> after dependencies are installed instead of assuming a bare binary
   is already on PATH.
