@@ -575,11 +575,36 @@ class ApplyPatch(Tool):
         except UnicodeDecodeError as exc:
             raise ValueError(f"Cannot update non-UTF-8/binary file '{path}'.") from exc
 
-        updated, added, removed = self._apply_hunks(
-            original=original,
-            hunks=operation.hunks,
-            path=str(path),
-        )
+        try:
+            updated, added, removed = self._apply_hunks(
+                original=original,
+                hunks=operation.hunks,
+                path=str(path),
+            )
+        except ValueError as exc:
+            message = str(exc)
+            if (
+                "Patch context did not match" in message
+                or "Ambiguous patch" in message
+            ):
+                try:
+                    current_content = path.read_text(
+                        encoding="utf-8",
+                    )
+                except (OSError, UnicodeDecodeError):
+                    current_content = ""
+
+                return self._failure(
+                    error_type="patch_context_mismatch",
+                    message=message,
+                    details={
+                        "path": str(path),
+                        "type": "file",
+                        "content": self._bounded_preview(current_content),
+                        "total_lines": self._count_lines(current_content),
+                    },
+                )
+            raise
 
         return {
             "operation": "update",
@@ -964,19 +989,25 @@ class ApplyPatch(Tool):
         *,
         error_type: str,
         message: str,
+        details: dict[str, Any] | None = None,
     ) -> ToolResult:
+
+        content: dict[str, Any] = {
+            "success": False,
+            "operation": self.name,
+            "error": {
+                "type": error_type,
+                "message": message,
+            },
+        }
+
+        if isinstance(details, dict):
+            content.update(details)
 
         return ToolResult(
             success=False,
             name=self.name,
-            content={
-                "success": False,
-                "operation": self.name,
-                "error": {
-                    "type": error_type,
-                    "message": message,
-                },
-            },
+            content=content,
             metadata={},
         )
 
