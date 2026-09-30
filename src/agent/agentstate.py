@@ -65,9 +65,6 @@ class AgentState:
 
         self._progress: list[str] = []
 
-    # ------------------------------------------------------------------
-    # LIFECYCLE
-    # ------------------------------------------------------------------
 
     def reset(self) -> None:
         self.status = "idle"
@@ -168,9 +165,6 @@ class AgentState:
 
         self.error = str(reason).strip() or None
 
-    # ------------------------------------------------------------------
-    # PROGRESS
-    # ------------------------------------------------------------------
 
     @property
     def progress(self) -> list[str]:
@@ -197,9 +191,6 @@ class AgentState:
     def clear_progress(self) -> None:
         self._progress.clear()
 
-    # ------------------------------------------------------------------
-    # TOOL RESULT INTERPRETATION
-    # ------------------------------------------------------------------
 
     def update_from_result(
         self,
@@ -455,9 +446,6 @@ class AgentState:
 
         return None
 
-    # ------------------------------------------------------------------
-    # CONTEXT REPRESENTATION
-    # ------------------------------------------------------------------
 
     def state_context(self) -> dict[str, Any]:
 
