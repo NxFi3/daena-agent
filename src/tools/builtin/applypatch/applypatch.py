@@ -363,31 +363,17 @@ class ApplyPatch(Tool):
                             "Prefix file content lines with '+'."
                         )
 
-                    # Important LLM tolerance:
-                    #
-                    # Standard Codex form for an empty line is:
-                    #
-                    # +
-                    #
-                    # Some models emit a truly empty line instead:
-                    #
-                    # <empty>
-                    #
-                    # Accept both.
+                    # Add File blocks are unambiguous once the
+                    # parser has identified the operation boundary. Accept the
+                    # canonical '+' prefix, but also tolerate raw content lines
+                    # from models that omit the prefix for an entire file block.
                     if current == "":
                         content_lines.append("")
-                        i += 1
-                        continue
+                    elif current.startswith("+"):
+                        content_lines.append(current[1:])
+                    else:
+                        content_lines.append(current)
 
-                    if not current.startswith("+"):
-                        raise ValueError(
-                            f"Invalid Add File line in '{path}': "
-                            f"{current!r}. "
-                            "Every non-empty content line must start with '+'. "
-                            "Use '+' for a blank line."
-                        )
-
-                    content_lines.append(current[1:])
                     i += 1
 
                 content = self._join_added_lines(content_lines)
