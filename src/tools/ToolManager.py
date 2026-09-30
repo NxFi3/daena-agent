@@ -29,6 +29,13 @@ class ToolManager:
     def set_workspace(self, directory: str) -> None:
         self.security.set_workspace(directory)
 
+        # Plan state is task-scoped workspace state. Keep the plan tool on the
+        # same filesystem coordinate system as the other workspace tools.
+        plan_tool = self.get_tool("plan")
+        set_workspace = getattr(plan_tool, "set_workspace", None)
+        if callable(set_workspace):
+            set_workspace(directory)
+
     def approve_background_command(
         self,
         command: list[str],
