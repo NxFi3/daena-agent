@@ -222,3 +222,35 @@ def test_missing_active_step_does_not_block_recovery_work():
     )
 
     assert loop._plan_gate_message(regular_tool_call(), state) is None
+
+
+
+def test_plan_progress_can_attach_to_an_existing_active_plan():
+    loop = _loop_for_validation()
+    state = active_plan()
+
+    loop._plan_progress.sync(
+        state,
+        iteration=7,
+        workspace_revision=3,
+    )
+    loop._plan_progress.record(
+        ToolCall(
+            name="read_file",
+            id="read-2",
+            valid=True,
+            action="inspect",
+            target="server.js",
+        ),
+        ToolResult(
+            success=True,
+            name="read_file",
+            content={
+                "path": "server.js",
+                "content": "app",
+            },
+        ),
+        iteration=8,
+    )
+
+    assert loop._plan_progress.can_complete(1) is True
