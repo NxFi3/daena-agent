@@ -18,12 +18,8 @@ class Tool(ABC):
         "additionalProperties": True,
     }
 
-    # Default semantic action for new tools.
     action: ClassVar[str] = "execute"
 
-    # When true, a successful identical call is still meaningful at the same
-    # workspace revision. This is used by dynamic observations such as
-    # process polling, where external state can change without a workspace edit.
     allow_same_revision_repeat: ClassVar[bool] = False
 
     def duplicate_key(
@@ -32,14 +28,6 @@ class Tool(ABC):
         *,
         workspace_root: str | None = None,
     ) -> dict[str, Any]:
-        """
-        Return the semantic arguments used by the loop's duplicate detector.
-
-        Defaults declared by the tool schema are material: omitted defaults and
-        explicitly supplied defaults should produce the same duplicate key.
-        Concrete tools can override this when a path or other argument needs
-        workspace-aware canonicalization.
-        """
         normalized = dict(arguments or {})
         properties = self.parameters.get("properties", {})
         if isinstance(properties, dict):
@@ -54,6 +42,73 @@ class Tool(ABC):
         del workspace_root
         return normalized
 
+    def normalize_arguments(
+        self,
+        arguments: dict[str, Any],
+    ) -> tuple[dict[str, Any], list[str]]:
+        """
+        Apply safe, schema-driven normalization before validation/execution.
+
+        Models frequently serialize an integer as a string or choose a value
+        slightly outside a bounded optional range. Those are transport-level
+        mistakes, not useful reasons to fail an otherwise valid action. We
+        accept numeric strings and clamp bounded integers/booleans to the
+        declared schema where doing so is unambiguous.
+        """
+        normalized = dict(arguments or {})
+        notes: list[str] = []
+
+        properties = self.parameters.get("properties", {})
+        if not isinstance(properties, dict):
+            return normalized, notes
+
+        for key, schema in properties.items():
+            if key not in normalized or not isinstance(schema, dict):
+                continue
+
+            value = normalized[key]
+            schema_type = schema.get("type")
+
+            if schema_type == "integer":
+                original = value
+                if isinstance(value, str):
+                    stripped = value.strip()
+                    try:
+                        if stripped and (
+                            stripped.isdigit()
+                            or (
+                                stripped.startswith("-")
+                                and stripped[1:].isdigit()
+                            )
+                        ):
+                            value = int(stripped)
+                    except ValueError:
+                        pass
+
+                if isinstance(value, int) and not isinstance(value, bool):
+                    minimum = schema.get("minimum")
+                    maximum = schema.get("maximum")
+                    if isinstance(minimum, int) and value < minimum:
+                        value = minimum
+                    if isinstance(maximum, int) and value > maximum:
+                        value = maximum
+
+                if value != original:
+                    notes.append(
+                        f"{key} normalized from {original!r} to {value!r}."
+                    )
+                    normalized[key] = value
+
+            elif schema_type == "boolean" and isinstance(value, str):
+                lowered = value.strip().lower()
+                if lowered in {"true", "false"}:
+                    normalized[key] = lowered == "true"
+                    notes.append(
+                        f"{key} normalized from {value!r} to {normalized[key]!r}."
+                    )
+
+        return normalized, notes
+
     @abstractmethod
     def execute(
         self,
@@ -65,34 +120,13 @@ class Tool(ABC):
         self,
         arguments: dict[str, Any],
     ) -> bool:
-        """
-        Optional lightweight validation hook.
-
-        Concrete tools can override this.
-        """
         return True
 
     def describe_call(
         self,
         arguments: dict[str, Any],
     ) -> dict[str, str]:
-        """
-        Return semantic information about a tool call.
-
-        This method is intentionally generic so AgentState does not need
-        to know concrete tool names.
-
-        New tools can simply define:
-
-            action = "search"
-
-        and optionally override this method when they need a richer target.
-        """
-
-        if not isinstance(
-            arguments,
-            dict,
-        ):
+        if not isinstance(arguments, dict):
             arguments = {}
 
         return {
@@ -119,10 +153,7 @@ class Tool(ABC):
             if value is None:
                 continue
 
-            if isinstance(
-                value,
-                list,
-            ):
+            if isinstance(value, list):
                 return " ".join(str(item) for item in value).strip()
 
             return str(value).strip()
