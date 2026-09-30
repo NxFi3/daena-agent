@@ -1743,6 +1743,13 @@ class Loop:
 
             raise RuntimeError("No active session.")
 
+        plan_state = self._read_plan_state()
+        self._plan_progress.sync(
+            plan_state,
+            iteration=int(self.metrics.get("iterations", 0) or 0),
+            workspace_revision=self.workspace_revision,
+        )
+
         working_context = self.working_set.context()
         working_context["plan_progress"] = self._plan_progress.context()
 
