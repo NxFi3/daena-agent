@@ -789,12 +789,9 @@ class Loop:
         if not state.exists:
             return None
 
-        if state.is_complete:
-            return (
-                "plan_complete",
-                "The current plan is already complete. Use the plan tool only if cleanup is required.",
-            )
-
+        # A completed plan is a planning milestone, not a runtime shutdown signal.
+        # The agent must still be able to run verification, inspect results, perform
+        # cleanup, or make other final workspace changes after the last plan step.
         if state.current_step is None:
             return (
                 "step_start_required",
