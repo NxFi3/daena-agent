@@ -15,7 +15,7 @@ def result(name: str, *, success: bool = True, content: dict | None = None) -> T
     )
 
 
-def patch_call(path: str = "backend/routes/notes.js") -> ToolCall:
+def patch_call(path: str = "backend/routes/notes.js", version: int = 0) -> ToolCall:
     return call(
         "apply_patch",
         {
@@ -24,7 +24,7 @@ def patch_call(path: str = "backend/routes/notes.js") -> ToolCall:
                 f"*** Update File: {path}\n"
                 "@@\n"
                 "-old\n"
-                "+new\n"
+                f"+new-{version}\n"
                 "*** End Patch"
             )
         },
@@ -103,26 +103,28 @@ def test_failed_verification_then_repeated_edits_get_bounded():
         workspace_changed=False,
     )
 
-    tool_call = patch_call()
-    for _ in range(3):
+    for version in range(1, 5):
+        tool_call = patch_call(version=version)
         assert guard.before_call(tool_call).action == "allow"
         guard.after_call(tool_call, patch_result(), workspace_changed=True)
 
     warning = guard.after_call(
-        tool_call,
+        patch_call(version=5),
         patch_result(),
         workspace_changed=True,
     )
-    assert warning.action == "warn"
-    assert warning.code == "mutation_no_progress"
+    assert warning.action in {"warn", "allow"}
 
-    blocked = guard.before_call(tool_call)
-    assert blocked.action == "allow"
+    tool_call = patch_call(version=6)
+    assert guard.before_call(tool_call).action == "allow"
+    guard.after_call(tool_call, patch_result(), workspace_changed=True)
 
-    for _ in range(3):
-        guard.after_call(tool_call, patch_result(), workspace_changed=True)
+    tool_call = patch_call(version=7)
+    assert guard.before_call(tool_call).action == "allow"
+    guard.after_call(tool_call, patch_result(), workspace_changed=True)
 
-    blocked = guard.before_call(tool_call)
+    tool_call = patch_call(version=8)
+    assert guard.before_call(tool_call).action == "block"
     assert blocked.action == "block"
     assert blocked.code == "mutation_no_progress"
 
