@@ -145,6 +145,27 @@ class ToolDispatcher:
                     if key in properties
                 }
 
+            required = schema.get("required", [])
+            if isinstance(required, list):
+                missing = [
+                    str(key)
+                    for key in required
+                    if str(key) not in arguments
+                ]
+                if missing:
+                    return ToolCall(
+                        name=name,
+                        id=call_id,
+                        args=arguments,
+                        valid=False,
+                        validation_error=(
+                            "Missing required argument(s): "
+                            + ", ".join(missing)
+                            + ". Provide every required parameter."
+                        ),
+                        normalization_notes=normalization_notes,
+                    )
+
             validate = getattr(tool, "validate", None)
             if callable(validate):
                 try:

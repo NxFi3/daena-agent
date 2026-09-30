@@ -22,6 +22,7 @@ from src.models.ContextEvent import (
 from src.models.LLMResult import LLMResult
 from src.models.ToolResult import ToolResult
 from src.memories.stm.STM import STM
+from src.agent.toolguard import ToolLoopGuard
 from src.tools.ToolManager import ToolManager
 from src.utils.logger import get_logger
 
@@ -85,6 +86,7 @@ class Loop:
         self.working_set = WorkingSet()
 
         self._plan_step_work_started = False
+        self._plan_step_has_unresolved_failure = False
 
         self.workspace_revision = 0
 
@@ -99,6 +101,8 @@ class Loop:
 
         # key -> (workspace_revision, successful_repeat_count)
         self._same_revision_call_counts: dict[str, tuple[int, int]] = {}
+
+        self._tool_loop_guard = ToolLoopGuard()
 
         self._recent_failure_signatures: list[str] = []
 
@@ -612,6 +616,35 @@ class Loop:
         )
 
     @staticmethod
+    def _loop_guard_result(
+        call,
+        code: str,
+        message: str,
+        count: int = 0,
+    ) -> ToolResult:
+        name = str(getattr(call, "name", "unknown")).strip() or "unknown"
+        return ToolResult(
+            success=False,
+            name=name,
+            content={
+                "success": False,
+                "error": {
+                    "type": code,
+                    "message": message,
+                },
+            },
+            metadata={
+                "loop_guard_block": True,
+                "count": count,
+                "recovery_hint": (
+                    "Do not repeat the blocked action. Inspect the latest "
+                    "verification result and choose a different corrective action."
+                ),
+            },
+            summary=message,
+        )
+
+    @staticmethod
     def _missing_result(
         call,
     ) -> ToolResult:
@@ -844,6 +877,12 @@ class Loop:
                 "The current step cannot be marked completed yet. Perform and successfully verify work for this step first.",
             )
 
+        if transition == "completed" and self._plan_step_has_unresolved_failure:
+            return (
+                "completion_has_unresolved_failure",
+                "The current step cannot be marked completed while the latest tool action is still failed. Resolve the failure with a successful action or verification first.",
+            )
+
         return None
 
     def _classify_calls(
@@ -904,6 +943,16 @@ class Loop:
                 continue
 
             current_response_keys.add(key)
+
+            guard_decision = self._tool_loop_guard.before_call(call)
+            if guard_decision.should_block:
+                blocked_results[index] = self._loop_guard_result(
+                    call=call,
+                    code=guard_decision.code,
+                    message=guard_decision.message,
+                    count=guard_decision.count,
+                )
+                continue
 
             previous_revision = self._successful_tool_calls.get(key)
             tool = self.tool.get_tool(call.name)
@@ -1117,6 +1166,34 @@ class Loop:
         if isinstance(result.metadata, dict) and result.metadata.get("plan_gate"):
             self.metrics["plan_blocks"] = self.metrics.get("plan_blocks", 0) + 1
 
+        if isinstance(result.metadata, dict) and result.metadata.get("loop_guard_block"):
+            self.metrics["loop_guard_blocks"] = (
+                self.metrics.get("loop_guard_blocks", 0) + 1
+            )
+
+        if (
+            not self._is_plan_call(call)
+            and not (
+                isinstance(result.metadata, dict)
+                and result.metadata.get("plan_gate")
+            )
+        ):
+            if result.success:
+                self._plan_step_has_unresolved_failure = False
+            else:
+                self._plan_step_has_unresolved_failure = True
+
+        guard_decision = self._tool_loop_guard.after_call(
+            call=call,
+            result=result,
+            workspace_changed=changed,
+        )
+        if guard_decision.action == "warn":
+            self.metrics["loop_guard_warnings"] = (
+                self.metrics.get("loop_guard_warnings", 0) + 1
+            )
+            self._store_nudge(guard_decision.message)
+
         if result.success:
 
             key = self._tool_call_key(call)
@@ -1189,6 +1266,7 @@ class Loop:
                 or before_current.status != after_current.status
             ):
                 self._plan_step_work_started = False
+                self._plan_step_has_unresolved_failure = False
 
             return
 
@@ -1196,6 +1274,7 @@ class Loop:
 
         if state.current_step is not None:
             self._plan_step_work_started = True
+            self._plan_step_has_unresolved_failure = False
 
     def _check_failure_stuck(
         self,
@@ -1222,6 +1301,9 @@ class Loop:
 
         if is_duplicate:
 
+            return None
+
+        if isinstance(result.metadata, dict) and result.metadata.get("loop_guard_block"):
             return None
 
         signature = self._failure_signature(
@@ -1702,7 +1784,10 @@ class Loop:
         self._successful_tool_calls.clear()
         self._same_revision_call_counts.clear()
 
+        self._tool_loop_guard.reset()
+
         self._plan_step_work_started = False
+        self._plan_step_has_unresolved_failure = False
 
         self._last_duplicate_key = None
 
@@ -1722,6 +1807,8 @@ class Loop:
             "tool_failures": 0,
             "tool_blocks": 0,
             "plan_blocks": 0,
+            "loop_guard_warnings": 0,
+            "loop_guard_blocks": 0,
             "completed": False,
             "stop_reason": "",
             "duration_ms": 0.0,

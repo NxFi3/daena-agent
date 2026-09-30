@@ -105,6 +105,39 @@ def test_dispatcher_clamps_numeric_command_options():
     assert call.normalization_notes
 
 
+
+
+def test_dispatcher_rejects_missing_required_args_before_execution():
+    class RequiredTool:
+        parameters = {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        }
+
+        def validate(self, args):
+            raise AssertionError("validate/execute must not run for missing required args")
+
+    class Registry:
+        def is_available(self, name):
+            return name == "required_tool"
+
+        def get(self, name):
+            return RequiredTool() if name == "required_tool" else None
+
+    dispatcher = ToolDispatcher(Registry())
+    call = dispatcher.dispatch({
+        "name": "required_tool",
+        "arguments": "{}",
+    })[0]
+
+    assert call.valid is False
+    assert "Missing required argument" in call.validation_error
+
+
 class StrictTool(FakeTool):
     parameters = {
         "type": "object",
