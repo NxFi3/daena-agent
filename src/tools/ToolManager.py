@@ -117,6 +117,57 @@ class ToolManager:
         toolcall.args = args
         return toolcall
 
+    @staticmethod
+    def _recovery_hint(result: ToolResult) -> str:
+        content = result.content if isinstance(result.content, dict) else {}
+        error = content.get("error")
+        error_type = ""
+        if isinstance(error, dict):
+            error_type = str(error.get("type", "")).strip().lower()
+        elif error:
+            error_type = str(error).strip().lower()
+
+        hints = {
+            "workspace_boundary": (
+                "Keep every path/workdir inside the active workspace. "
+                "Use relative paths from the workspace root."
+            ),
+            "command_not_found": (
+                "The executable was not found. Check the project setup first; "
+                "for Node projects prefer the package script (for example npm test) "
+                "or npx when appropriate."
+            ),
+            "invalid_argument": (
+                "Reissue the call with schema-valid arguments. Optional arguments "
+                "can be omitted instead of guessing."
+            ),
+            "invalid_tool_call": (
+                "Reissue the call with the documented tool name and argument schema; "
+                "do not repeat the malformed call unchanged."
+            ),
+            "tool_not_found": (
+                "Use one of the currently available tools instead of retrying the "
+                "missing tool."
+            ),
+            "security_denied": (
+                "The runtime denied this action. Respect the reported security rule "
+                "and choose a compliant alternative."
+            ),
+            "tool_execution_error": (
+                "Inspect the concrete execution error and change the action before "
+                "retrying; do not blindly repeat the same call."
+            ),
+            "unexpected_error": (
+                "The tool failed unexpectedly. Inspect the error and try a different "
+                "action or corrected arguments."
+            ),
+        }
+        return hints.get(
+            error_type,
+            "Use the concrete tool result to decide the next action; avoid repeating "
+            "an unchanged failed call.",
+        )
+
     def execute(self, tool_calls: list[ToolCall]) -> dict:
         calls: list[ToolCall] = []
         results: list[ToolResult] = []
@@ -208,6 +259,10 @@ class ToolManager:
                         metadata={
                             "tool_call_id": toolcall.id,
                             "security_rule": toolcall.security_rule,
+                            "recovery_hint": (
+                                "Respect the reported security rule and choose a "
+                                "different compliant action."
+                            ),
                         },
                     )
                 )
@@ -235,6 +290,13 @@ class ToolManager:
                     result.metadata = {}
 
                 result.metadata.setdefault("tool_call_id", toolcall.id)
+
+                if not result.success:
+                    result.metadata.setdefault(
+                        "recovery_hint",
+                        self._recovery_hint(result),
+                    )
+
                 results.append(result)
 
             except Exception as exc:
