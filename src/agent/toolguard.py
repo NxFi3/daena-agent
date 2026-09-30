@@ -46,6 +46,7 @@ class ToolLoopGuard:
 
     MUTATION_WARN_AFTER = 4
     MUTATION_BLOCK_AFTER = 7
+    REPEATABLE_TOOLS = frozenset({"process_poll"})
 
     _MUTATING_TOOLS = frozenset({
         "apply_patch",
@@ -181,29 +182,13 @@ class ToolLoopGuard:
             for marker in cls._VERIFICATION_MARKERS
         )
 
-    @classmethod
-    def _is_verification_result(cls, call: ToolCall, result: ToolResult) -> bool:
-        name = str(getattr(call, "name", "")).strip().lower()
-        content = result.content if isinstance(result.content, dict) else {}
-
-        if name == "command_exec":
-            return cls._is_verification_command(content.get("command"))
-
-        if name == "process_poll":
-            process_id = str(content.get("process_id", "")).strip()
-            return bool(process_id) and process_id in getattr(
-                result.metadata,
-                "_verification_processes",
-                set(),
-            )
-
-        return False
-
     def before_call(self, call: ToolCall) -> GuardDecision:
         signature = self._signature(call)
+        name = str(getattr(call, "name", "")).strip().lower()
 
         if (
-            signature == self._last_signature
+            name not in self.REPEATABLE_TOOLS
+            and signature == self._last_signature
             and self._identical_count >= self.IDENTICAL_BLOCK_AFTER
         ):
             return GuardDecision(
@@ -309,7 +294,8 @@ class ToolLoopGuard:
             pass
 
         if (
-            signature == self._last_signature
+            name not in self.REPEATABLE_TOOLS
+            and signature == self._last_signature
             and self._identical_count >= self.IDENTICAL_BLOCK_AFTER
         ):
             return GuardDecision(
@@ -323,7 +309,10 @@ class ToolLoopGuard:
                 ),
             )
 
-        if self._identical_count >= self.IDENTICAL_WARN_AFTER:
+        if (
+            name not in self.REPEATABLE_TOOLS
+            and self._identical_count >= self.IDENTICAL_WARN_AFTER
+        ):
             return GuardDecision(
                 action="warn",
                 code="identical_call_repeat",
