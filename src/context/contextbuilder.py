@@ -360,8 +360,13 @@ class ContextBuilder:
                 compact_failed = dict(last_failed)
                 compact_failed["output_excerpt"] = self._truncate(
                     str(compact_failed.get("output_excerpt", "")),
-                    3600,
+                    3200,
                 )
+                if isinstance(compact_failed.get("diagnostic_excerpt"), str):
+                    compact_failed["diagnostic_excerpt"] = self._truncate(
+                        compact_failed["diagnostic_excerpt"],
+                        1600,
+                    )
                 compact_failed.pop("scope_key", None)
                 state["last_failed_verification"] = compact_failed
 
@@ -370,8 +375,13 @@ class ContextBuilder:
                 compact_verification = dict(verification)
                 compact_verification["output_excerpt"] = self._truncate(
                     str(compact_verification.get("output_excerpt", "")),
-                    1400,
+                    1200,
                 )
+                if isinstance(compact_verification.get("diagnostic_excerpt"), str):
+                    compact_verification["diagnostic_excerpt"] = self._truncate(
+                        compact_verification["diagnostic_excerpt"],
+                        1000,
+                    )
                 state["verification"] = compact_verification
 
             processes = working_set.get("processes")
