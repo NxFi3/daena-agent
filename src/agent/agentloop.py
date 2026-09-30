@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -61,6 +62,7 @@ class Loop:
         self.session_id: UUID | None = None
 
         self._context_step = 0
+        self._workspace_root: Path | None = None
 
         self.tool = ToolManager(config=self.config)
 
@@ -405,27 +407,43 @@ class Loop:
             step=self._next_step(),
         )
 
-    @staticmethod
     def _tool_call_key(
+        self,
         call,
     ) -> str:
 
-        payload = {
-            "name": str(
-                getattr(
-                    call,
-                    "name",
-                    "",
-                )
-            )
-            .strip()
-            .lower(),
-            "args": getattr(
+        name = str(
+            getattr(
                 call,
-                "args",
-                {},
+                "name",
+                "",
             )
-            or {},
+        ).strip().lower()
+
+        arguments = getattr(call, "args", {}) or {}
+
+        tool = self.tool.get_tool(name)
+
+        duplicate_key = getattr(tool, "duplicate_key", None) if tool else None
+
+        if callable(duplicate_key):
+            try:
+                arguments = duplicate_key(
+                    arguments,
+                    workspace_root=(
+                        str(self._workspace_root)
+                        if self._workspace_root is not None
+                        else None
+                    ),
+                )
+            except Exception as exc:
+                self.logger.debug(
+                    f"Duplicate-key normalization failed for '{name}': {exc}"
+                )
+
+        payload = {
+            "name": name,
+            "args": arguments,
         }
 
         return json.dumps(
@@ -843,9 +861,14 @@ class Loop:
             current_response_keys.add(key)
 
             previous_revision = self._successful_tool_calls.get(key)
+            tool = self.tool.get_tool(call.name)
+            allow_same_revision_repeat = bool(
+                getattr(tool, "allow_same_revision_repeat", False)
+            ) if tool is not None else False
 
             if (
-                previous_revision is not None
+                not allow_same_revision_repeat
+                and previous_revision is not None
                 and previous_revision == self.workspace_revision
             ):
                 blocked_results[index] = self._duplicate_result(
@@ -1567,6 +1590,7 @@ class Loop:
         workspace_directory: str,
     ) -> None:
 
+        self._workspace_root = Path(workspace_directory).expanduser().resolve()
         self.tool.set_workspace(workspace_directory)
 
     def get_metrics(self) -> dict[str, Any]:
