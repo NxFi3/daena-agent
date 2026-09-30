@@ -19,9 +19,13 @@ EXPERIENCE_PATH = Path("AgentInstruction/experience.md")
 PLANS_PATH = Path("AgentInstruction/plan.md")
 
 
-def PlanReader() -> str:
+def PlanReader(workspace: str | Path | None = None) -> str:
+    plan_path = PLANS_PATH
+    if workspace:
+        plan_path = Path(workspace).expanduser().resolve() / PLANS_PATH
+
     try:
-        text = PLANS_PATH.read_text(encoding="utf-8").strip()
+        text = plan_path.read_text(encoding="utf-8").strip()
     except (FileNotFoundError, OSError):
         return ""
     return text
@@ -202,10 +206,6 @@ class ContextBuilder:
         ):
             if raw.get(key) is not None:
                 message[key] = raw[key]
-
-        thinking = raw.get("thinking") or metadata.get("thinking")
-        if thinking:
-            message["thinking"] = self._truncate(str(thinking), self.MAX_THINKING_CHARS)
 
         if not str(message.get("content", "")).strip() and "tool_calls" not in message:
             return None
@@ -462,7 +462,7 @@ class ContextBuilder:
                 self.MAX_LEARNED_EXPERIENCE_CHARS,
             )
         )
-        self.window.set_plan(PlanReader())
+        self.window.set_plan(PlanReader(workspace))
         self.window.set_execution_state(execution_state)
         self.window.set_runtime(workspace)
         self.window.set_conversation(self._build_conversation(events, task))
