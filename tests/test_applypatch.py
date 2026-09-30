@@ -5,8 +5,8 @@ def test_patch_context_mismatch_returns_structured_failure(tmp_path):
     target = tmp_path / "server.js"
     target.write_text("const port = 3000;\napp.listen(port);\n", encoding="utf-8")
 
-    patch = """*** Begin Patch
-*** Update File: ${target}
+    patch = f"""*** Begin Patch
+*** Update File: {target}
 @@
  const port = 4000;
 -app.listen(port);
