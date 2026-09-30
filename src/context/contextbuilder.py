@@ -51,6 +51,7 @@ class ContextBuilder:
     MAX_THINKING_CHARS = 2000
     MAX_EXPERIENCE_CHARS = 4000
     MAX_LEARNED_EXPERIENCE_CHARS = 3000
+    MAX_EXECUTION_STATE_CHARS = 6000
 
     def __init__(self, config: dict[str, Any], llm_provider: LlmProvider) -> None:
         self.config = config
@@ -328,12 +329,127 @@ class ContextBuilder:
             if index < last_user:
                 message.pop("thinking", None)
 
+    def _compact_execution_state(
+        self,
+        agent_state: dict[str, Any] | None,
+        progress: dict[str, Any] | None,
+        working_set: dict[str, Any] | None,
+        observation: dict[str, Any] | None,
+        recent_actions: dict[str, Any] | None,
+    ) -> str:
+        state: dict[str, Any] = {}
+
+        if isinstance(agent_state, dict):
+            state["agent"] = {
+                key: agent_state.get(key)
+                for key in ("status", "tool", "action", "target", "iteration", "error")
+                if agent_state.get(key) not in (None, "", [])
+            }
+
+        if isinstance(progress, dict):
+            items = progress.get("items")
+            if isinstance(items, list) and items:
+                state["progress"] = [str(item) for item in items[-8:]]
+
+        if isinstance(working_set, dict):
+            artifacts = working_set.get("artifacts")
+            if isinstance(artifacts, dict) and artifacts:
+                compact_artifacts: dict[str, Any] = {}
+                for path, item in list(artifacts.items())[-8:]:
+                    if not isinstance(item, dict):
+                        continue
+                    compact = {
+                        key: item.get(key)
+                        for key in ("status", "known", "last_operation", "last_iteration")
+                        if key in item
+                    }
+                    preview = item.get("preview")
+                    if isinstance(preview, str) and preview.strip():
+                        compact["preview"] = self._truncate(preview, 900)
+                    compact_artifacts[str(path)] = compact
+                if compact_artifacts:
+                    state["artifacts"] = compact_artifacts
+
+            verification = working_set.get("verification")
+            if isinstance(verification, dict) and verification:
+                compact_verification = dict(verification)
+                compact_verification["output_excerpt"] = self._truncate(
+                    str(compact_verification.get("output_excerpt", "")),
+                    1200,
+                )
+                state["verification"] = compact_verification
+
+            facts = working_set.get("facts")
+            if isinstance(facts, list) and facts:
+                state["facts"] = [str(item) for item in facts[-8:]]
+
+            unresolved = working_set.get("unresolved")
+            if isinstance(unresolved, list) and unresolved:
+                state["unresolved"] = [str(item) for item in unresolved[-6:]]
+
+        if isinstance(recent_actions, dict):
+            items = recent_actions.get("items")
+            if isinstance(items, list) and items:
+                state["recent_actions"] = [
+                    {
+                        key: item.get(key)
+                        for key in (
+                            "iteration",
+                            "tool",
+                            "action",
+                            "target",
+                            "outcome",
+                            "summary",
+                        )
+                        if item.get(key) not in (None, "")
+                    }
+                    for item in items[-8:]
+                    if isinstance(item, dict)
+                ]
+
+        if isinstance(observation, dict):
+            items = observation.get("items")
+            if isinstance(items, list) and items:
+                compact_observations: list[dict[str, Any]] = []
+                for item in items[-3:]:
+                    if not isinstance(item, dict):
+                        continue
+                    compact = {
+                        key: item.get(key)
+                        for key in ("tool", "success", "summary", "effects")
+                        if key in item
+                    }
+                    evidence = item.get("evidence")
+                    if isinstance(evidence, dict):
+                        evidence_copy = dict(evidence)
+                        if isinstance(evidence_copy.get("content"), str):
+                            evidence_copy["content"] = self._truncate(
+                                evidence_copy["content"],
+                                900,
+                            )
+                        if isinstance(evidence_copy.get("stdout"), str):
+                            evidence_copy["stdout"] = self._truncate(
+                                evidence_copy["stdout"],
+                                900,
+                            )
+                        compact["evidence"] = evidence_copy
+                    compact_observations.append(compact)
+                if compact_observations:
+                    state["observations"] = compact_observations
+
+        if not state:
+            return ""
+
+        rendered = json.dumps(state, ensure_ascii=False, default=str)
+        return self._truncate(rendered, self.MAX_EXECUTION_STATE_CHARS)
+
     def _populate_window(
         self,
         events: list[ContextEvent],
         task: dict[str, Any] | None,
         workspace: str | None,
         learned_experience: str | None,
+        execution_state: str | None,
     ) -> None:
         self.window.set_system(self.system_instruction)
         experience = ExperienceReader() if self.experience_enabled else ""
@@ -347,6 +463,7 @@ class ContextBuilder:
             )
         )
         self.window.set_plan(PlanReader())
+        self.window.set_execution_state(execution_state)
         self.window.set_runtime(workspace)
         self.window.set_conversation(self._build_conversation(events, task))
 
@@ -494,13 +611,20 @@ class ContextBuilder:
         workspace: str | None = None,
         learned_experience: str | None = None,
     ) -> list[dict[str, Any]]:
-        del agent_state, progress, working_set, observation, recent_actions
+        execution_state = self._compact_execution_state(
+            agent_state=agent_state,
+            progress=progress,
+            working_set=working_set,
+            observation=observation,
+            recent_actions=recent_actions,
+        )
 
         self._populate_window(
             events,
             task,
             workspace,
             learned_experience,
+            execution_state,
         )
         messages = self.window.get_prompt()
 
