@@ -20,14 +20,17 @@ The plan is persistent and represents the current state of the task.
 Do not ignore or silently bypass it.
 
 ## Goal
-Build a small GitHub repository activity dashboard in the existing workspace
+Build a small GitHub repository activity dashboard with a Node.js backend and React frontend in the current workspace.
 
 ## Steps
 
-1. [pending] Initialize npm project and install dependencies
-2. [pending] Create Express server to proxy GitHub API requests
-3. [pending] Set up Vite React app with TypeScript
-4. [pending] Implement UI components and data fetching
-5. [pending] Add loading, error, and rate limit handling
-6. [pending] Configure environment variable for optional GitHub token
-7. [pending] Test the application by running server and frontend
+1. [completed] Initialize npm project
+2. [completed] Install backend dependencies
+3. [completed] Create backend server with GitHub API proxy
+4. [completed] Create frontend with Vite and React
+5. [completed] Implement repository input and data fetching
+6. [completed] Display repository info, commits, issues, PRs, stats
+7. [in_progress] Handle loading, errors, rate limiting
+8. [pending] Add ability to switch repositories
+9. [pending] Test with facebook/react
+10. [pending] Run application and verify functionality
