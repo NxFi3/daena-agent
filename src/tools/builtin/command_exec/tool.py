@@ -315,9 +315,9 @@ class CommandExec(Tool):
             )
 
         status = result.get("status")
-        success = status in {"running", "exited"} and (
-            status == "running" or result.get("exit_code") == 0
-        )
+        # Launching a managed process is not the same as completing the command.
+        # A running process must be resolved by process_poll/process_stop.
+        success = status == "exited" and result.get("exit_code") == 0
 
         hint = self._exit_code_hint(command, result.get("exit_code"))
 
@@ -338,6 +338,8 @@ class CommandExec(Tool):
             "timed_out": False,
             "background": status == "running",
             "managed": True,
+            "operation_complete": status == "exited",
+            "process_state": status,
             "status": status,
             "process_id": result.get("process_id"),
             "pid": result.get("pid"),
