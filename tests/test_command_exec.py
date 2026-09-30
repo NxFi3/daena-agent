@@ -163,3 +163,19 @@ def test_subprocess_resource_failure_is_structured():
     )
 
     assert failure_type == "resource_in_use"
+
+
+
+def test_known_execution_failure_keeps_concrete_diagnostic():
+    tool = CommandExec()
+
+    result = tool._execute_managed(
+        command=["sh", "-c", "printf 'Error: listen EADDRINUSE: address already in use :::3000\\n' >&2; exit 1"],
+        workdir=None,
+        yield_time_ms=1_000,
+        max_output_chars=8_000,
+    )
+
+    assert result.success is False
+    assert result.content["error"]["type"] == "resource_in_use"
+    assert "EADDRINUSE" in result.content["error"]["message"]

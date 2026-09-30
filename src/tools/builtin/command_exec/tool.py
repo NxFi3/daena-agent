@@ -354,9 +354,14 @@ class CommandExec(Tool):
         }
 
         if failure_type:
+            diagnostic = self._failure_diagnostic(
+                stdout=stdout,
+                stderr=stderr,
+            )
             content["error"] = {
                 "type": failure_type,
-                "message": "The process reported a known execution failure.",
+                "message": diagnostic
+                or "The process reported a known execution failure.",
             }
 
         return ToolResult(
@@ -383,6 +388,63 @@ class CommandExec(Tool):
         if "command not found" in lowered or "not found" in lowered and "sh:" in lowered:
             return "command_not_found"
         return ""
+
+    @staticmethod
+    def _failure_diagnostic(
+        *,
+        stdout: Any,
+        stderr: Any,
+        limit: int = 600,
+    ) -> str:
+        """Return concrete, model-useful diagnostics for a failed process."""
+        sources = [
+            stderr if isinstance(stderr, str) else "",
+            stdout if isinstance(stdout, str) else "",
+        ]
+
+        selected: list[str] = []
+        for source in sources:
+            for raw_line in source.splitlines():
+                line = raw_line.strip()
+                if not line or line in selected:
+                    continue
+
+                lowered = line.lower()
+                if any(
+                    marker in lowered
+                    for marker in (
+                        "error",
+                        "fail",
+                        "exception",
+                        "traceback",
+                        "assert",
+                        "expected",
+                        "received",
+                        "address already in use",
+                        "not found",
+                        "permission denied",
+                        "panic",
+                    )
+                ):
+                    selected.append(line)
+
+                if len(selected) >= 4:
+                    break
+
+            if len(selected) >= 4:
+                break
+
+        if not selected:
+            for source in sources:
+                lines = [line.strip() for line in source.splitlines() if line.strip()]
+                if lines:
+                    selected.append(lines[-1])
+                    break
+
+        diagnostic = " | ".join(selected)
+        if len(diagnostic) <= limit:
+            return diagnostic
+        return diagnostic[: limit - 3].rstrip() + "..."
 
     @staticmethod
     def _exit_code_hint(

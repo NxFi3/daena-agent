@@ -40,7 +40,7 @@ def _loop_for_validation() -> Loop:
     return loop
 
 
-def test_plan_completion_is_structural_not_tool_specific():
+def test_plan_completion_requires_successful_terminal_work():
     loop = _loop_for_validation()
     loop._plan_progress.sync(
         active_plan(),
@@ -48,10 +48,76 @@ def test_plan_completion_is_structural_not_tool_specific():
         workspace_revision=0,
     )
 
+    error = loop._validate_plan_transition(
+        plan_completion_call(),
+        active_plan(),
+    )
+
+    assert error is not None
+    assert error[0] == "completion_requires_success"
+
+
+def test_plan_completion_allows_successful_terminal_work():
+    loop = _loop_for_validation()
+    loop._plan_progress.sync(
+        active_plan(),
+        iteration=1,
+        workspace_revision=0,
+    )
+    loop._plan_progress.record(
+        ToolCall(
+            name="apply_patch",
+            id="patch-1",
+            valid=True,
+            action="modify",
+            target="app.py",
+        ),
+        ToolResult(
+            success=True,
+            name="apply_patch",
+            content={"files": [{"path": "app.py", "operation": "update", "content": "x"}]},
+        ),
+        iteration=2,
+    )
+
     assert loop._validate_plan_transition(
         plan_completion_call(),
         active_plan(),
     ) is None
+
+
+def test_plan_completion_rejects_running_work():
+    loop = _loop_for_validation()
+    loop._plan_progress.sync(
+        active_plan(),
+        iteration=1,
+        workspace_revision=0,
+    )
+    loop._plan_progress.record(
+        ToolCall(
+            name="command_exec",
+            id="proc-1",
+            valid=True,
+            action="run",
+        ),
+        ToolResult(
+            success=True,
+            name="command_exec",
+            content={
+                "status": "running",
+                "process_id": "proc-test",
+            },
+        ),
+        iteration=2,
+    )
+
+    error = loop._validate_plan_transition(
+        plan_completion_call(),
+        active_plan(),
+    )
+
+    assert error is not None
+    assert error[0] == "completion_requires_terminal_result"
 
 
 def test_failed_verification_does_not_create_a_runtime_semantic_gate():
@@ -73,21 +139,24 @@ def test_failed_verification_does_not_create_a_runtime_semantic_gate():
             "stdout": "FAIL one",
         },
     )
-    loop.working_set.update(
+    loop._plan_progress.record(
         ToolCall(
             name="command_exec",
             id="test-1",
             valid=True,
-            args={"command": ["npm", "test"], "workdir": "."},
+            action="run",
         ),
         failed,
-        1,
+        iteration=1,
     )
 
-    assert loop._validate_plan_transition(
+    error = loop._validate_plan_transition(
         plan_completion_call(),
         active_plan(),
-    ) is None
+    )
+
+    assert error is not None
+    assert error[0] == "completion_requires_success"
 
 
 def complete_plan() -> PlanState:
@@ -156,3 +225,70 @@ def test_missing_active_step_does_not_block_recovery_work():
     )
 
     assert loop._plan_gate_message(regular_tool_call(), state) is None
+
+
+
+def test_plan_progress_can_attach_to_an_existing_active_plan():
+    loop = _loop_for_validation()
+    state = active_plan()
+
+    loop._plan_progress.sync(
+        state,
+        iteration=7,
+        workspace_revision=3,
+    )
+    loop._plan_progress.record(
+        ToolCall(
+            name="read_file",
+            id="read-2",
+            valid=True,
+            action="inspect",
+            target="server.js",
+        ),
+        ToolResult(
+            success=True,
+            name="read_file",
+            content={
+                "path": "server.js",
+                "content": "app",
+            },
+        ),
+        iteration=8,
+    )
+
+    assert loop._plan_progress.can_complete(1) is True
+
+
+
+def test_plan_completion_rejects_live_process_receipt():
+    loop = _loop_for_validation()
+    loop._plan_progress.sync(
+        active_plan(),
+        iteration=1,
+        workspace_revision=0,
+    )
+    loop._plan_progress.record(
+        ToolCall(
+            name="process_write",
+            id="write-1",
+            valid=True,
+            action="modify",
+        ),
+        ToolResult(
+            success=True,
+            name="process_write",
+            content={
+                "status": "accepted",
+                "process_id": "proc-live",
+            },
+        ),
+        iteration=2,
+    )
+
+    error = loop._validate_plan_transition(
+        plan_completion_call(),
+        active_plan(),
+    )
+
+    assert error is not None
+    assert error[0] == "completion_requires_terminal_result"
