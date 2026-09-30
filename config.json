@@ -1,16 +1,10 @@
 {
   "llm": {
-    "llm": {
-      "llm": {
-        "llm": {
-          "provider": "ollama",
-          "provider_config": {
-            "model_name": "gpt-oss:20b",
-            "generation_config": {
-              "temperature": 0.3
-            }
-          }
-        }
+    "provider": "ollama",
+    "provider_config": {
+      "model_name": "gpt-oss:20b",
+      "generation_config": {
+        "temperature": 0.3
       }
     }
   },
