@@ -23,8 +23,9 @@ class Plan(Tool):
     """
     Manage Daena's current execution plan.
 
-    The plan file is the source of truth.
-    ContextBuilder reads it on the next model call.
+    The plan file is the source of truth and lives at
+    ".daena/plan.md" inside the active workspace.
+    ContextBuilder reads it automatically on the next model call.
 
     The generated plan.md also contains explicit execution instructions
     reminding the agent to keep the plan synchronized with real work.
@@ -34,11 +35,13 @@ class Plan(Tool):
     action = "modify"
 
     description = (
-        "Your execution checklist for multi-step tasks. The current plan is shown "
-        "in your context under <plan>. It is only accurate if you keep it updated. "
+        "Your execution checklist for multi-step tasks. The current plan is stored "
+        "at .daena/plan.md in the active workspace and shown in your context under <plan>. "
+        "It is only accurate if you keep it updated. "
         "A plan whose statuses do not match the real work is a bug.\n"
         "\n"
         "WHEN TO UPDATE (this is part of the work, not optional):\n"
+        "- The plan is workspace-scoped; never use a repository-root or installation-level plan file.\n"
         "- Creating a plan automatically starts the first step as in_progress.\n"
         "- Right after a step's work succeeds (confirmed by a tool result): set it to "
         "completed. The next pending step is then automatically started as in_progress.\n"
