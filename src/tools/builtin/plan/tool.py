@@ -125,7 +125,21 @@ class Plan(Tool):
         "additionalProperties": False,
     }
 
+    # Relative fallback kept for direct unit tests and standalone use. Runtime
+    # callers set the active workspace through set_workspace().
     PLAN_PATH = Path("AgentInstruction") / "plan.md"
+
+    def __init__(self) -> None:
+        self._workspace_root: Path | None = None
+
+    def set_workspace(self, directory: str | Path) -> None:
+        self._workspace_root = Path(directory).expanduser().resolve()
+
+    @property
+    def _plan_path(self) -> Path:
+        if self._workspace_root is None:
+            return self.PLAN_PATH
+        return self._workspace_root / self.PLAN_PATH
 
     MAX_GOAL_CHARS = 2_000
     MAX_STEP_CHARS = 1_000
@@ -291,7 +305,7 @@ class Plan(Tool):
     ) -> dict[str, str]:
         return {
             "action": "modify",
-            "target": str(self.PLAN_PATH),
+            "target": str(self._plan_path),
         }
 
     def snapshot(
@@ -724,7 +738,7 @@ class Plan(Tool):
 
     def _delete(self) -> ToolResult:
         try:
-            self.PLAN_PATH.unlink(
+            self._plan_path.unlink(
                 missing_ok=True,
             )
         except OSError as exc:
@@ -739,10 +753,11 @@ class Plan(Tool):
         )
 
     def _read_raw(self) -> str:
-        if not self.PLAN_PATH.exists():
+        plan_path = self._plan_path
+        if not plan_path.exists():
             return ""
 
-        return self.PLAN_PATH.read_text(
+        return plan_path.read_text(
             encoding="utf-8",
         )
 
@@ -760,7 +775,8 @@ class Plan(Tool):
         temp_path: Path | None = None
 
         try:
-            self.PLAN_PATH.parent.mkdir(
+            plan_path = self._plan_path
+            plan_path.parent.mkdir(
                 parents=True,
                 exist_ok=True,
             )
@@ -768,7 +784,7 @@ class Plan(Tool):
             with tempfile.NamedTemporaryFile(
                 mode="w",
                 encoding="utf-8",
-                dir=self.PLAN_PATH.parent,
+                dir=plan_path.parent,
                 prefix=".plan.",
                 suffix=".tmp",
                 delete=False,
@@ -783,7 +799,7 @@ class Plan(Tool):
 
             os.replace(
                 temp_path,
-                self.PLAN_PATH,
+                plan_path,
             )
 
             return None
@@ -1100,7 +1116,7 @@ class Plan(Tool):
                 "effects": [
                     {
                         "action": action,
-                        "target": str(self.PLAN_PATH),
+                        "target": str(self._plan_path),
                     }
                 ]
             },
