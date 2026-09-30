@@ -6,6 +6,7 @@ from src.tools.builtin.command_exec.process_manager import PROCESS_MANAGER
 
 
 class ProcessWrite(Tool):
+    # ToolManager replaces this with its session-scoped ProcessManager.\n    process_manager = PROCESS_MANAGER
     name = "process_write"
     action = "modify"
 
@@ -30,7 +31,7 @@ class ProcessWrite(Tool):
         if not isinstance(input, str):
             return self._error("invalid_argument", "input must be a string.")
 
-        result = PROCESS_MANAGER.write(
+        result = self.process_manager.write(
             process_id=process_id.strip(),
             input_text=input,
         )
