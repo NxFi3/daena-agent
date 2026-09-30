@@ -43,12 +43,12 @@ class Loop:
     # returned tool_calls our ToolDispatcher couldn't make sense of).
     # Without this, a single hiccup used to kill the entire run instantly,
     # regardless of how much progress had already been made.
-    MAX_GENERATION_RETRIES = 2
+    MAX_GENERATION_RETRIES = 3
 
     DEFAULT_MAX_ITERATIONS = 100
 
-    RECENT_CONTEXT_LIMIT = 40
-    SEARCH_CONTEXT_TOP_K = 3
+    RECENT_CONTEXT_LIMIT = 100
+    SEARCH_CONTEXT_TOP_K = 5
 
     def __init__(
         self,
