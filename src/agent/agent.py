@@ -8,19 +8,6 @@ from src.engine.LlmProviderManager import LlmProvider
 from src.models.ContextEvent import ContextEvent
 
 
-def RemovePlan() -> None:
-    """Remove the stale execution plan from the previous session."""
-    plan_path = Path("AgentInstruction/plan.md")
-
-    try:
-        plan_path.unlink(missing_ok=True)
-        with open(plan_path, "w") as f:
-            f.write("")
-    except OSError:
-        # Plan cleanup should never prevent Daena from starting.
-        pass
-
-
 class Agent:
     """Public runtime facade for one Daena session."""
 
@@ -33,10 +20,6 @@ class Agent:
             parents=True,
             exist_ok=True,
         )
-
-        # A plan belongs to the current execution session.
-        # Remove any stale plan left by a previous session.
-        RemovePlan()
 
         self.llm = LlmProvider(self.config)
 
