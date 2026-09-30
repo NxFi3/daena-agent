@@ -23,7 +23,9 @@ class WorkspaceSandbox:
 
         if not self.contains(resolved):
             raise PermissionError(
-                f"Path escapes the configured workspace: {resolved}"
+                "Path escapes the configured workspace. "
+                f"Requested: {value!s}. Resolved: {resolved}. "
+                f"Workspace root: {self.root.resolve()}"
             )
 
         if must_exist and not resolved.exists():
