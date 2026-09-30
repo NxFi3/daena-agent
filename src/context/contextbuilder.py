@@ -16,7 +16,7 @@ DEFAULT_INSTRUCTION = (
 
 SYSTEM_INSTRUCTION_PATH = Path("AgentInstruction/systeminstruction.md")
 EXPERIENCE_PATH = Path("AgentInstruction/experience.md")
-PLANS_PATH = Path("AgentInstruction/plan.md")
+PLANS_PATH = Path(".daena") / "plan.md"
 
 
 def PlanReader(workspace: str | Path | None = None) -> str:
