@@ -56,7 +56,10 @@ class CommandExec(Tool):
     BACKGROUND_STARTUP_GRACE_MS = 150
 
     description = (
-        "Run a local command given as an argv array (not a shell string). "
+        "Run a local command given as an argv array (not a shell command string). "
+        "Shell operators such as >, |, &&, ||, $(...), heredocs, and shell globbing are "
+        "not interpreted unless you explicitly invoke a shell executable such as sh or bash. "
+        "Use apply_patch for file creation/editing instead of relying on echo output. "
         "The command waits up to yield_time_ms (default 1000ms). Optional numeric "
         "arguments are normalized to their declared bounds before execution. If it exits in that "
         "window, the result contains exit_code and completed output. If it is still "
@@ -94,8 +97,10 @@ class CommandExec(Tool):
                 "type": "string",
                 "description": (
                     "Working directory relative to the active workspace. Defaults to "
-                    "the workspace root ('.')."
+                    "the workspace root ('.'). Do not repeat the workspace directory "
+                    "name in command paths."
                 ),
+                "default": ".",
             },
             "yield_time_ms": {
                 "type": "integer",
