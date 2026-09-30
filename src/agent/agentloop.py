@@ -30,8 +30,9 @@ from src.utils.logger import get_logger
 
 class Loop:
 
-    FAILURE_STUCK_THRESHOLD = 3
+    FAILURE_STUCK_THRESHOLD = 4
     DUPLICATE_BLOCK_THRESHOLD = 3
+    SAME_FAILURE_REPEAT_LIMIT = 1
     EMPTY_RESPONSE_THRESHOLD = 3
 
     # Read/search are observations rather than mutations. They may legitimately
@@ -105,6 +106,12 @@ class Loop:
         self._tool_loop_guard = ToolLoopGuard()
 
         self._recent_failure_signatures: list[str] = []
+        # Runtime-enforced recovery state. The model is not allowed to repeat
+        # the exact failed action at the same workspace revision without
+        # producing new evidence first.
+        self._failed_call_keys: dict[str, tuple[int, int]] = {}
+        self._active_process_ids: set[str] = set()
+        self._recovery_mode = False
 
         self._generation_retries = 0
 
@@ -1168,6 +1175,68 @@ class Loop:
             results,
         )
 
+    @staticmethod
+    def _tool_result_status(result: ToolResult) -> str:
+        content = result.content if isinstance(result.content, dict) else {}
+        status = str(content.get("status", "")).strip().lower()
+        if status in {"running", "exited", "terminated", "unknown", "accepted"}:
+            return status
+        return "completed" if result.success else "failed"
+
+    @staticmethod
+    def _tool_result_process_id(result: ToolResult) -> str | None:
+        content = result.content if isinstance(result.content, dict) else {}
+        process_id = content.get("process_id")
+        return str(process_id).strip() if process_id else None
+
+    def _runtime_recovery_gate(self, call) -> ToolResult | None:
+        name = str(getattr(call, "name", "")).strip().lower()
+
+        # A plan transition cannot outrun an active managed process.
+        if name == "plan" and self._active_process_ids:
+            return ToolResult(
+                success=False,
+                name=name,
+                content={
+                    "success": False,
+                    "error": {
+                        "type": "active_process",
+                        "message": (
+                            "A managed process is still running. "
+                            "Poll or stop it before updating/completing the plan."
+                        ),
+                    },
+                },
+                metadata={"runtime_gate": True, "active_process_ids": sorted(self._active_process_ids)},
+                summary="PLAN BLOCKED: managed process still running.",
+            )
+
+        # Never repeat the exact failed action unchanged at the same revision.
+        key = self._tool_call_key(call)
+        failed = self._failed_call_keys.get(key)
+        if failed is not None:
+            failed_revision, count = failed
+            if failed_revision == self.workspace_revision and count >= self.SAME_FAILURE_REPEAT_LIMIT:
+                return ToolResult(
+                    success=False,
+                    name=name,
+                    content={
+                        "success": False,
+                        "error": {
+                            "type": "recovery_gate",
+                            "message": (
+                                "The exact action already failed at this workspace "
+                                "revision. Inspect the failure and choose a different "
+                                "diagnostic or corrective action before retrying it."
+                            ),
+                        },
+                    },
+                    metadata={"runtime_gate": True, "recovery_required": True},
+                    summary="RECOVERY BLOCKED: exact failed action repeated.",
+                )
+
+        return None
+
     def _apply_result(
         self,
         call,
@@ -1198,6 +1267,15 @@ class Loop:
 
         self.agent_state.update_from_result(result)
 
+        status = self._tool_result_status(result)
+        process_id = self._tool_result_process_id(result)
+
+        if status == "running" and process_id:
+            self._active_process_ids.add(process_id)
+            self._recovery_mode = True
+        elif process_id and status in {"exited", "terminated", "unknown"}:
+            self._active_process_ids.discard(process_id)
+
         changed = self.working_set.update(
             tool_call=call,
             result=result,
@@ -1213,6 +1291,9 @@ class Loop:
         if result.success and changed:
 
             self.workspace_revision += 1
+            # Workspace progress invalidates the exact-failure recovery gate.
+            self._failed_call_keys.clear()
+            self._recovery_mode = False
 
         if result.success:
             self.metrics["tool_successes"] = self.metrics.get("tool_successes", 0) + 1
@@ -1224,6 +1305,11 @@ class Loop:
 
         if isinstance(result.metadata, dict) and result.metadata.get("plan_gate"):
             self.metrics["plan_blocks"] = self.metrics.get("plan_blocks", 0) + 1
+
+        if isinstance(result.metadata, dict) and result.metadata.get("runtime_gate"):
+            self.metrics["recovery_blocks"] = self.metrics.get("recovery_blocks", 0) + 1
+
+        self.metrics["active_processes"] = len(self._active_process_ids)
 
         if isinstance(result.metadata, dict) and result.metadata.get("loop_guard_block"):
             self.metrics["loop_guard_blocks"] = (
@@ -1267,6 +1353,23 @@ class Loop:
                     self.workspace_revision,
                     count,
                 )
+
+        if not result.success and status not in {"running"}:
+            key = self._tool_call_key(call)
+            previous_revision, previous_count = self._failed_call_keys.get(
+                key,
+                (self.workspace_revision, 0),
+            )
+            count = previous_count + 1 if previous_revision == self.workspace_revision else 1
+            self._failed_call_keys[key] = (self.workspace_revision, count)
+            self._recovery_mode = True
+
+        if status == "running":
+            self._store_nudge(
+                f"'{result.name}' started a managed process "
+                f"{process_id or '(unknown id)'}. The command is not complete. "
+                "Poll it before treating the operation as finished."
+            )
 
         self._store_event(
             self._tool_result_event(
@@ -1317,6 +1420,15 @@ class Loop:
                 False,
             )
         )
+
+        status = self._tool_result_status(result)
+
+        if status == "running":
+            # A managed process is a state transition, not a command failure.
+            return None
+
+        if isinstance(result.metadata, dict) and result.metadata.get("runtime_gate"):
+            return None
 
         if result.success:
 
@@ -1370,10 +1482,38 @@ class Loop:
             self.metrics.get("tool_call_attempts", 0) + len(parsed_calls)
         )
 
+        runtime_blocked: dict[int, ToolResult] = {}
+        runtime_allowed: list = []
+
+        for index, call in enumerate(parsed_calls):
+            gated = self._runtime_recovery_gate(call)
+            if gated is not None:
+                runtime_blocked[index] = gated
+            else:
+                runtime_allowed.append(call)
+
+        runtime_index_map = {
+            new_index: original_index
+            for new_index, original_index in enumerate(
+                index for index in range(len(parsed_calls))
+                if index not in runtime_blocked
+            )
+        }
+
         (
             allowed_indices,
             blocked_results,
         ) = self._classify_calls(parsed_calls)
+
+        blocked_results.update(runtime_blocked)
+
+        # Remove runtime-blocked calls from the dispatcher input by filtering
+        # the resulting allowed indices. This preserves the original indices
+        # used by the existing result assembly.
+        allowed_indices = [
+            index for index in allowed_indices
+            if index not in runtime_blocked
+        ]
 
         (
             executed_calls,
@@ -1842,6 +1982,9 @@ class Loop:
         self._duplicate_block_streak = 0
 
         self._recent_failure_signatures.clear()
+        self._failed_call_keys.clear()
+        self._active_process_ids.clear()
+        self._recovery_mode = False
 
         self._generation_retries = 0
         self._run_started_at = None
@@ -1858,6 +2001,8 @@ class Loop:
             "plan_final_blocks": 0,
             "loop_guard_warnings": 0,
             "loop_guard_blocks": 0,
+            "active_processes": 0,
+            "recovery_blocks": 0,
             "completed": False,
             "stop_reason": "",
             "duration_ms": 0.0,
