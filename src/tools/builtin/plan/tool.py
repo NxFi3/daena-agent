@@ -46,10 +46,6 @@ class Plan(Tool):
         "- Complete the active step when you judge its work finished; completion automatically advances the next pending step.\n"
         "- Use an in_progress update only to repair a plan that has no active step; normal execution does not need manual starts.\n"
         "- If a step cannot be completed, mark it blocked and continue with the next pending step.\n"
-        "
-        "completed. The next pending step is then automatically started as in_progress.\n"
-
-        "for the fix.\n"
         "- If you discover new required work: add_step before doing it.\n"
         "- Before your final answer: every step must be completed or blocked. After the plan is complete, normal workspace tools remain available for verification, cleanup, and final checks.\n"
         "- Never mark a step completed unless the work actually succeeded.\n"
