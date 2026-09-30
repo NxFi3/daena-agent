@@ -351,6 +351,10 @@ class ContextBuilder:
                         "started_revision",
                         "successful_actions",
                         "failed_actions",
+                        "last_result_success",
+                        "last_result_terminal",
+                        "last_result_tool",
+                        "last_result_iteration",
                     )
                     if plan_progress.get(key) not in (None, "", [])
                 }
