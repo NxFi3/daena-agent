@@ -254,3 +254,38 @@ def test_plan_progress_can_attach_to_an_existing_active_plan():
     )
 
     assert loop._plan_progress.can_complete(1) is True
+
+
+
+def test_plan_completion_rejects_live_process_receipt():
+    loop = _loop_for_validation()
+    loop._plan_progress.sync(
+        active_plan(),
+        iteration=1,
+        workspace_revision=0,
+    )
+    loop._plan_progress.record(
+        ToolCall(
+            name="process_write",
+            id="write-1",
+            valid=True,
+            action="modify",
+        ),
+        ToolResult(
+            success=True,
+            name="process_write",
+            content={
+                "status": "accepted",
+                "process_id": "proc-live",
+            },
+        ),
+        iteration=2,
+    )
+
+    error = loop._validate_plan_transition(
+        plan_completion_call(),
+        active_plan(),
+    )
+
+    assert error is not None
+    assert error[0] == "completion_requires_terminal_result"
