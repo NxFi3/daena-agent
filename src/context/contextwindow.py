@@ -21,6 +21,9 @@ class ContextWindow:
                                      memory system; empty until wired up)
         4. runtime info (os / cwd / workspace / date)
 
+    The active plan is workspace state at ".daena/plan.md" and is loaded
+    automatically by ContextBuilder into the "<plan>" section.
+
     Everything that changes turn to turn (agent state, progress, working
     set, tool results) lives in `conversation` as real chat messages, not
     in the system message. Stuffing it into the system prompt duplicates
@@ -74,7 +77,7 @@ class ContextWindow:
         text: str,
     ) -> None:
         """
-        Sets the current file-backed execution plan (plan.md).
+        Sets the current file-backed execution plan (".daena/plan.md").
 
         ContextBuilder loads the plan and refreshes it on each turn,
         so changes made by the planning tool are reflected in the

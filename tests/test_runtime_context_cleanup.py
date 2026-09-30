@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from src.context.contextbuilder import ContextBuilder, PlanReader
+from src.context.contextwindow import ContextWindow
 from src.context.workingset import WorkingSet
 from src.models.ToolCall import ToolCall
 from src.models.ToolResult import ToolResult
@@ -20,7 +21,7 @@ def test_plan_uses_active_workspace(tmp_path):
 
     assert result.success is True
 
-    plan_path = tmp_path / "AgentInstruction" / "plan.md"
+    plan_path = tmp_path / ".daena" / "plan.md"
     assert plan_path.exists()
     assert tool.describe_call({})["target"] == str(plan_path)
 
@@ -37,15 +38,39 @@ def test_tool_manager_propagates_workspace_to_plan(tmp_path):
     )
 
     assert result.success is True
-    assert (tmp_path / "AgentInstruction" / "plan.md").exists()
+    assert (tmp_path / ".daena" / "plan.md").exists()
 
 
 def test_plan_reader_uses_workspace_scope(tmp_path):
-    plan_path = tmp_path / "AgentInstruction" / "plan.md"
+    plan_path = tmp_path / ".daena" / "plan.md"
     plan_path.parent.mkdir(parents=True)
     plan_path.write_text("workspace plan", encoding="utf-8")
 
     assert PlanReader(tmp_path) == "workspace plan"
+
+
+def test_context_builder_loads_workspace_plan_automatically(tmp_path):
+    plan_path = tmp_path / ".daena" / "plan.md"
+    plan_path.parent.mkdir(parents=True)
+    plan_path.write_text(
+        "# Plan\n\n## Goal\nKeep the project organized\n",
+        encoding="utf-8",
+    )
+
+    builder = ContextBuilder.__new__(ContextBuilder)
+    builder.window = ContextWindow()
+    builder.system_instruction = ""
+    builder.experience_enabled = False
+
+    builder._populate_window(
+        events=[],
+        task=None,
+        workspace=str(tmp_path),
+        learned_experience=None,
+        execution_state=None,
+    )
+
+    assert "Keep the project organized" in builder.window.plan
 
 
 def test_working_set_resolves_relative_paths_from_workspace(tmp_path):
@@ -55,7 +80,7 @@ def test_working_set_resolves_relative_paths_from_workspace(tmp_path):
     call = ToolCall(
         name="plan",
         action="modify",
-        target="AgentInstruction/plan.md",
+        target=".daena/plan.md",
     )
     result = ToolResult(
         success=True,
@@ -65,7 +90,7 @@ def test_working_set_resolves_relative_paths_from_workspace(tmp_path):
             "effects": [
                 {
                     "action": "modify",
-                    "target": "AgentInstruction/plan.md",
+                    "target": ".daena/plan.md",
                 }
             ]
         },
@@ -74,7 +99,7 @@ def test_working_set_resolves_relative_paths_from_workspace(tmp_path):
 
     working_set.update(call, result, iteration=1)
 
-    assert str(tmp_path / "AgentInstruction" / "plan.md") in working_set.context()[
+    assert str(tmp_path / ".daena" / "plan.md") in working_set.context()[
         "artifacts"
     ]
 
@@ -107,7 +132,7 @@ def test_recovered_validation_failure_is_removed_from_unresolved(tmp_path):
         name="plan",
         action="modify",
         valid=True,
-        target=str(tmp_path / "AgentInstruction" / "plan.md"),
+        target=str(tmp_path / ".daena" / "plan.md"),
     )
     successful_result = ToolResult(
         success=True,
