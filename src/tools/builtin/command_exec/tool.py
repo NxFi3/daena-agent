@@ -321,36 +321,68 @@ class CommandExec(Tool):
 
         hint = self._exit_code_hint(command, result.get("exit_code"))
 
+        stdout = result.get("stdout", "")
+        stderr = result.get("stderr", "")
+        failure_type = ""
+        if not success and status in {"exited", "terminated"}:
+            failure_type = self._classify_failure(stdout=stdout, stderr=stderr)
+
+        content = {
+            "success": success,
+            "command": command,
+            "workdir": self._stringify_workdir(workdir),
+            "exit_code": result.get("exit_code"),
+            "exit_code_hint": hint,
+            "stdout": stdout,
+            "stderr": stderr,
+            "timed_out": False,
+            "background": status == "running",
+            "managed": True,
+            "status": status,
+            "process_id": result.get("process_id"),
+            "pid": result.get("pid"),
+            "reused_existing_process": result.get(
+                "reused_existing_process",
+                False,
+            ),
+            "duration_ms": result.get(
+                "duration_ms",
+                self._duration_ms(started),
+            ),
+            "stdout_truncated": False,
+            "stderr_truncated": False,
+        }
+
+        if failure_type:
+            content["error"] = {
+                "type": failure_type,
+                "message": "The process reported a known execution failure.",
+            }
+
         return ToolResult(
             success=success,
             name=self.name,
-            content={
-                "success": success,
-                "command": command,
-                "workdir": self._stringify_workdir(workdir),
-                "exit_code": result.get("exit_code"),
-                "exit_code_hint": hint,
-                "stdout": result.get("stdout", ""),
-                "stderr": result.get("stderr", ""),
-                "timed_out": False,
-                "background": status == "running",
-                "managed": True,
-                "status": status,
-                "process_id": result.get("process_id"),
-                "pid": result.get("pid"),
-                "reused_existing_process": result.get(
-                    "reused_existing_process",
-                    False,
-                ),
-                "duration_ms": result.get(
-                    "duration_ms",
-                    self._duration_ms(started),
-                ),
-                "stdout_truncated": False,
-                "stderr_truncated": False,
-            },
+            content=content,
             metadata={},
         )
+
+    @staticmethod
+    def _classify_failure(
+        *,
+        stdout: Any,
+        stderr: Any,
+    ) -> str:
+        text = "\n".join(
+            value for value in (stdout, stderr) if isinstance(value, str)
+        )
+        lowered = text.lower()
+        if "eaddrinuse" in lowered or "address already in use" in lowered:
+            return "resource_in_use"
+        if "permission denied" in lowered:
+            return "permission_error"
+        if "command not found" in lowered or "not found" in lowered and "sh:" in lowered:
+            return "command_not_found"
+        return ""
 
     @staticmethod
     def _exit_code_hint(
