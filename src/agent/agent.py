@@ -13,7 +13,7 @@ class Agent:
 
     def __init__(self, config) -> None:
         self.config = config
-        self.workingdirectory = "EvanaEval"
+        self.workingdirectory = "DAENAEVAL"
         self.session_id = uuid4()
 
         Path(self.workingdirectory).mkdir(
