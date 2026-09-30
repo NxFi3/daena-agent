@@ -55,3 +55,37 @@ def test_plan_completion_is_allowed_after_failure_is_resolved():
     )
 
     assert error is None
+
+
+def complete_plan() -> PlanState:
+    return PlanState(
+        exists=True,
+        goal="test",
+        steps=(
+            PlanStepState(
+                number=1,
+                status="completed",
+                description="Do work and verify it.",
+            ),
+        ),
+    )
+
+
+def regular_tool_call() -> ToolCall:
+    return ToolCall(
+        name="read_file",
+        id="read-1",
+        valid=True,
+        args={"file_path": "result.txt"},
+    )
+
+
+def test_completed_plan_does_not_block_follow_up_tools():
+    loop = Loop.__new__(Loop)
+
+    gate = loop._plan_gate_message(
+        regular_tool_call(),
+        complete_plan(),
+    )
+
+    assert gate is None

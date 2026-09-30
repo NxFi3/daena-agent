@@ -48,7 +48,7 @@ class Plan(Tool):
         "- If a step fails and you cannot fix it: set it to blocked, then add a step "
         "for the fix.\n"
         "- If you discover new required work: add_step before doing it.\n"
-        "- Before your final answer: every step must be completed or blocked.\n"
+        "- Before your final answer: every step must be completed or blocked. After the plan is complete, normal workspace tools remain available for verification, cleanup, and final checks.\n"
         "- Never mark a step completed unless the work actually succeeded.\n"
         "- Do not repeat an update that would leave the plan unchanged.\n"
         "- Do not create duplicate steps with the same description.\n"
