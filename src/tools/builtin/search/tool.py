@@ -15,6 +15,10 @@ class Search(Tool):
     name = "search"
     action = "search"
 
+    # Search is observational; the loop permits a small number of identical
+    # searches without allowing an infinite same-action loop.
+    allow_same_revision_repeat = True
+
     DEFAULT_MAX_RESULTS = 50
     MAX_RESULTS = 100
     DEFAULT_CONTEXT_LINES = 1
