@@ -6,6 +6,8 @@ from src.tools.builtin.command_exec.process_manager import PROCESS_MANAGER
 
 
 class ProcessStop(Tool):
+    # ToolManager replaces this with its session-scoped ProcessManager.
+    process_manager = PROCESS_MANAGER
     name = "process_stop"
     action = "modify"
 
@@ -27,7 +29,7 @@ class ProcessStop(Tool):
         if not isinstance(process_id, str) or not process_id.strip():
             return self._error("invalid_argument", "process_id is required.")
 
-        result = PROCESS_MANAGER.stop(process_id=process_id.strip())
+        result = self.process_manager.stop(process_id=process_id.strip())
         success = result.get("status") != "unknown"
 
         return ToolResult(

@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 
 from src.agent.agentstate import AgentState
 from src.agent.planstate import PlanState
+from src.agent.planprogress import PlanProgressTracker
 from src.context.contextservice import ContextService
 from src.context.workingset import WorkingSet
 from src.engine.LlmProviderManager import LlmProvider
@@ -85,8 +86,7 @@ class Loop:
 
         self.working_set = WorkingSet()
 
-        self._plan_step_work_started = False
-        self._plan_step_has_unresolved_failure = False
+        self._plan_progress = PlanProgressTracker()
 
         self.workspace_revision = 0
 
@@ -689,6 +689,7 @@ class Loop:
         self.metrics["completed"] = False
         self.metrics["stop_reason"] = reason
         self.metrics["duration_ms"] = self._duration_ms()
+        self.tool.close()
 
         return result
 
@@ -800,6 +801,38 @@ class Loop:
 
         return None
 
+    def _final_response_gate(
+        self,
+    ) -> tuple[str, str] | None:
+        """Prevent a natural-language final answer while the plan is unfinished."""
+        state = self._read_plan_state()
+
+        if state.error:
+            return (
+                "plan_invalid",
+                "The execution plan is invalid. Repair the plan before giving the final answer.",
+            )
+
+        if not state.exists or state.is_complete:
+            return None
+
+        current = state.current_step
+        if current is not None:
+            return (
+                "plan_incomplete",
+                (
+                    "The execution plan is not complete. Finish the active plan "
+                    f"step {current.number} ({current.description!r}) before giving "
+                    "the final answer. Update the plan when the step is actually "
+                    "complete."
+                ),
+            )
+
+        return (
+            "plan_incomplete",
+            "The execution plan is not complete. Continue the plan before giving the final answer.",
+        )
+
     def _validate_plan_transition(
         self,
         call,
@@ -874,16 +907,16 @@ class Loop:
                 f"Step {step_number} is not the current in_progress step. Current step is {current.number}.",
             )
 
-        if transition == "completed" and not self._plan_step_work_started:
+        if transition == "completed" and not self._plan_progress.has_work(step_number):
             return (
                 "completion_requires_work",
-                "The current step cannot be marked completed yet. Perform and successfully verify work for this step first.",
+                "The current step cannot be marked completed yet. Perform successful work for this step first.",
             )
 
-        if transition == "completed" and self._plan_step_has_unresolved_failure:
+        if transition == "completed" and self.working_set.last_failed_verification:
             return (
                 "completion_has_unresolved_failure",
-                "The current step cannot be marked completed while the latest tool action is still failed. Resolve the failure with a successful action or verification first.",
+                "The plan still has an unresolved failed execution. Resolve the failure and obtain a successful result for that verification before completing the step.",
             )
 
         return None
@@ -1126,10 +1159,11 @@ class Loop:
         iteration: int,
     ) -> None:
 
-        plan_before = (
-            self._read_plan_state()
-            if self._is_plan_call(call)
-            else None
+        plan_before = self._read_plan_state()
+        self._plan_progress.sync(
+            plan_before,
+            iteration=iteration,
+            workspace_revision=self.workspace_revision,
         )
 
         self.logger.info(
@@ -1154,6 +1188,11 @@ class Loop:
             iteration=iteration,
         )
 
+        self._plan_progress.record(
+            tool_call=call,
+            result=result,
+        )
+
         if result.success and changed:
 
             self.workspace_revision += 1
@@ -1173,18 +1212,6 @@ class Loop:
             self.metrics["loop_guard_blocks"] = (
                 self.metrics.get("loop_guard_blocks", 0) + 1
             )
-
-        if (
-            not self._is_plan_call(call)
-            and not (
-                isinstance(result.metadata, dict)
-                and result.metadata.get("plan_gate")
-            )
-        ):
-            if result.success:
-                self._plan_step_has_unresolved_failure = False
-            else:
-                self._plan_step_has_unresolved_failure = True
 
         guard_decision = self._tool_loop_guard.after_call(
             call=call,
@@ -1251,33 +1278,11 @@ class Loop:
 
         if self._is_plan_call(call):
             plan_after = self._read_plan_state()
-
-            before_current = (
-                plan_before.current_step
-                if isinstance(plan_before, PlanState)
-                else None
+            self._plan_progress.sync(
+                plan_after,
+                iteration=int(self.metrics.get("iterations", 0) or 0),
+                workspace_revision=self.workspace_revision,
             )
-            after_current = plan_after.current_step
-
-            if after_current is None:
-                self._plan_step_work_started = False
-                return
-
-            if (
-                before_current is None
-                or before_current.number != after_current.number
-                or before_current.status != after_current.status
-            ):
-                self._plan_step_work_started = False
-                self._plan_step_has_unresolved_failure = False
-
-            return
-
-        state = self._read_plan_state()
-
-        if state.current_step is not None:
-            self._plan_step_work_started = True
-            self._plan_step_has_unresolved_failure = False
 
     def _check_failure_stuck(
         self,
@@ -1487,6 +1492,10 @@ class Loop:
 
             raise TypeError("user_task must be " "a ContextEvent.")
 
+        # A new run starts a fresh runtime ownership boundary. Any process
+        # left from a previous run is no longer needed by this task.
+        self.tool.close()
+
         self._reset_run_state()
         self._run_started_at = time.perf_counter()
         self.set_workspace(workspace_directory)
@@ -1648,12 +1657,21 @@ class Loop:
 
             if isinstance(llmresult.response, str) and llmresult.response.strip():
 
+                plan_gate = self._final_response_gate()
+                if plan_gate is not None:
+                    self.metrics["plan_final_blocks"] = (
+                        self.metrics.get("plan_final_blocks", 0) + 1
+                    )
+                    self._store_nudge(plan_gate[1])
+                    continue
+
                 self._store_event(self._assistant_event(llmresult))
 
                 self.agent_state.complete()
                 self.metrics["completed"] = True
                 self.metrics["stop_reason"] = ""
                 self.metrics["duration_ms"] = self._duration_ms()
+                self.tool.close()
 
                 return llmresult
 
@@ -1790,8 +1808,7 @@ class Loop:
 
         self._tool_loop_guard.reset()
 
-        self._plan_step_work_started = False
-        self._plan_step_has_unresolved_failure = False
+        self._plan_progress.reset()
 
         self._last_duplicate_key = None
 
@@ -1811,6 +1828,7 @@ class Loop:
             "tool_failures": 0,
             "tool_blocks": 0,
             "plan_blocks": 0,
+            "plan_final_blocks": 0,
             "loop_guard_warnings": 0,
             "loop_guard_blocks": 0,
             "completed": False,
@@ -1822,4 +1840,5 @@ class Loop:
         self,
     ) -> None:
 
+        self.tool.close()
         self.stm.close()

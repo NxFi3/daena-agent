@@ -28,6 +28,30 @@ class ManagedProcess:
     exit_code: int | None = None
 
 
+
+
+
+def _set_parent_death_signal() -> None:
+    """
+    On Linux, make managed children terminate when the owning Python process
+    disappears unexpectedly (for example SIGKILL on a Jupyter kernel).
+
+    Windows keeps its existing process-group cleanup path.
+    """
+    if os.name != "posix":
+        return
+
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL(None)
+        libc.prctl(1, signal.SIGTERM, 0, 0, 0)  # PR_SET_PDEATHSIG
+    except Exception:
+        # Normal runtime cleanup still handles managed processes when close()
+        # is reached; this hook is only an extra safety net for abrupt exits.
+        return
+
+
 class ProcessManager:
     """Own the lifecycle of Daena-managed local processes.
 
@@ -306,6 +330,7 @@ class ProcessManager:
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:
             kwargs["start_new_session"] = True
+            kwargs["preexec_fn"] = _set_parent_death_signal
 
         return subprocess.Popen(**kwargs)
 

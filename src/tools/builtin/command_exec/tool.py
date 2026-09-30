@@ -43,6 +43,9 @@ class CommandExec(Tool):
         - Human-readable exit-code hints for known tools.
     """
 
+    # ToolManager replaces this with its session-scoped ProcessManager.
+    process_manager = PROCESS_MANAGER
+
     name = "command_exec"
     action = "run"
 
@@ -265,7 +268,7 @@ class CommandExec(Tool):
         started = time.perf_counter()
 
         try:
-            result = PROCESS_MANAGER.start(
+            result = self.process_manager.start(
                 command=command,
                 workdir=workdir,
                 yield_time_ms=yield_time_ms,

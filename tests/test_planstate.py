@@ -3,7 +3,9 @@ from uuid import uuid4
 
 from src.agent.agentloop import Loop
 from src.agent.planstate import PlanState
+from src.agent.planprogress import PlanProgressTracker
 from src.models.ToolCall import ToolCall
+from src.models.ToolResult import ToolResult
 from src.tools.builtin.plan.tool import Plan
 
 
@@ -126,14 +128,30 @@ def test_loop_plan_gate_enforces_step_lifecycle(tmp_path, monkeypatch):
         assert allowed == [0]
         assert blocked == {}
 
-        loop._plan_step_work_started = False
+        loop._plan_progress = PlanProgressTracker()
+        loop._plan_progress.sync(
+            plan_tool.snapshot(),
+            iteration=1,
+            workspace_revision=0,
+        )
 
         complete = plan_call(1, "completed")
         allowed, blocked = loop._classify_calls([complete])
         assert allowed == []
         assert blocked[0].content["error"]["type"] == "completion_requires_work"
 
-        loop._plan_step_work_started = True
+        loop._plan_progress.record(
+            command,
+            ToolResult(
+                success=True,
+                name="command_exec",
+                content={
+                    "command": ["echo", "hello"],
+                    "exit_code": 0,
+                    "status": "exited",
+                },
+            ),
+        )
         allowed, blocked = loop._classify_calls([complete, command])
         assert allowed == [0]
         assert blocked[1].content["error"]["type"] == "plan_update_required_first"

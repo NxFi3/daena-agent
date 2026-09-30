@@ -16,6 +16,19 @@ class PatchOperation:
     content: str | None = None
 
 
+class PatchContextError(ValueError):
+    """A patch could not be applied against the current file contents."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.details = details or {}
+
+
 class ApplyPatch(Tool):
     """
     Apply Codex-style file patches.
@@ -138,6 +151,12 @@ class ApplyPatch(Tool):
 
         try:
             plan = self._build_plan(operations)
+        except PatchContextError as exc:
+            return self._failure(
+                error_type="patch_context_mismatch",
+                message=str(exc),
+                details=exc.details,
+            )
         except ValueError as exc:
             return self._failure(
                 error_type="validation_error",
@@ -594,16 +613,15 @@ class ApplyPatch(Tool):
                 except (OSError, UnicodeDecodeError):
                     current_content = ""
 
-                return self._failure(
-                    error_type="patch_context_mismatch",
-                    message=message,
+                raise PatchContextError(
+                    message,
                     details={
                         "path": str(path),
                         "type": "file",
                         "content": self._bounded_preview(current_content),
                         "total_lines": self._count_lines(current_content),
                     },
-                )
+                ) from exc
             raise
 
         return {
