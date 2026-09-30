@@ -85,6 +85,19 @@ def test_failed_verification_blocks_step_completion_until_resolved():
     )
     loop._plan_progress.record(
         ToolCall(
+            name="read_file",
+            id="read-1",
+            valid=True,
+            args={"file_path": "result.txt"},
+        ),
+        ToolResult(
+            success=True,
+            name="read_file",
+            content={"path": "result.txt", "content": "before"},
+        ),
+    )
+    loop._plan_progress.record(
+        ToolCall(
             name="command_exec",
             id="test-1",
             valid=True,
