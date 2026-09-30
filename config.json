@@ -1,18 +1,22 @@
 {
   "llm": {
     "llm": {
-      "provider": "openrouter",
-      "provider_config": {
-        "model_name": "cohere/north-mini-code:free",
-        "generation_config": {
-          "temperature": 0.3
+      "llm": {
+        "llm": {
+          "provider": "ollama",
+          "provider_config": {
+            "model_name": "gpt-oss:20b",
+            "generation_config": {
+              "temperature": 0.3
+            }
+          }
         }
       }
     }
   },
   "context": {
     "safe_margin": -1,
-    "recent_event_limit": 100,
+    "recent_event_limit": 200,
     "compaction_enabled": true,
     "compaction_target_tokens": 4096
   },
@@ -33,7 +37,7 @@
       "model_name": "BAAI/bge-reranker-v2-m3"
     }
   },
-  "max_agent_iterations": 100,
+  "max_agent_iterations": 300,
   "experience": {
     "enabled": false
   }

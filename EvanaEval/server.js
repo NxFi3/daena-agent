@@ -18,8 +18,12 @@ const authHeaders = () => {
 };
 
 // Proxy endpoint to fetch repository data
-app.get("/api/repo/:owner/:repo", async (req, res) => {
-  const { owner, repo } = req.params;
+// Support both /api/repo?owner=&repo= and /api/repo/:owner/:repo
+app.get("/api/repo", async (req, res) => {
+  const { owner, repo } = req.query;
+  if (!owner || !repo) {
+    return res.status(400).json({ error: "Missing owner or repo query parameters" });
+  }
   try {
     const base = `https://api.github.com/repos/${owner}/${repo}`;
     const headers = authHeaders();

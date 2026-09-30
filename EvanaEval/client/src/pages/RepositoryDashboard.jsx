@@ -10,10 +10,12 @@ function RepositoryDashboard() {
   useEffect(() => {
     setLoading(true);
     setError(null);
-    fetch(`/api/repo/${owner}/${repo}`)
+    fetch(`/api/repo?owner=${owner}&repo=${repo}`)
       .then((res) => {
         if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`);
+          return res.json().then((e) => {
+            throw new Error(e.error || `HTTP ${res.status}`);
+          });
         }
         return res.json();
       })

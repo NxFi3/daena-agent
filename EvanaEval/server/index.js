@@ -38,17 +38,19 @@ app.get('/api/repo', async (req, res) => {
     return res.status(400).json({ error: 'Missing owner or repo query parameters' });
   }
   try {
-    const [repoInfo, commits, issues, pulls] = await Promise.all([
+    const [repoInfo, commits, issues, pulls, languages] = await Promise.all([
       githubFetch(`${GITHUB_API}/repos/${owner}/${repo}`),
       githubFetch(`${GITHUB_API}/repos/${owner}/${repo}/commits?per_page=10`),
       githubFetch(`${GITHUB_API}/repos/${owner}/${repo}/issues?state=open&per_page=10`),
       githubFetch(`${GITHUB_API}/repos/${owner}/${repo}/pulls?state=open&per_page=10`),
+      githubFetch(`${GITHUB_API}/repos/${owner}/${repo}/languages`),
     ]);
 
     // Filter out pull requests from issues list (GitHub returns PRs as issues)
     const filteredIssues = issues.filter((i) => !i.pull_request);
-
-    res.json({ repoInfo, commits, issues: filteredIssues, pulls });
+    const stats = { languages: Object.keys(languages) };
+    // Rename pulls to pullRequests for consistency with client
+    res.json({ repoInfo, commits, issues: filteredIssues, pullRequests: pulls, stats });
   } catch (err) {
     console.error(err);
     const status = err.status || 500;
