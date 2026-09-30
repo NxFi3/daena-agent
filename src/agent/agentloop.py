@@ -937,6 +937,16 @@ class Loop:
 
             current_response_keys.add(key)
 
+            guard_decision = self._tool_loop_guard.before_call(call)
+            if guard_decision.should_block:
+                blocked_results[index] = self._loop_guard_result(
+                    call=call,
+                    code=guard_decision.code,
+                    message=guard_decision.message,
+                    count=guard_decision.count,
+                )
+                continue
+
             previous_revision = self._successful_tool_calls.get(key)
             tool = self.tool.get_tool(call.name)
             allow_same_revision_repeat = bool(
@@ -1149,6 +1159,22 @@ class Loop:
         if isinstance(result.metadata, dict) and result.metadata.get("plan_gate"):
             self.metrics["plan_blocks"] = self.metrics.get("plan_blocks", 0) + 1
 
+        if isinstance(result.metadata, dict) and result.metadata.get("loop_guard_block"):
+            self.metrics["loop_guard_blocks"] = (
+                self.metrics.get("loop_guard_blocks", 0) + 1
+            )
+
+        guard_decision = self._tool_loop_guard.after_call(
+            call=call,
+            result=result,
+            workspace_changed=changed,
+        )
+        if guard_decision.action == "warn":
+            self.metrics["loop_guard_warnings"] = (
+                self.metrics.get("loop_guard_warnings", 0) + 1
+            )
+            self._store_nudge(guard_decision.message)
+
         if result.success:
 
             key = self._tool_call_key(call)
@@ -1254,6 +1280,9 @@ class Loop:
 
         if is_duplicate:
 
+            return None
+
+        if isinstance(result.metadata, dict) and result.metadata.get("loop_guard_block"):
             return None
 
         signature = self._failure_signature(
