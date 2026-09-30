@@ -89,22 +89,13 @@ def test_plan_state_snapshot(tmp_path, monkeypatch):
     state = tool.snapshot()
     assert state.exists is True
     assert state.goal == "Build authentication"
-    assert state.current_step is None
-    assert state.next_pending_step is not None
-    assert state.next_pending_step.number == 1
-    assert state.is_complete is False
-
-    result = tool.execute(
-        operation="update",
-        step=1,
-        status="in_progress",
-    )
-    assert result.success is True
-
-    state = tool.snapshot()
     assert state.current_step is not None
     assert state.current_step.number == 1
     assert state.current_step.status == "in_progress"
+    assert state.next_pending_step is not None
+    assert state.next_pending_step.number == 2
+    assert state.is_complete is False
+
 
 
 def test_loop_plan_gate_enforces_step_lifecycle(tmp_path, monkeypatch):
@@ -124,21 +115,17 @@ def test_loop_plan_gate_enforces_step_lifecycle(tmp_path, monkeypatch):
     try:
         command = command_call()
 
+        # Creating a plan automatically starts step 1, so normal work is allowed.
         allowed, blocked = loop._classify_calls([command])
-        assert allowed == []
-        assert blocked[0].content["error"]["type"] == "step_start_required"
-
-        start = plan_call(1, "in_progress")
-        allowed, blocked = loop._classify_calls([start, command])
-
         assert allowed == [0]
-        assert 1 in blocked
+        assert blocked == {}
 
-        assert plan_tool.execute(
-            operation="update",
-            step=1,
-            status="in_progress",
-        ).success
+        # A redundant/manual start of the already-active step is rejected by the runtime gate.
+        start = plan_call(1, "in_progress")
+        allowed, blocked = loop._classify_calls([start])
+        assert allowed == []
+        assert blocked[0].content["error"]["type"] == "active_step_exists"
+
         loop._plan_step_work_started = False
 
         complete = plan_call(1, "completed")
@@ -150,5 +137,15 @@ def test_loop_plan_gate_enforces_step_lifecycle(tmp_path, monkeypatch):
         allowed, blocked = loop._classify_calls([complete, command])
         assert allowed == [0]
         assert blocked[1].content["error"]["type"] == "plan_update_required_first"
+
+        assert plan_tool.execute(
+            operation="update",
+            step=1,
+            status="completed",
+        ).success
+        next_state = plan_tool.snapshot()
+        assert next_state.current_step is not None
+        assert next_state.current_step.number == 2
+        assert next_state.current_step.status == "in_progress"
     finally:
         loop.close()
