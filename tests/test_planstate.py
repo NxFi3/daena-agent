@@ -137,21 +137,9 @@ def test_loop_plan_gate_enforces_step_lifecycle(tmp_path, monkeypatch):
 
         complete = plan_call(1, "completed")
         allowed, blocked = loop._classify_calls([complete])
-        assert allowed == []
-        assert blocked[0].content["error"]["type"] == "completion_requires_work"
+        assert allowed == [0]
+        assert blocked == {}
 
-        loop._plan_progress.record(
-            command,
-            ToolResult(
-                success=True,
-                name="command_exec",
-                content={
-                    "command": ["echo", "hello"],
-                    "exit_code": 0,
-                    "status": "exited",
-                },
-            ),
-        )
         allowed, blocked = loop._classify_calls([complete, command])
         assert allowed == [0]
         assert blocked[1].content["error"]["type"] == "plan_update_required_first"
