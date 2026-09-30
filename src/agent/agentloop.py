@@ -22,6 +22,7 @@ from src.models.ContextEvent import (
 from src.models.LLMResult import LLMResult
 from src.models.ToolResult import ToolResult
 from src.memories.stm.STM import STM
+from src.agent.toolguard import ToolLoopGuard
 from src.tools.ToolManager import ToolManager
 from src.utils.logger import get_logger
 
@@ -99,6 +100,8 @@ class Loop:
 
         # key -> (workspace_revision, successful_repeat_count)
         self._same_revision_call_counts: dict[str, tuple[int, int]] = {}
+
+        self._tool_loop_guard = ToolLoopGuard()
 
         self._recent_failure_signatures: list[str] = []
 
@@ -1702,6 +1705,8 @@ class Loop:
         self._successful_tool_calls.clear()
         self._same_revision_call_counts.clear()
 
+        self._tool_loop_guard.reset()
+
         self._plan_step_work_started = False
 
         self._last_duplicate_key = None
@@ -1722,6 +1727,8 @@ class Loop:
             "tool_failures": 0,
             "tool_blocks": 0,
             "plan_blocks": 0,
+            "loop_guard_warnings": 0,
+            "loop_guard_blocks": 0,
             "completed": False,
             "stop_reason": "",
             "duration_ms": 0.0,
