@@ -1787,6 +1787,7 @@ class Loop:
         self._tool_loop_guard.reset()
 
         self._plan_step_work_started = False
+        self._plan_step_has_unresolved_failure = False
 
         self._last_duplicate_key = None
 
