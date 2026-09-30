@@ -303,3 +303,38 @@ def test_last_failed_verification_survives_unrelated_command_and_clears_on_succe
     )
     ws.update(test_call, fixed, 3)
     assert ws.context()["last_failed_verification"] == {}
+
+
+def test_failed_verification_evidence_is_visible_to_model():
+    llm = FakeLLM()
+    builder = ContextBuilder(base_config(), llm)
+    task = event(
+        ContextRole.USER,
+        ContextType.MESSAGE,
+        "fix failing tests",
+        1,
+    )
+
+    messages = builder.build_context(
+        events=[task],
+        task={"id": str(task.id), "content": task.content},
+        working_set={
+            "last_failed_verification": {
+                "tool": "command_exec",
+                "command": ["npm", "test"],
+                "workdir": "/workspace",
+                "success": False,
+                "exit_code": 1,
+                "output_excerpt": (
+                    "FAIL tests/api.test.js\n"
+                    "Expected: 200\n"
+                    "Received: 500"
+                ),
+            }
+        },
+    )
+
+    system = messages[0]["content"]
+    assert "last_failed_verification" in system
+    assert "Expected: 200" in system
+    assert "Received: 500" in system
