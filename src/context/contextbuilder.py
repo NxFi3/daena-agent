@@ -52,7 +52,6 @@ class ContextBuilder:
     MAX_TOOL_CHARS = 8000
     OLD_TOOL_CHARS = 300
     FULL_TOOL_RESULTS = 6
-    MAX_THINKING_CHARS = 2000
     MAX_EXPERIENCE_CHARS = 4000
     MAX_LEARNED_EXPERIENCE_CHARS = 3000
     MAX_EXECUTION_STATE_CHARS = 6000
@@ -179,7 +178,6 @@ class ContextBuilder:
                 messages.append({"role": "user", "content": task_text})
 
         self._shrink_old_tool_results(messages)
-        self._drop_old_thinking(messages)
         return self._sanitize_tool_protocol(messages)
 
     def _assistant_message(
@@ -322,12 +320,6 @@ class ContextBuilder:
                 messages[index]["content"] = (
                     content[: self.OLD_TOOL_CHARS] + " ...[old result truncated]"
                 )
-
-    def _drop_old_thinking(self, messages: list[dict[str, Any]]) -> None:
-        last_user = self._last_index(messages, "user")
-        for index, message in enumerate(messages):
-            if index < last_user:
-                message.pop("thinking", None)
 
     def _compact_execution_state(
         self,
