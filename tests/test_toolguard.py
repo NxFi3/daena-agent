@@ -71,7 +71,7 @@ def test_identical_successful_call_warns_then_blocks():
         result("search", content={"success": True, "matches": []}),
         workspace_changed=False,
     )
-    assert fourth.action == "warn"
+    assert fourth.action == "block"
 
     blocked = guard.before_call(tool_call)
     assert blocked.action == "block"
@@ -124,7 +124,7 @@ def test_failed_verification_then_repeated_edits_get_bounded():
     guard.after_call(tool_call, patch_result(), workspace_changed=True)
 
     tool_call = patch_call(version=8)
-    assert guard.before_call(tool_call).action == "block"
+    blocked = guard.before_call(tool_call)
     assert blocked.action == "block"
     assert blocked.code == "mutation_no_progress"
 
