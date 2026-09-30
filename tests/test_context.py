@@ -193,3 +193,50 @@ def test_experience_is_disabled_for_baseline():
 
     system = messages[0]["content"]
     assert "<experience>" not in system
+
+def test_execution_state_is_visible_and_compact():
+    llm = FakeLLM()
+    builder = ContextBuilder(base_config(), llm)
+    task = event(ContextRole.USER, ContextType.MESSAGE, "continue implementation", 1)
+
+    messages = builder.build_context(
+        events=[task],
+        task={"id": str(task.id), "content": task.content},
+        agent_state={
+            "status": "succeeded",
+            "tool": "read_file",
+            "action": "inspect",
+            "target": "server.js",
+            "iteration": 4,
+        },
+        progress={"items": ["Read server.js"]},
+        working_set={
+            "artifacts": {
+                "/workspace/server.js": {
+                    "status": "known",
+                    "known": True,
+                    "preview": "const app = express();",
+                }
+            },
+            "verification": {},
+            "facts": ["server.js exists"],
+            "unresolved": [],
+        },
+        recent_actions={
+            "items": [
+                {
+                    "iteration": 4,
+                    "tool": "read_file",
+                    "action": "inspect",
+                    "target": "server.js",
+                    "outcome": "success",
+                    "summary": "Read file server.js.",
+                }
+            ]
+        },
+    )
+
+    system = messages[0]["content"]
+    assert "<execution_state>" in system
+    assert "server.js" in system
+    assert "Read server.js" in system
