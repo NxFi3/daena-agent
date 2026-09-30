@@ -240,3 +240,17 @@ def test_redundant_start_of_current_step_is_allowed():
     )
 
     assert error is None
+
+
+def test_missing_active_step_does_not_block_recovery_work():
+    loop = Loop.__new__(Loop)
+    state = PlanState(
+        exists=True,
+        goal="test",
+        steps=(
+            PlanStepState(number=1, status="completed", description="Done"),
+            PlanStepState(number=2, status="pending", description="Continue"),
+        ),
+    )
+
+    assert loop._plan_gate_message(regular_tool_call(), state) is None
