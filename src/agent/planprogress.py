@@ -82,7 +82,10 @@ class PlanProgressTracker:
 
         content = result.content if isinstance(result.content, dict) else {}
         status = str(content.get("status", "") or "").strip().lower()
-        terminal = status not in {"running"}
+        process_id = str(content.get("process_id", "") or "").strip()
+        terminal = status not in {"running"} and not (
+            process_id and status not in {"exited", "terminated"}
+        )
 
         self.current_step.last_result_success = bool(result.success)
         self.current_step.last_result_terminal = terminal
