@@ -19,9 +19,13 @@ EXPERIENCE_PATH = Path("AgentInstruction/experience.md")
 PLANS_PATH = Path("AgentInstruction/plan.md")
 
 
-def PlanReader() -> str:
+def PlanReader(workspace: str | Path | None = None) -> str:
+    plan_path = PLANS_PATH
+    if workspace:
+        plan_path = Path(workspace).expanduser().resolve() / PLANS_PATH
+
     try:
-        text = PLANS_PATH.read_text(encoding="utf-8").strip()
+        text = plan_path.read_text(encoding="utf-8").strip()
     except (FileNotFoundError, OSError):
         return ""
     return text
@@ -48,7 +52,6 @@ class ContextBuilder:
     MAX_TOOL_CHARS = 8000
     OLD_TOOL_CHARS = 300
     FULL_TOOL_RESULTS = 6
-    MAX_THINKING_CHARS = 2000
     MAX_EXPERIENCE_CHARS = 4000
     MAX_LEARNED_EXPERIENCE_CHARS = 3000
     MAX_EXECUTION_STATE_CHARS = 6000
@@ -175,7 +178,6 @@ class ContextBuilder:
                 messages.append({"role": "user", "content": task_text})
 
         self._shrink_old_tool_results(messages)
-        self._drop_old_thinking(messages)
         return self._sanitize_tool_protocol(messages)
 
     def _assistant_message(
@@ -202,10 +204,6 @@ class ContextBuilder:
         ):
             if raw.get(key) is not None:
                 message[key] = raw[key]
-
-        thinking = raw.get("thinking") or metadata.get("thinking")
-        if thinking:
-            message["thinking"] = self._truncate(str(thinking), self.MAX_THINKING_CHARS)
 
         if not str(message.get("content", "")).strip() and "tool_calls" not in message:
             return None
@@ -322,12 +320,6 @@ class ContextBuilder:
                 messages[index]["content"] = (
                     content[: self.OLD_TOOL_CHARS] + " ...[old result truncated]"
                 )
-
-    def _drop_old_thinking(self, messages: list[dict[str, Any]]) -> None:
-        last_user = self._last_index(messages, "user")
-        for index, message in enumerate(messages):
-            if index < last_user:
-                message.pop("thinking", None)
 
     def _compact_execution_state(
         self,
@@ -462,7 +454,7 @@ class ContextBuilder:
                 self.MAX_LEARNED_EXPERIENCE_CHARS,
             )
         )
-        self.window.set_plan(PlanReader())
+        self.window.set_plan(PlanReader(workspace))
         self.window.set_execution_state(execution_state)
         self.window.set_runtime(workspace)
         self.window.set_conversation(self._build_conversation(events, task))

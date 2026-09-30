@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from collections import OrderedDict
+from pathlib import Path
 from typing import Any
 
 from src.models.ToolCall import ToolCall
@@ -51,8 +52,14 @@ class WorkingSet:
         "-s",
     }
 
-    def __init__(self) -> None:
+    def __init__(self, workspace_root: str | None = None) -> None:
+        self.workspace_root: Path | None = None
+        if workspace_root:
+            self.set_workspace(workspace_root)
         self.reset()
+
+    def set_workspace(self, directory: str) -> None:
+        self.workspace_root = Path(directory).expanduser().resolve()
 
     def reset(self) -> None:
         self.artifacts: OrderedDict[
@@ -491,11 +498,21 @@ class WorkingSet:
             result=result,
         )
 
+        validation_source_key = "tool:" + json.dumps(
+            {
+                "tool": str(getattr(tool_call, "name", result.name)).strip().lower(),
+                "action": str(getattr(tool_call, "action", "")).strip().lower(),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
         remaining: list[str] = []
 
         for item in self.unresolved:
 
-            if self._unresolved_keys.get(item) == source_key:
+            item_key = self._unresolved_keys.get(item)
+            if item_key == source_key or item_key == validation_source_key:
                 self._unresolved_keys.pop(item, None)
                 continue
 
@@ -551,6 +568,16 @@ class WorkingSet:
 
         target = str(getattr(tool_call, "target", "")).strip()
 
+        if not target:
+            return "tool:" + json.dumps(
+                {
+                    "tool": tool_name,
+                    "action": str(getattr(tool_call, "action", "")).strip().lower(),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+
         return "target:" + json.dumps(
             {
                 "tool": tool_name,
@@ -599,8 +626,7 @@ class WorkingSet:
             "items": list(self.recent_actions),
         }
 
-    @staticmethod
-    def _canonical_path(value: str) -> str:
+    def _canonical_path(self, value: str) -> str:
 
         value = str(value or "").strip()
 
@@ -611,9 +637,10 @@ class WorkingSet:
             return value
 
         try:
-            from pathlib import Path
-
-            return str(Path(value).expanduser().resolve(strict=False))
+            path = Path(value).expanduser()
+            if not path.is_absolute() and self.workspace_root is not None:
+                path = self.workspace_root / path
+            return str(path.resolve(strict=False))
 
         except (OSError, RuntimeError):
             return value
