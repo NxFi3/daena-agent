@@ -186,13 +186,11 @@ class ToolLoopGuard:
         signature = self._signature(call)
         name = str(getattr(call, "name", "")).strip().lower()
 
-        cycle = self.cycle_decision()
-        if cycle.should_block:
-            return cycle
 
-        cycle = self.cycle_decision()
-        if cycle.action != "allow":
-            return cycle
+        if name not in self.REPEATABLE_TOOLS:
+            cycle = self.cycle_decision()
+            if cycle.action != "allow":
+                return cycle
 
         if (
             name not in self.REPEATABLE_TOOLS
