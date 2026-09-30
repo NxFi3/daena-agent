@@ -35,8 +35,8 @@ class CommandExec(Tool):
         - Foreground command execution.
         - Optional background execution.
         - Cross-platform process-group isolation.
-        - Timeout handling.
-        - Process-group termination on timeout.
+        - Yield-based managed process execution.
+        - Process-group termination for managed process cleanup.
         - Bounded stdout/stderr.
         - Structured JSON-compatible ToolResult.content.
         - No full stdout/stderr duplication in metadata.
@@ -266,7 +266,7 @@ class CommandExec(Tool):
                 workdir=workdir,
                 yield_time_ms=yield_time_ms,
                 max_output_chars=max_output_chars,
-                pipe_stdin=True,
+                pipe_stdin=pipe_stdin,
             )
         except FileNotFoundError as exc:
             return self._execution_error(
@@ -334,6 +334,32 @@ class CommandExec(Tool):
             },
             metadata={},
         )
+
+    @staticmethod
+    def _exit_code_hint(
+        command: list[str],
+        exit_code: int | None,
+    ) -> str:
+        if exit_code is None or not command:
+            return ""
+
+        exe = ""
+
+        for i, arg in enumerate(command):
+            if arg in ("-m", "-c", "--module"):
+                if i + 1 < len(command):
+                    exe = command[i + 1]
+                    break
+            elif not arg.startswith("-"):
+                exe = arg.split("/")[-1]
+                break
+
+        exe = exe.lower().replace(".py", "")
+        hints = _EXIT_CODE_HINTS.get(exe)
+        if not hints:
+            return ""
+
+        return hints.get(exit_code, "")
 
     def _resolve_workdir(
         self,
