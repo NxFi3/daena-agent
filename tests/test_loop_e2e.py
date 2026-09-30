@@ -6,6 +6,8 @@ from src.tools.builtin.plan.tool import Plan
 from src.agent.agentloop import Loop
 from src.models.ContextEvent import ContextEvent, ContextRole, ContextType
 from src.models.LLMResult import LLMResult
+from src.models.ToolCall import ToolCall
+from src.models.ToolResult import ToolResult
 
 
 class FakeModel:
@@ -193,5 +195,76 @@ def test_duplicate_detector_canonicalizes_read_paths_and_allows_dynamic_polling(
         allowed, blocked = loop._classify_calls([poll])
         assert allowed == [0]
         assert blocked == {}
+    finally:
+        loop.close()
+
+
+def test_runtime_blocks_plan_while_process_is_active_and_repeats_failed_action(tmp_path):
+    config = {
+        "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
+        "context": {
+            "safe_margin": 0,
+            "recent_event_limit": 10,
+            "compaction_enabled": False,
+            "compaction_target_tokens": 256,
+        },
+        "retrieval": {"top_k": 3},
+        "security": {
+            "workspace_only": True,
+            "allow_background": True,
+            "allow_network_tools": True,
+            "force_approve": True,
+        },
+        "max_agent_iterations": 5,
+        "experience": {"enabled": False},
+    }
+
+    loop = Loop(config, FakeLLM())
+    loop.session_id = uuid4()
+    loop.set_workspace(str(tmp_path))
+
+    try:
+        loop._active_process_ids.add("proc-live")
+
+        plan_call = ToolCall(
+            name="plan",
+            id="plan-live",
+            valid=True,
+            args={"operation": "update", "step": 1, "status": "completed"},
+        )
+        blocked = loop._runtime_recovery_gate(plan_call)
+        assert blocked is not None
+        assert blocked.metadata["runtime_gate"] is True
+
+        loop._active_process_ids.clear()
+
+        failed_call = ToolCall(
+            name="command_exec",
+            id="cmd-1",
+            valid=True,
+            args={
+                "command": ["python", "-c", "raise SystemExit(1)"],
+                "workdir": ".",
+            },
+        )
+        failed_result = ToolResult(
+            success=False,
+            name="command_exec",
+            content={
+                "success": False,
+                "status": "exited",
+                "process_id": None,
+                "exit_code": 1,
+                "error": {"type": "test_assertion", "message": "Expected 200"},
+            },
+            metadata={},
+        )
+
+        loop._apply_result(failed_call, failed_result, 1)
+
+        blocked_retry = loop._runtime_recovery_gate(failed_call)
+        assert blocked_retry is not None
+        assert blocked_retry.metadata["runtime_gate"] is True
+        assert "exact action" in blocked_retry.summary
     finally:
         loop.close()
