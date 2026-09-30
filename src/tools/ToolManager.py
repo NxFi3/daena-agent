@@ -198,6 +198,10 @@ class ToolManager:
             toolcall = incoming_call
 
             if not toolcall.valid:
+                message = (
+                    str(toolcall.validation_error).strip()
+                    or "Invalid tool call."
+                )
                 calls.append(toolcall)
                 results.append(
                     ToolResult(
@@ -207,10 +211,20 @@ class ToolManager:
                             "success": False,
                             "error": {
                                 "type": "invalid_tool_call",
-                                "message": "Invalid tool call.",
+                                "message": message,
                             },
                         },
-                        metadata={"tool_call_id": toolcall.id},
+                        metadata={
+                            "tool_call_id": toolcall.id,
+                            "normalization_notes": list(
+                                toolcall.normalization_notes or []
+                            ),
+                            "recovery_hint": (
+                                "Reissue the call using the documented schema. "
+                                "Do not repeat an invalid call unchanged."
+                            ),
+                        },
+                        summary=message,
                     )
                 )
                 continue
