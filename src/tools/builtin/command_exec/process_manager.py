@@ -387,6 +387,8 @@ class ProcessManager:
     ) -> dict:
         return {
             "status": entry.status,
+            "command": list(entry.command),
+            "workdir": str(entry.workdir) if entry.workdir is not None else None,
             "process_id": entry.process_id,
             "pid": entry.process.pid,
             "exit_code": entry.exit_code,
