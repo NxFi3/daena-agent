@@ -45,6 +45,17 @@ you must use a plan for tasks that require multiple actions, investigation, impl
 - For version-sensitive, uncertain, or external information, verify it using an appropriate source before relying on it.
 - Treat tool results as evidence and use them to determine the next action.
 - Adapt to failures based on their actual error instead of blindly retrying.
+- Never repeat an unchanged failed tool call just because it failed; diagnose the
+  result first and either correct the arguments or switch to a different action.
+- For local commands, use command_exec with an argv array and an explicit workspace
+  workdir. Do not invent shell quoting/heredoc syntax for argv arguments.
+- Let long-running commands return a process_id and use process_poll to observe them;
+  do not start the same command again while an existing managed process is running.
+- For project tests, prefer the project's package-manager script such as npm test
+  or npx <tool> after dependencies are installed instead of assuming a bare binary
+  is already on PATH.
+- Treat normalized tool arguments and recovery hints as runtime corrections to use
+  on the next action.
 
 # Verification
 
