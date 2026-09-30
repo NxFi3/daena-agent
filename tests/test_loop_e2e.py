@@ -265,6 +265,6 @@ def test_runtime_blocks_plan_while_process_is_active_and_repeats_failed_action(t
         blocked_retry = loop._runtime_recovery_gate(failed_call)
         assert blocked_retry is not None
         assert blocked_retry.metadata["runtime_gate"] is True
-        assert "exact action" in blocked_retry.summary
+        assert "exact failed action" in blocked_retry.summary
     finally:
         loop.close()
