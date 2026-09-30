@@ -28,7 +28,8 @@ _EXIT_CODE_HINTS: dict[str, dict[int, str]] = {
 
 
 class CommandExec(Tool):
-    # ToolManager replaces this with its session-scoped ProcessManager.\n    process_manager = PROCESS_MANAGER
+    # ToolManager replaces this with its session-scoped ProcessManager.
+    process_manager = PROCESS_MANAGER
     """
     Execute local commands for the Evana agent runtime.
 
