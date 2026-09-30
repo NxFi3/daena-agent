@@ -38,6 +38,7 @@ class WorkingSet:
     MAX_UNRESOLVED = 6
     MAX_RECENT_ACTIONS = 10
     MAX_OBSERVATIONS = 3
+    MAX_VERIFICATION_EXCERPT_CHARS = 3200
 
     # Common command flags that change presentation rather than
     # the underlying verification target.
@@ -74,6 +75,11 @@ class WorkingSet:
         self._unresolved_keys: dict[str, str] = {}
 
         self.verification: dict[str, Any] = {}
+
+        # Preserve the latest failed verification independently from the
+        # currently running or unrelated command. A later search, lsof, or
+        # cleanup command must not erase the diagnostic needed for recovery.
+        self.last_failed_verification: dict[str, Any] = {}
 
         self.recent_actions: list[dict[str, Any]] = []
 
@@ -407,20 +413,45 @@ class WorkingSet:
             output_parts.append(stderr.strip())
 
         output = "\n".join(output_parts)
+        status = str(content.get("status", "") or "").strip().lower()
+        terminal = (
+            status in {"exited", "terminated"}
+            and content.get("exit_code") is not None
+        )
 
-        command = content.get("command")
-
-        self.verification = {
+        verification = {
             "tool": str(getattr(tool_call, "name", result.name)),
-            "command": command,
+            "command": content.get("command"),
             "workdir": content.get("workdir"),
             "success": result.success,
             "exit_code": content.get("exit_code"),
             "exit_code_hint": content.get("exit_code_hint", ""),
+            "status": status,
             "timed_out": content.get("timed_out", False),
             "duration_ms": content.get("duration_ms"),
-            "output_excerpt": self._truncate(output, 1400),
+            "output_excerpt": self._truncate(
+                output,
+                self.MAX_VERIFICATION_EXCERPT_CHARS,
+            ),
         }
+
+        self.verification = verification
+
+        # A failed verification is durable state. Keep it until the same
+        # verification scope succeeds, even when unrelated commands run.
+        if terminal and isinstance(content.get("command"), list):
+            scope_key = self._execution_scope_key(
+                tool_call=tool_call,
+                result=result,
+            )
+
+            if result.success:
+                if self.last_failed_verification.get("scope_key") == scope_key:
+                    self.last_failed_verification = {}
+            else:
+                failed = dict(verification)
+                failed["scope_key"] = scope_key
+                self.last_failed_verification = failed
 
     def _update_facts(
         self,
@@ -612,6 +643,7 @@ class WorkingSet:
         return {
             "artifacts": dict(self.artifacts),
             "verification": dict(self.verification),
+            "last_failed_verification": dict(self.last_failed_verification),
             "facts": list(self.facts),
             "unresolved": list(self.unresolved),
         }
