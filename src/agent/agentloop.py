@@ -689,6 +689,7 @@ class Loop:
         self.metrics["completed"] = False
         self.metrics["stop_reason"] = reason
         self.metrics["duration_ms"] = self._duration_ms()
+        self.tool.close()
 
         return result
 
