@@ -34,6 +34,9 @@ DEFAULT_ALLOWED_TOOLS = {
     "read_file",
     "apply_patch",
     "command_exec",
+    "process_poll",
+    "process_write",
+    "process_stop",
     "web_search",
     "web_fetch",
 }
