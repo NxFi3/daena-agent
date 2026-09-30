@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -127,6 +128,34 @@ class ToolResult:
 
         return first
 
+    @staticmethod
+    def _failure_excerpt(stdout: str, stderr: str, limit: int = 280) -> str:
+        """Extract compact diagnostic lines instead of only the final generic line."""
+        selected: list[str] = []
+        for source in (stderr, stdout):
+            if not isinstance(source, str):
+                continue
+            for raw in source.splitlines():
+                line = raw.strip()
+                if not line or line in selected:
+                    continue
+                if re.search(
+                    r"(fail|error|assert|expect|expected|received|traceback|exception|tests?:|npm err|panic)",
+                    line,
+                    flags=re.IGNORECASE,
+                ):
+                    selected.append(line)
+                if len(selected) >= 3:
+                    break
+            if len(selected) >= 3:
+                break
+
+        if not selected:
+            return ""
+
+        excerpt = " | ".join(selected)
+        return excerpt if len(excerpt) <= limit else excerpt[: limit - 3].rstrip() + "..."
+
     def _derive_summary(self) -> str:
         content = self.content
 
@@ -204,12 +233,16 @@ class ToolResult:
                         )
                 return f"Command succeeded (exit_code={exit_code})."
 
-            error_detail = ""
+            error_detail = self._failure_excerpt(
+                stderr=stderr if isinstance(stderr, str) else "",
+                stdout=stdout if isinstance(stdout, str) else "",
+            )
 
-            if isinstance(stderr, str) and stderr.strip():
-                error_detail = self._last_meaningful_line(stderr)
-            elif isinstance(stdout, str) and stdout.strip():
-                error_detail = self._last_meaningful_line(stdout)
+            if not error_detail:
+                if isinstance(stderr, str) and stderr.strip():
+                    error_detail = self._last_meaningful_line(stderr)
+                elif isinstance(stdout, str) and stdout.strip():
+                    error_detail = self._last_meaningful_line(stdout)
 
             if error_detail:
                 base = f"Command failed (exit_code={exit_code}): {error_detail}"
