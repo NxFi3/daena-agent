@@ -115,3 +115,73 @@ def test_loop_executes_tool_through_security_and_context(tmp_path, monkeypatch):
         assert metrics["tokens"] == 40
     finally:
         loop.close()
+
+def test_duplicate_detector_canonicalizes_read_paths_and_allows_dynamic_polling(tmp_path):
+    target = tmp_path / "hello.txt"
+    target.write_text("hello", encoding="utf-8")
+
+    config = {
+        "llm": {
+            "provider_config": {
+                "generation_config": {"num_ctx": 4096},
+            }
+        },
+        "context": {
+            "safe_margin": 0,
+            "recent_event_limit": 10,
+            "compaction_enabled": False,
+            "compaction_target_tokens": 256,
+        },
+        "retrieval": {"top_k": 3},
+        "security": {
+            "workspace_only": True,
+            "allow_background": True,
+            "allow_network_tools": True,
+            "force_approve": True,
+        },
+        "max_agent_iterations": 5,
+        "experience": {"enabled": False},
+    }
+
+    from src.models.ToolCall import ToolCall
+
+    llm = FakeLLM()
+    loop = Loop(config, llm)
+    loop.session_id = uuid4()
+    loop.set_workspace(str(tmp_path))
+
+    try:
+        first_read = ToolCall(
+            name="read_file",
+            id="read-1",
+            valid=True,
+            args={"file_path": "hello.txt"},
+        )
+        second_read = ToolCall(
+            name="read_file",
+            id="read-2",
+            valid=True,
+            args={"file_path": str(target)},
+        )
+
+        key = loop._tool_call_key(first_read)
+        loop._successful_tool_calls[key] = loop.workspace_revision
+
+        allowed, blocked = loop._classify_calls([second_read])
+        assert allowed == []
+        assert 0 in blocked
+
+        poll = ToolCall(
+            name="process_poll",
+            id="poll-1",
+            valid=True,
+            args={"process_id": "proc-demo"},
+        )
+        poll_key = loop._tool_call_key(poll)
+        loop._successful_tool_calls[poll_key] = loop.workspace_revision
+
+        allowed, blocked = loop._classify_calls([poll])
+        assert allowed == [0]
+        assert blocked == {}
+    finally:
+        loop.close()
