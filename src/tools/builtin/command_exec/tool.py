@@ -57,7 +57,8 @@ class CommandExec(Tool):
 
     description = (
         "Run a local command given as an argv array (not a shell string). "
-        "The command waits up to yield_time_ms (default 1000ms). If it exits in that "
+        "The command waits up to yield_time_ms (default 1000ms). Optional numeric "
+        "arguments are normalized to their declared bounds before execution. If it exits in that "
         "window, the result contains exit_code and completed output. If it is still "
         "running, the process is kept alive and the result returns status=running "
         "with an opaque process_id. Use process_poll to wait for completion or inspect "
@@ -92,8 +93,8 @@ class CommandExec(Tool):
             "workdir": {
                 "type": "string",
                 "description": (
-                    "Optional working directory. If omitted, the current "
-                    "working directory is inherited."
+                    "Working directory relative to the active workspace. Defaults to "
+                    "the workspace root ('.')."
                 ),
             },
             "yield_time_ms": {
@@ -139,7 +140,7 @@ class CommandExec(Tool):
     def execute(
         self,
         command: list[str],
-        workdir: str | None = None,
+        workdir: str | None = ".",
         yield_time_ms: int = DEFAULT_YIELD_TIME_MS,
         max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS,
         background: bool = False,
