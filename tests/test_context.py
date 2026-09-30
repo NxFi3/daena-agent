@@ -263,9 +263,7 @@ def test_last_failed_verification_survives_unrelated_command_and_clears_on_succe
             "workdir": ".",
             "status": "exited",
             "exit_code": 1,
-            "stdout": "FAIL tests/api.test.js
-Expected: 200
-Received: 500",
+            "stdout": "FAIL tests/api.test.js\nExpected: 200\nReceived: 500",
             "stderr": "",
         },
     )
