@@ -28,6 +28,7 @@ _EXIT_CODE_HINTS: dict[str, dict[int, str]] = {
 
 
 class CommandExec(Tool):
+    # ToolManager replaces this with its session-scoped ProcessManager.\n    process_manager = PROCESS_MANAGER
     """
     Execute local commands for the Evana agent runtime.
 
@@ -265,7 +266,7 @@ class CommandExec(Tool):
         started = time.perf_counter()
 
         try:
-            result = PROCESS_MANAGER.start(
+            result = self.process_manager.start(
                 command=command,
                 workdir=workdir,
                 yield_time_ms=yield_time_ms,
