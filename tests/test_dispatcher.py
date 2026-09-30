@@ -165,3 +165,25 @@ def test_dispatcher_rejects_unknown_args_for_strict_tools():
 
     assert call.valid is False
     assert "Unknown argument" in call.validation_error
+
+
+def test_command_exec_yield_time_alias_is_normalized():
+    from src.tools.ToolDispatcher import ToolDispatcher
+    from src.tools.ToolRegistry import ToolRegistry
+
+    registry = ToolRegistry()
+    registry.discover()
+    dispatcher = ToolDispatcher(registry)
+
+    calls = dispatcher.dispatch([{
+        "id": "call-1",
+        "name": "command_exec",
+        "arguments": {
+            "command": ["echo", "ok"],
+            "yield_time": "1000",
+        },
+    }])
+
+    assert len(calls) == 1
+    assert calls[0].valid is True
+    assert calls[0].args["yield_time_ms"] == 1000
