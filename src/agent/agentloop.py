@@ -806,7 +806,13 @@ class Loop:
         """Prevent a natural-language final answer while the plan is unfinished."""
         state = self._read_plan_state()
 
-        if not state.exists or state.error or state.is_complete:
+        if state.error:
+            return (
+                "plan_invalid",
+                "The execution plan is invalid. Repair the plan before giving the final answer.",
+            )
+
+        if not state.exists or state.is_complete:
             return None
 
         current = state.current_step
