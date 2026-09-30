@@ -371,6 +371,16 @@ class ContextBuilder:
                 )
                 state["verification"] = compact_verification
 
+            last_failed = working_set.get("last_failed_verification")
+            if isinstance(last_failed, dict) and last_failed:
+                compact_failed = dict(last_failed)
+                compact_failed["output_excerpt"] = self._truncate(
+                    str(compact_failed.get("output_excerpt", "")),
+                    2600,
+                )
+                compact_failed.pop("scope_key", None)
+                state["last_failed_verification"] = compact_failed
+
             facts = working_set.get("facts")
             if isinstance(facts, list) and facts:
                 state["facts"] = [str(item) for item in facts[-8:]]

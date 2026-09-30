@@ -112,3 +112,43 @@ def test_process_stop_terminates_running_process():
 
     assert stopped["status"] in {"exited", "terminated"}
     assert stopped["process_id"] == process_id
+
+    
+def test_duplicate_running_command_reuses_existing_process():
+    tool = CommandExec()
+    command = [
+        sys.executable,
+        "-c",
+        "import time; print('started', flush=True); time.sleep(2)",
+    ]
+
+    first = tool.execute(command=command, yield_time_ms=25)
+    assert first.success is True
+    assert first.content["status"] == "running"
+
+    second = tool.execute(command=command, yield_time_ms=25)
+    assert second.success is True
+    assert second.content["status"] == "running"
+    assert second.content["process_id"] == first.content["process_id"]
+    assert second.content.get("reused_existing_process") is True
+
+    PROCESS_MANAGER.stop(process_id=first.content["process_id"])
+
+
+def test_poll_result_preserves_command_metadata():
+    tool = CommandExec()
+    command = [sys.executable, "-c", "import time; time.sleep(0.2)"]
+    result = tool.execute(command=command, yield_time_ms=20)
+    assert result.content["status"] == "running"
+
+    process_id = result.content["process_id"]
+    finished = PROCESS_MANAGER.poll(
+        process_id=process_id,
+        wait_ms=1_000,
+        max_output_chars=8_000,
+    )
+
+    assert finished["status"] == "exited"
+    assert finished["command"] == command
+    assert "workdir" in finished
+    PROCESS_MANAGER.stop(process_id=process_id)

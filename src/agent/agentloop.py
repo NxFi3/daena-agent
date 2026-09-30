@@ -841,7 +841,13 @@ class Loop:
         current = state.current_step
 
         if transition == "in_progress":
+            # Starting the already-active step is idempotent. Some models still
+            # emit this call even though plan creation auto-started step 1.
+            # Treat it as a harmless no-op instead of spending an iteration on
+            # a predictable runtime error.
             if current is not None:
+                if step_number == current.number:
+                    return None
                 return (
                     "active_step_exists",
                     f"Step {current.number} is already in_progress. Complete or block it before starting another step.",

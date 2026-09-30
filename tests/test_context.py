@@ -240,3 +240,66 @@ def test_execution_state_is_visible_and_compact():
     assert "<execution_state>" in system
     assert "server.js" in system
     assert "Read server.js" in system
+
+
+def test_last_failed_verification_survives_unrelated_command_and_clears_on_success():
+    from src.context.workingset import WorkingSet
+    from src.models.ToolCall import ToolCall
+    from src.models.ToolResult import ToolResult
+
+    ws = WorkingSet()
+
+    test_call = ToolCall(
+        name="command_exec",
+        action="run",
+        args={"command": ["npm", "test"], "workdir": "."},
+        valid=True,
+    )
+    failed = ToolResult(
+        success=False,
+        name="command_exec",
+        content={
+            "command": ["npm", "test"],
+            "workdir": ".",
+            "status": "exited",
+            "exit_code": 1,
+            "stdout": "FAIL tests/api.test.js\nExpected: 200\nReceived: 500",
+            "stderr": "",
+        },
+    )
+    ws.update(test_call, failed, 1)
+    assert ws.context()["last_failed_verification"]["exit_code"] == 1
+
+    unrelated_call = ToolCall(
+        name="command_exec",
+        action="run",
+        args={"command": ["pwd"], "workdir": "."},
+        valid=True,
+    )
+    unrelated = ToolResult(
+        success=True,
+        name="command_exec",
+        content={
+            "command": ["pwd"],
+            "workdir": ".",
+            "status": "exited",
+            "exit_code": 0,
+            "stdout": "/workspace",
+        },
+    )
+    ws.update(unrelated_call, unrelated, 2)
+    assert ws.context()["last_failed_verification"]["exit_code"] == 1
+
+    fixed = ToolResult(
+        success=True,
+        name="command_exec",
+        content={
+            "command": ["npm", "test"],
+            "workdir": ".",
+            "status": "exited",
+            "exit_code": 0,
+            "stdout": "PASS all tests",
+        },
+    )
+    ws.update(test_call, fixed, 3)
+    assert ws.context()["last_failed_verification"] == {}

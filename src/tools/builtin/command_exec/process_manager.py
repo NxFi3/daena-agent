@@ -23,6 +23,7 @@ class ManagedProcess:
     started_at: float
     stdout_offset: int = 0
     stderr_offset: int = 0
+    pipe_stdin: bool = False
     status: str = "running"
     exit_code: int | None = None
 
@@ -50,6 +51,22 @@ class ProcessManager:
         max_output_chars: int,
         pipe_stdin: bool = True,
     ) -> dict:
+        # Reuse an already-running identical process instead of spawning a
+        # second copy. The agent should poll the existing process.
+        with self._lock:
+            existing = self._find_running_locked(
+                command=command,
+                workdir=workdir,
+                pipe_stdin=pipe_stdin,
+            )
+            if existing is not None:
+                self._refresh_locked(existing)
+                output = self._read_incremental(existing, max_output_chars)
+                return {
+                    **self._entry_result(existing, output),
+                    "reused_existing_process": True,
+                }
+
         stdout_file = tempfile.TemporaryFile(mode="w+b")
         stderr_file = tempfile.TemporaryFile(mode="w+b")
 
@@ -82,6 +99,7 @@ class ProcessManager:
                 stdout_file=stdout_file,
                 stderr_file=stderr_file,
                 started_at=started,
+                pipe_stdin=pipe_stdin,
                 status="exited",
                 exit_code=process.returncode,
             )
@@ -108,6 +126,7 @@ class ProcessManager:
             stdout_file=stdout_file,
             stderr_file=stderr_file,
             started_at=started,
+            pipe_stdin=pipe_stdin,
         )
 
         with self._lock:
@@ -124,6 +143,8 @@ class ProcessManager:
 
         return {
             "status": entry.status,
+            "command": list(entry.command),
+            "workdir": str(entry.workdir) if entry.workdir is not None else None,
             "process_id": entry.process_id,
             "pid": entry.process.pid,
             "exit_code": entry.exit_code,
@@ -288,6 +309,27 @@ class ProcessManager:
 
         return subprocess.Popen(**kwargs)
 
+    def _find_running_locked(
+        self,
+        *,
+        command: list[str],
+        workdir: Path | None,
+        pipe_stdin: bool,
+    ) -> ManagedProcess | None:
+        normalized_workdir = str(workdir) if workdir is not None else None
+        for entry in self._processes.values():
+            if entry.status != "running":
+                continue
+            if entry.command != list(command):
+                continue
+            entry_workdir = str(entry.workdir) if entry.workdir is not None else None
+            if entry_workdir != normalized_workdir:
+                continue
+            if entry.pipe_stdin != pipe_stdin:
+                continue
+            return entry
+        return None
+
     def _refresh_locked(self, entry: ManagedProcess) -> None:
         exit_code = entry.process.poll()
 
@@ -345,6 +387,8 @@ class ProcessManager:
     ) -> dict:
         return {
             "status": entry.status,
+            "command": list(entry.command),
+            "workdir": str(entry.workdir) if entry.workdir is not None else None,
             "process_id": entry.process_id,
             "pid": entry.process.pid,
             "exit_code": entry.exit_code,
