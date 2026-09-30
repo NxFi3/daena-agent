@@ -267,3 +267,17 @@ def test_clear_background_approvals(tmp_path):
 
     assert checked.approved is False
     assert checked.security_rule == "background_disabled"
+
+def test_workspace_search_cannot_escape_workspace(tmp_path):
+    service = make_service(tmp_path)
+    call = ToolCall(
+        name="search",
+        id="c13",
+        valid=True,
+        args={"query": "secret", "path": "../"},
+    )
+
+    checked = service.check(call)
+
+    assert checked.approved is False
+    assert checked.security_rule == "workspace_boundary"
