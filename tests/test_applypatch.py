@@ -61,4 +61,4 @@ def test_patch_context_tolerates_trailing_whitespace_drift(tmp_path):
     )
 
     assert result.success is True
-    assert path.read_text(encoding="utf-8") == "const value = 2;   \nnext();\n"
+    assert path.read_text(encoding="utf-8") == "const value = 2;\nnext();\n"
