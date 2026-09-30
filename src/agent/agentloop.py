@@ -1760,6 +1760,7 @@ class Loop:
 
         self._workspace_root = Path(workspace_directory).expanduser().resolve()
         self.tool.set_workspace(workspace_directory)
+        self.working_set.set_workspace(str(self._workspace_root))
 
     def get_metrics(self) -> dict[str, Any]:
         return dict(self.metrics)
