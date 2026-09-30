@@ -120,11 +120,11 @@ def test_loop_plan_gate_enforces_step_lifecycle(tmp_path, monkeypatch):
         assert allowed == [0]
         assert blocked == {}
 
-        # A redundant/manual start of the already-active step is rejected by the runtime gate.
+        # Starting the already-active step is idempotent.
         start = plan_call(1, "in_progress")
         allowed, blocked = loop._classify_calls([start])
-        assert allowed == []
-        assert blocked[0].content["error"]["type"] == "active_step_exists"
+        assert allowed == [0]
+        assert blocked == {}
 
         loop._plan_step_work_started = False
 
