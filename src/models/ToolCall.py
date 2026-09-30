@@ -21,3 +21,12 @@ class ToolCall:
 
     security_reason: str = ""
     security_rule: str = ""
+
+    # Populated by ToolDispatcher when a model call cannot be normalized or
+    # validated. Keeping the reason on the canonical call lets the loop return
+    # a precise structured tool error instead of the generic "invalid call".
+    validation_error: str = ""
+
+    # Human-readable notes about safe runtime normalization, such as clamping
+    # an out-of-range optional integer to the tool's declared bounds.
+    normalization_notes: list[str] = field(default_factory=list)
