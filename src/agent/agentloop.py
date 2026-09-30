@@ -904,9 +904,37 @@ class Loop:
                 f"Step {step_number} is not the current in_progress step. Current step is {current.number}.",
             )
 
-        # Completion is intentionally structural rather than semantic. The runtime
-        # cannot reliably infer whether arbitrary natural-language step work was
-        # completed from a tool type or a previous verification result.
+        if transition == "completed":
+            if not self._plan_progress.can_complete(step_number):
+                progress = self._plan_progress.context()
+                if progress.get("last_result_success") is False:
+                    return (
+                        "completion_requires_success",
+                        (
+                            f"Step {step_number} cannot be completed yet. "
+                            "The latest work action failed; recover from that result "
+                            "and obtain a successful action before completing the step."
+                        ),
+                    )
+
+                if progress.get("last_result_terminal") is False:
+                    return (
+                        "completion_requires_terminal_result",
+                        (
+                            f"Step {step_number} cannot be completed yet. "
+                            "The latest action is still running; observe or finish "
+                            "the managed process before completing the step."
+                        ),
+                    )
+
+                return (
+                    "completion_requires_work",
+                    (
+                        f"Step {step_number} cannot be completed yet. "
+                        "Perform and successfully finish work for the active step first."
+                    ),
+                )
+
         return None
 
     def _classify_calls(
@@ -1179,6 +1207,7 @@ class Loop:
         self._plan_progress.record(
             tool_call=call,
             result=result,
+            iteration=iteration,
         )
 
         if result.success and changed:
