@@ -11,6 +11,10 @@ class ProcessPoll(Tool):
     name = "process_poll"
     action = "inspect"
 
+    # Polling is an observation of externally changing process state. The same
+    # arguments may legitimately return different results without a workspace edit.
+    allow_same_revision_repeat = True
+
     description = (
         "Poll a managed process by process_id. Use this after command_exec returns "
         "status=running. Returns only newly available stdout/stderr since the last "
