@@ -329,6 +329,10 @@ class CommandExec(Tool):
                 "status": status,
                 "process_id": result.get("process_id"),
                 "pid": result.get("pid"),
+                "reused_existing_process": result.get(
+                    "reused_existing_process",
+                    False,
+                ),
                 "duration_ms": result.get(
                     "duration_ms",
                     self._duration_ms(started),
