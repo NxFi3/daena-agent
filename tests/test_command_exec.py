@@ -105,7 +105,8 @@ def test_process_stop_terminates_running_process():
         yield_time_ms=25,
     )
 
-    assert result.success is True
+    assert result.success is False
+    assert result.content["status"] == "running"
     process_id = result.content["process_id"]
     assert isinstance(process_id, str)
 
