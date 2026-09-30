@@ -40,7 +40,7 @@ def _loop_for_validation() -> Loop:
     return loop
 
 
-def test_plan_completion_is_structural_not_tool_specific():
+def test_plan_completion_requires_successful_terminal_work():
     loop = _loop_for_validation()
     loop._plan_progress.sync(
         active_plan(),
@@ -48,10 +48,76 @@ def test_plan_completion_is_structural_not_tool_specific():
         workspace_revision=0,
     )
 
+    error = loop._validate_plan_transition(
+        plan_completion_call(),
+        active_plan(),
+    )
+
+    assert error is not None
+    assert error[0] == "completion_requires_work"
+
+
+def test_plan_completion_allows_successful_terminal_work():
+    loop = _loop_for_validation()
+    loop._plan_progress.sync(
+        active_plan(),
+        iteration=1,
+        workspace_revision=0,
+    )
+    loop._plan_progress.record(
+        ToolCall(
+            name="apply_patch",
+            id="patch-1",
+            valid=True,
+            action="modify",
+            target="app.py",
+        ),
+        ToolResult(
+            success=True,
+            name="apply_patch",
+            content={"files": [{"path": "app.py", "operation": "update", "content": "x"}]},
+        ),
+        iteration=2,
+    )
+
     assert loop._validate_plan_transition(
         plan_completion_call(),
         active_plan(),
     ) is None
+
+
+def test_plan_completion_rejects_running_work():
+    loop = _loop_for_validation()
+    loop._plan_progress.sync(
+        active_plan(),
+        iteration=1,
+        workspace_revision=0,
+    )
+    loop._plan_progress.record(
+        ToolCall(
+            name="command_exec",
+            id="proc-1",
+            valid=True,
+            action="run",
+        ),
+        ToolResult(
+            success=True,
+            name="command_exec",
+            content={
+                "status": "running",
+                "process_id": "proc-test",
+            },
+        ),
+        iteration=2,
+    )
+
+    error = loop._validate_plan_transition(
+        plan_completion_call(),
+        active_plan(),
+    )
+
+    assert error is not None
+    assert error[0] == "completion_requires_terminal_result"
 
 
 def test_failed_verification_does_not_create_a_runtime_semantic_gate():
