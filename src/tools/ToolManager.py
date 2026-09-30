@@ -8,6 +8,7 @@ from src.models.ToolResult import ToolResult
 from src.security.securityService import SecurityService
 from src.tools.ToolDispatcher import ToolDispatcher
 from src.tools.ToolRegistry import ToolRegistry
+from src.tools.builtin.command_exec.process_manager import ProcessManager
 from src.utils.logger import get_logger
 
 
@@ -25,6 +26,7 @@ class ToolManager:
         self.dispatcher = ToolDispatcher(self.toolregistry)
         self.security = SecurityService(self.config.get("security"))
         self._definitions: list[dict] | None = None
+        self.process_manager = ProcessManager()
 
     def set_workspace(self, directory: str) -> None:
         self.security.set_workspace(directory)
@@ -35,6 +37,10 @@ class ToolManager:
         set_workspace = getattr(plan_tool, "set_workspace", None)
         if callable(set_workspace):
             set_workspace(directory)
+
+    def close(self) -> None:
+        """Release runtime-owned resources, including managed processes."""
+        self.process_manager.close()
 
     def approve_background_command(
         self,
@@ -62,10 +68,22 @@ class ToolManager:
         """Clear all session-scoped background command approvals."""
         self.security.clear_background_approvals()
 
+    def _bind_runtime_services(self) -> None:
+        """Inject runtime-owned services into discovered tool instances."""
+        for tool in self.toolregistry.tools.values():
+            setter = getattr(tool, "set_process_manager", None)
+            if callable(setter):
+                setter(self.process_manager)
+            elif hasattr(tool, "process_manager"):
+                tool.process_manager = self.process_manager
+
     def get_tools(self) -> list[dict]:
         if self._definitions is None:
             self.toolregistry.discover()
+            self._bind_runtime_services()
             self._definitions = self.toolregistry.get_definitions()
+        else:
+            self._bind_runtime_services()
         return self._definitions
 
     def _find_tool(self, name: str):
@@ -74,6 +92,7 @@ class ToolManager:
     def get_tool(self, name: str):
         if not self.toolregistry.tools:
             self.toolregistry.discover()
+        self._bind_runtime_services()
         return self._find_tool(name)
 
     def _normalize_workspace_args(self, toolcall: ToolCall) -> ToolCall:
