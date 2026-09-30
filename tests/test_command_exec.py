@@ -60,6 +60,7 @@ def test_incremental_output_and_process_write():
             "import sys; line=sys.stdin.readline(); print(line.strip(), flush=True)",
         ],
         yield_time_ms=25,
+        pipe_stdin=True,
     )
 
     assert result.success is True
