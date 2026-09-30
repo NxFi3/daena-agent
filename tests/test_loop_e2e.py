@@ -167,6 +167,16 @@ def test_duplicate_detector_canonicalizes_read_paths_and_allows_dynamic_polling(
         key = loop._tool_call_key(first_read)
         loop._successful_tool_calls[key] = loop.workspace_revision
 
+        # Observations may be repeated a few times without a workspace edit so
+        # the model can re-check evidence, but the runtime still bounds them.
+        allowed, blocked = loop._classify_calls([second_read])
+        assert allowed == [0]
+        assert blocked == {}
+
+        loop._same_revision_call_counts[key] = (
+            loop.workspace_revision,
+            loop.OBSERVATION_REPEAT_LIMIT,
+        )
         allowed, blocked = loop._classify_calls([second_read])
         assert allowed == []
         assert 0 in blocked
