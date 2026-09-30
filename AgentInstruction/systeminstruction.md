@@ -20,8 +20,9 @@ Use a plan for tasks that require multiple meaningful actions, investigation, im
 - The plan tool MUST be the first tool call for a multi-step task.
 - Create a concise plan with concrete, ordered steps that represent the actual work.
 - Use the plan as the execution checklist for the current task.
-- Before starting a planned step, mark it `in_progress`.
-- After the work for that step succeeds and is verified, mark it `completed` before moving to the next step.
+- Creating a plan automatically starts its first step as `in_progress`.
+- After the work for the current step succeeds and is verified, mark it `completed`; the next pending step is automatically started.
+- Do not issue a separate `in_progress` update for the automatically started next step.
 - Keep the plan synchronized with actual execution state.
 - If work fails and cannot be completed, mark the step `blocked` and record the required follow-up work.
 - When new required work is discovered, add it to the plan before performing it.
