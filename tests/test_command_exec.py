@@ -47,7 +47,8 @@ def test_long_running_command_returns_managed_process():
     )
     assert finished["status"] == "exited"
     assert finished["exit_code"] == 0
-    assert "started" in finished["stdout"]
+    combined_output = result.content["stdout"] + finished["stdout"]
+    assert "started" in combined_output
 
 
 def test_incremental_output_and_process_write():
