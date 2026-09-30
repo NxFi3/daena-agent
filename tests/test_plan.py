@@ -4,7 +4,7 @@ from src.tools.builtin.plan.tool import Plan
 
 
 def test_plan_create_update_delete(tmp_path, monkeypatch):
-    plan_path = tmp_path / "AgentInstruction" / "plan.md"
+    plan_path = tmp_path / ".daena" / "plan.md"
     monkeypatch.setattr(Plan, "PLAN_PATH", Path(plan_path))
 
     tool = Plan()
