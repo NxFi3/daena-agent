@@ -1,4 +1,7 @@
+from pathlib import Path
 from uuid import uuid4
+
+from src.tools.builtin.plan.tool import Plan
 
 from src.agent.agentloop import Loop
 from src.models.ContextEvent import ContextEvent, ContextRole, ContextType
@@ -79,6 +82,12 @@ def test_loop_executes_tool_through_security_and_context(tmp_path, monkeypatch):
         "max_agent_iterations": 5,
         "experience": {"enabled": False},
     }
+
+    monkeypatch.setattr(
+        Plan,
+        "PLAN_PATH",
+        Path(tmp_path) / "AgentInstruction" / "plan.md",
+    )
 
     llm = FakeLLM()
     loop = Loop(config, llm)
