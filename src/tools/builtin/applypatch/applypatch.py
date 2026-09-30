@@ -144,6 +144,12 @@ class ApplyPatch(Tool):
                 message=str(exc),
             )
 
+        # _plan_update() can return a structured ToolResult for recoverable
+        # patch-context failures. Propagate it directly instead of treating it
+        # as a planned file-operation dictionary.
+        if isinstance(plan, ToolResult):
+            return plan
+
         try:
             results = self._apply_plan(plan)
         except OSError as exc:
@@ -488,7 +494,7 @@ class ApplyPatch(Tool):
     def _build_plan(
         self,
         operations: list[PatchOperation],
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, Any]] | ToolResult:
 
         seen_paths: set[str] = set()
 
@@ -515,12 +521,13 @@ class ApplyPatch(Tool):
                 )
 
             elif operation.operation == "update":
-                plan.append(
-                    self._plan_update(
-                        path=path,
-                        operation=operation,
-                    )
+                planned_update = self._plan_update(
+                    path=path,
+                    operation=operation,
                 )
+                if isinstance(planned_update, ToolResult):
+                    return planned_update
+                plan.append(planned_update)
 
             elif operation.operation == "delete":
                 plan.append(
