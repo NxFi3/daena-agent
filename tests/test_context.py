@@ -411,3 +411,47 @@ def test_workspace_inventory_refresh_detects_external_changes(tmp_path):
     assert ws.refresh_workspace() is True
     paths = {item["path"] for item in ws.context()["workspace_inventory"]}
     assert "server.js" not in paths
+
+
+def test_incomplete_tool_result_group_is_removed_atomically():
+    llm = FakeLLM()
+    builder = ContextBuilder(base_config(), llm)
+
+    task = event(ContextRole.USER, ContextType.MESSAGE, "continue", 1)
+    assistant = event(ContextRole.ASSISTANT, ContextType.MESSAGE, "", 2)
+    assistant.metadata = {
+        "llm_message": {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": '{"file_path":"a.py"}',
+                    },
+                },
+            ],
+        }
+    }
+    matching_tool = event(
+        ContextRole.TOOL,
+        ContextType.TOOL_RESULT,
+        '{"name":"read_file","tool_call_id":"call-1","success":true,"content":{"path":"a.py"}}',
+        3,
+    )
+    orphan_tool = event(
+        ContextRole.TOOL,
+        ContextType.TOOL_RESULT,
+        '{"name":"read_file","tool_call_id":"orphan","success":true,"content":{"path":"b.py"}}',
+        4,
+    )
+
+    messages = builder.build_context(
+        events=[task, assistant, matching_tool, orphan_tool],
+        task={"id": str(task.id), "content": task.content},
+    )
+
+    assert not any(message.get("role") == "assistant" for message in messages)
+    assert not any(message.get("role") == "tool" for message in messages)
