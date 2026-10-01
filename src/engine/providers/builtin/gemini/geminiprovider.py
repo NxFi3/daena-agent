@@ -250,7 +250,14 @@ class GeminiProvider(ProviderBase):
         candidate = candidates[0]
         candidate_content = getattr(candidate, "content", None)
         if candidate_content is None:
-            return "", {"role": "assistant", "content": ""}, [], None
+            message = {"role": "assistant", "content": ""}
+            finish_reason = getattr(candidate, "finish_reason", None)
+            if finish_reason is not None:
+                message["finish_reason"] = str(finish_reason)
+            finish_message = getattr(candidate, "finish_message", None)
+            if finish_message:
+                message["finish_message"] = str(finish_message)
+            return "", message, [], None
 
         for part in getattr(candidate_content, "parts", None) or []:
             text = getattr(part, "text", None)
