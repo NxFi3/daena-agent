@@ -358,3 +358,56 @@ def test_tool_result_keeps_compact_diagnostic_evidence():
     assert "diagnostic_excerpt" in result.evidence
     assert "Expected: 200" in result.evidence["diagnostic_excerpt"]
     assert "Received: 500" in result.evidence["diagnostic_excerpt"]
+
+
+def test_workspace_inventory_is_visible_even_without_old_creation_events(tmp_path):
+    from src.context.workingset import WorkingSet
+
+    (tmp_path / "public").mkdir()
+    (tmp_path / "public" / "index.html").write_text("<h1>ok</h1>", encoding="utf-8")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "server.js").write_text("console.log('ok')", encoding="utf-8")
+
+    ws = WorkingSet(str(tmp_path))
+    assert ws.refresh_workspace() is True
+
+    state = ws.context()
+    paths = {item["path"] for item in state["workspace_inventory"]}
+
+    assert "public" in paths
+    assert "public/index.html" in paths
+    assert "src/server.js" in paths
+    assert state["workspace_file_count"] == 2
+    assert state["workspace_directory_count"] == 2
+
+    builder = ContextBuilder(base_config(), FakeLLM())
+    task = event(ContextRole.USER, ContextType.MESSAGE, "continue implementation", 1)
+    messages = builder.build_context(
+        events=[task],
+        task={"id": str(task.id), "content": task.content},
+        working_set=state,
+    )
+
+    system = messages[0]["content"]
+    assert "workspace" in system
+    assert "public/index.html" in system
+    assert "src/server.js" in system
+
+
+def test_workspace_inventory_refresh_detects_external_changes(tmp_path):
+    from src.context.workingset import WorkingSet
+
+    target = tmp_path / "server.js"
+    target.write_text("one", encoding="utf-8")
+
+    ws = WorkingSet(str(tmp_path))
+    assert ws.refresh_workspace() is True
+    assert ws.refresh_workspace() is False
+
+    target.write_text("two", encoding="utf-8")
+    assert ws.refresh_workspace() is True
+
+    target.unlink()
+    assert ws.refresh_workspace() is True
+    paths = {item["path"] for item in ws.context()["workspace_inventory"]}
+    assert "server.js" not in paths
