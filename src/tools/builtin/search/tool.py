@@ -43,10 +43,10 @@ class Search(Tool):
 
     description = (
         "Search text or a regular expression across files in the workspace. "
-        "Use this to locate symbols, functions, error messages, or references "
-        "instead of repeatedly reading the same file. Returns matching file "
-        "paths, line numbers, and short context. This is local workspace search; "
-        "use web_search for internet search and read_file for reading a known file."
+        "Use this to locate symbols, functions, routes, error messages, or references "
+        "after a failure, especially before editing again. Returns matching file paths, "
+        "line numbers, and short context. This is local workspace search; use web_search "
+        "for external/internet evidence and read_file for reading a known file."
     )
 
     parameters = {

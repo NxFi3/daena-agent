@@ -174,6 +174,8 @@ class ProcessManager:
             "exit_code": entry.exit_code,
             "stdout": output["stdout"],
             "stderr": output["stderr"],
+            "stdout_truncated": bool(output.get("stdout_truncated", False)),
+            "stderr_truncated": bool(output.get("stderr_truncated", False)),
             "duration_ms": self._duration_ms(started),
         }
 
@@ -374,35 +376,48 @@ class ProcessManager:
         file: IO[bytes],
         offset: int,
         max_bytes: int,
-    ) -> tuple[str, int]:
-        file.seek(offset)
-        data = file.read(max_bytes)
-        new_offset = file.tell()
+    ) -> tuple[str, int, bool]:
+        file.seek(0, os.SEEK_END)
+        end = file.tell()
+        if end <= offset:
+            return "", end, False
 
-        return data.decode("utf-8", errors="replace"), new_offset
+        available = end - offset
+        if available <= max_bytes:
+            file.seek(offset)
+            data = file.read(available)
+            return data.decode("utf-8", errors="replace"), end, False
+
+        # Keep both the beginning and end of each newly observed chunk. This
+        # preserves command headers and the final traceback/test summary.
+        head_bytes = max(1, int(max_bytes * 0.60))
+        tail_bytes = max(1, max_bytes - head_bytes)
+        file.seek(offset)
+        head = file.read(head_bytes)
+        file.seek(max(offset + head_bytes, end - tail_bytes))
+        tail = file.read(tail_bytes)
+        data = head + b"\n\n... output omitted ...\n\n" + tail
+        return data.decode("utf-8", errors="replace"), end, True
 
     def _read_incremental(
         self,
         entry: ManagedProcess,
         max_output_chars: int,
-    ) -> dict[str, str]:
+    ) -> dict[str, object]:
         max_bytes = max(1, max_output_chars)
 
-        stdout, entry.stdout_offset = self._read_file_incremental(
-            entry.stdout_file,
-            entry.stdout_offset,
-            max_bytes,
+        stdout, entry.stdout_offset, stdout_truncated = self._read_file_incremental(
+            entry.stdout_file, entry.stdout_offset, max_bytes
         )
-
-        stderr, entry.stderr_offset = self._read_file_incremental(
-            entry.stderr_file,
-            entry.stderr_offset,
-            max_bytes,
+        stderr, entry.stderr_offset, stderr_truncated = self._read_file_incremental(
+            entry.stderr_file, entry.stderr_offset, max_bytes
         )
 
         return {
             "stdout": stdout,
             "stderr": stderr,
+            "stdout_truncated": stdout_truncated,
+            "stderr_truncated": stderr_truncated,
         }
 
     def _entry_result(

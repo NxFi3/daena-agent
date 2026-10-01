@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import errno
-import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -30,7 +29,7 @@ _EXIT_CODE_HINTS: dict[str, dict[int, str]] = {
 
 class CommandExec(Tool):
     """
-    Execute local commands for the Evana agent runtime.
+    Execute local commands for the Daena agent runtime.
 
     Features:
         - Foreground command execution.
@@ -351,8 +350,8 @@ class CommandExec(Tool):
                 "duration_ms",
                 self._duration_ms(started),
             ),
-            "stdout_truncated": False,
-            "stderr_truncated": False,
+            "stdout_truncated": bool(result.get("stdout_truncated", False)),
+            "stderr_truncated": bool(result.get("stderr_truncated", False)),
         }
 
         if failure_type:
@@ -533,22 +532,6 @@ class CommandExec(Tool):
         return path, None
 
     @staticmethod
-    def _decode(
-        value: Any,
-    ) -> str:
-
-        if value is None:
-            return ""
-
-        if isinstance(value, bytes):
-            return value.decode(
-                "utf-8",
-                errors="replace",
-            )
-
-        return str(value)
-
-    @staticmethod
     def _truncate(
         value: str,
         limit: int,
@@ -573,34 +556,6 @@ class CommandExec(Tool):
         )
 
         return bounded, True
-
-    @staticmethod
-    def _read_log(
-        path: Path,
-        max_output_chars: int,
-    ) -> dict[str, Any]:
-
-        try:
-            content = path.read_text(
-                encoding="utf-8",
-                errors="replace",
-            )
-
-        except OSError:
-            return {
-                "content": "",
-                "truncated": False,
-            }
-
-        content, truncated = CommandExec._truncate(
-            content,
-            max_output_chars,
-        )
-
-        return {
-            "content": content,
-            "truncated": truncated,
-        }
 
     def _execution_error(
         self,

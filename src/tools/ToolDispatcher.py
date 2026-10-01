@@ -141,6 +141,10 @@ class ToolDispatcher:
                     f"Dropped unknown args for '{name}': {unknown}. "
                     f"Allowed: {sorted(properties.keys())}"
                 )
+                normalization_notes.extend(
+                    f"Dropped unknown argument: {key}."
+                    for key in unknown
+                )
                 arguments = {
                     key: value
                     for key, value in arguments.items()

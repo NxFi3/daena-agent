@@ -14,8 +14,9 @@ DEFAULT_INSTRUCTION = (
     "You are Daena, an autonomous assistant and software engineering agent."
 )
 
-SYSTEM_INSTRUCTION_PATH = Path("AgentInstruction/systeminstruction.md")
-EXPERIENCE_PATH = Path("AgentInstruction/experience.md")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SYSTEM_INSTRUCTION_PATH = PROJECT_ROOT / "AgentInstruction" / "systeminstruction.md"
+EXPERIENCE_PATH = PROJECT_ROOT / "AgentInstruction" / "experience.md"
 PLANS_PATH = Path(".daena") / "plan.md"
 
 
@@ -80,6 +81,9 @@ class ContextBuilder:
 
         experience_config = config.get("experience") or {}
         self.experience_enabled = bool(experience_config.get("enabled", False))
+        self._task_text = ""
+        self._compaction_watermark = ""
+        self._compaction_summary = ""
 
     @staticmethod
     def _safe_json(value: Any) -> str:
@@ -111,11 +115,15 @@ class ContextBuilder:
             return value
         if limit <= 64:
             return value[:limit]
-        omitted = len(value) - limit
+        head = max(1, int(limit * 0.60))
+        tail = max(1, limit - head - 64)
+        omitted = len(value) - head - tail
         return (
-            value[: limit - 64].rstrip()
+            value[:head].rstrip()
             + "\n\n"
             + f"... {omitted} characters omitted ..."
+            + "\n\n"
+            + value[-tail:].lstrip()
         )
 
     def _build_conversation(
@@ -197,6 +205,7 @@ class ContextBuilder:
         if raw.get("tool_calls"):
             message["tool_calls"] = raw["tool_calls"]
         for key in (
+            "thinking",
             "reasoning_details",
             "reasoning",
             "refusal",
@@ -378,6 +387,18 @@ class ContextBuilder:
                     if plan_progress.get(key) not in (None, "", [])
                 }
 
+            recovery = working_set.get("recovery")
+            if isinstance(recovery, dict) and recovery:
+                compact_recovery = dict(recovery)
+                failure = compact_recovery.get("failure")
+                if isinstance(failure, dict):
+                    compact_recovery["failure"] = {
+                        key: failure.get(key)
+                        for key in ("tool", "action", "target", "summary", "iteration", "revision")
+                        if failure.get(key) not in (None, "")
+                    }
+                state["recovery"] = compact_recovery
+
             last_failed = working_set.get("last_failed_verification")
             if isinstance(last_failed, dict) and last_failed:
                 compact_failed = dict(last_failed)
@@ -539,29 +560,43 @@ class ContextBuilder:
         self.window.set_plan(PlanReader(workspace))
         self.window.set_execution_state(execution_state)
         self.window.set_runtime(workspace)
+        self._task_text = str((task or {}).get("content") or "").strip()
         self.window.set_conversation(self._build_conversation(events, task))
 
     def _fit_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        system = [message for message in messages if message.get("role") == "system"][
-            :1
-        ]
+        system = [message for message in messages if message.get("role") == "system"][:1]
         rest = [message for message in messages if message.get("role") != "system"]
-
-        latest_user = self._last_index(rest, "user")
-        if latest_user < 0:
-            latest_user = 0 if rest else -1
-
-        if latest_user < 0:
+        if not rest:
             return system
 
-        start = latest_user
-        for index in range(latest_user, -1, -1):
-            candidate = system + rest[index:]
+        # The original task is pinned. User nudges are ordinary user messages,
+        # so anchoring on the latest user message can silently delete the task.
+        task_index = -1
+        if self._task_text:
+            for index, message in enumerate(rest):
+                if (
+                    message.get("role") == "user"
+                    and str(message.get("content") or "").strip() == self._task_text
+                ):
+                    task_index = index
+                    break
+
+        if task_index < 0:
+            task_index = 0
+
+        task_message = dict(rest[task_index])
+        tail = rest[task_index + 1:]
+        start = len(tail)
+
+        # Grow backwards while preserving the pinned task. Sanitization below
+        # keeps assistant tool_calls paired with their tool results.
+        for index in range(len(tail) - 1, -1, -1):
+            candidate = system + [task_message] + tail[index:]
             if not self.tokenbudget.fits(candidate):
                 break
             start = index
 
-        fitted = system + rest[start:]
+        fitted = system + [task_message] + tail[start:]
         return self._sanitize_tool_protocol(fitted)
 
     def _serialize_for_compaction(
@@ -611,15 +646,50 @@ class ContextBuilder:
         if latest_user_index < 0:
             return None
 
-        history = rest[:latest_user_index] + rest[latest_user_index + 1 :]
-        history_text = self._compaction_input(self._serialize_for_compaction(history))
-        if not history_text.strip():
+        task_index = -1
+        if self._task_text:
+            for index, message in enumerate(rest):
+                if (
+                    message.get("role") == "user"
+                    and str(message.get("content") or "").strip() == self._task_text
+                ):
+                    task_index = index
+                    break
+        if task_index < 0:
+            task_index = 0 if rest else -1
+        if task_index < 0:
             return None
 
-        summary = self.compactor.compact(
-            history_text,
-            self.compaction_target_tokens,
+        task_message = dict(rest[task_index])
+        history = [m for i, m in enumerate(rest) if i != task_index]
+
+        # Keep the recent protocol intact and compact only the older prefix.
+        recent_count = 12
+        if len(history) > recent_count:
+            compactable = history[:-recent_count]
+            recent = history[-recent_count:]
+        else:
+            compactable = []
+            recent = history
+
+        history_text = self._compaction_input(
+            self._serialize_for_compaction(compactable)
         )
+        if history_text.strip():
+            import hashlib
+            watermark = hashlib.sha256(history_text.encode("utf-8")).hexdigest()
+            if watermark == self._compaction_watermark:
+                summary = self._compaction_summary
+            else:
+                summary = self.compactor.compact(
+                    history_text,
+                    self.compaction_target_tokens,
+                )
+                self._compaction_watermark = watermark
+                self._compaction_summary = summary
+        else:
+            summary = ""
+
         if not summary.strip():
             return None
 
@@ -638,8 +708,6 @@ class ContextBuilder:
             )
         )
         summary = self._truncate(summary, summary_limit)
-
-        latest_user = dict(rest[latest_user_index])
 
         compacted_context = {
             "role": "user",
@@ -661,13 +729,28 @@ class ContextBuilder:
             }
         )
 
-        return [base_system, compacted_context, latest_user]
+        return self._sanitize_tool_protocol(
+            [base_system, task_message, compacted_context] + recent
+        )
 
     def _minimal_messages(self) -> list[dict[str, Any]]:
         system = {
             "role": "system",
             "content": self.window.build_system_content(),
         }
+        task = None
+        if self._task_text:
+            for message in self.window.conversation:
+                if (
+                    message.get("role") == "user"
+                    and str(message.get("content") or "").strip() == self._task_text
+                ):
+                    task = message
+                    break
+
+        if task is not None:
+            return [system, task]
+
         for message in reversed(self.window.conversation):
             if message.get("role") == "user":
                 return [system, message]

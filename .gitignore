@@ -4,3 +4,6 @@ logs/
 data/
 .env
 .vscode
+.venv/
+.daena/
+DAENAEVAL/

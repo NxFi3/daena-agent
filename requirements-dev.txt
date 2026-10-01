@@ -1,6 +1,2 @@
+-r requirements.txt
 pytest>=8,<10
-numpy>=1.26
-ollama
-openrouter
-ddgs
-pypdf

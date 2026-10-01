@@ -1,5 +1,6 @@
 # src.context/tokenbudget.py
 from typing import Any
+import json
 
 from src.engine.LlmProviderManager import LlmProvider
 from src.models.LLMResult import LLMResult
@@ -94,6 +95,8 @@ class TokenBudget:
             )
         )
 
+        self.tool_definitions: list[dict[str, Any]] = []
+
         self.max_chars_per_token = float(
             self.config.get(
                 "max_chars_per_token",
@@ -108,6 +111,17 @@ class TokenBudget:
             f"compaction_target={self.compaction_target_tokens}, "
             f"chars_per_token={self.chars_per_token}"
         )
+
+    def set_tools(self, tools: list[dict[str, Any]] | None) -> None:
+        self.tool_definitions = list(tools or [])
+
+    def _tool_schema_character_count(self) -> int:
+        if not self.tool_definitions:
+            return 0
+        try:
+            return len(json.dumps(self.tool_definitions, ensure_ascii=False, default=str))
+        except Exception:
+            return len(str(self.tool_definitions))
 
     def _message_character_count(
         self,
@@ -141,6 +155,7 @@ class TokenBudget:
     def estimate_messages_tokens(
         self,
         messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
     ) -> int:
 
         if not messages:
@@ -149,6 +164,12 @@ class TokenBudget:
         total_chars = sum(
             self._message_character_count(message) for message in messages
         )
+        tool_chars = (
+            self._tool_schema_character_count()
+            if tools is None
+            else len(json.dumps(tools, ensure_ascii=False, default=str))
+        )
+        total_chars += tool_chars
 
         if total_chars <= 0:
             return 0
@@ -161,9 +182,10 @@ class TokenBudget:
     def fits(
         self,
         messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
     ) -> bool:
 
-        return self.estimate_messages_tokens(messages) <= self.budget
+        return self.estimate_messages_tokens(messages, tools=tools) <= self.budget
 
     def remaining_tokens(
         self,

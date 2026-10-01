@@ -113,11 +113,29 @@ class Loop:
         self._active_process_ids: set[str] = set()
         self._recovery_mode = False
 
+        # A terminal mutation/verification failure changes the agent's
+        # epistemic state: another mutation is unsafe until the model has
+        # gathered fresh evidence. This is intentionally separate from the
+        # exact-call duplicate gate because a new patch can still be a blind
+        # retry of the same hypothesis.
+        self._recovery_failure: dict[str, Any] = {}
+        self._recovery_evidence_revision: int | None = None
+        self._verification_process_ids: set[str] = set()
+
         self._generation_retries = 0
 
         self.max_iterations = self._read_max_iterations()
+        context_config = self.config.get("context") or {}
+        retrieval_config = self.config.get("retrieval") or {}
+        self.recent_context_limit = max(
+            1, int(context_config.get("recent_event_limit", self.RECENT_CONTEXT_LIMIT))
+        )
+        self.search_context_top_k = max(
+            1, int(retrieval_config.get("top_k", self.SEARCH_CONTEXT_TOP_K))
+        )
 
         self.tool_definitions = self.tool.get_tools()
+        self.context.contextbuilder.tokenbudget.set_tools(self.tool_definitions)
 
     def _read_max_iterations(
         self,
@@ -229,6 +247,17 @@ class Loop:
                 step=self._next_step(),
             )
         )
+
+    def _queue_tool_nudge(self, text: str) -> None:
+        text = str(text or "").strip()
+        if text:
+            self._pending_tool_nudges.append(text)
+
+    def _flush_tool_nudges(self) -> None:
+        pending = list(self._pending_tool_nudges)
+        self._pending_tool_nudges.clear()
+        for text in pending:
+            self._store_nudge(text)
 
     def _assistant_event(
         self,
@@ -1004,6 +1033,8 @@ class Loop:
             current_response_keys.add(key)
 
             guard_decision = self._tool_loop_guard.before_call(call)
+            if guard_decision.action == "warn":
+                self._queue_tool_nudge(guard_decision.message)
             if guard_decision.should_block:
                 blocked_results[index] = self._loop_guard_result(
                     call=call,
@@ -1136,15 +1167,51 @@ class Loop:
         except Exception as exc:
 
             self.logger.error(f"Tool execution failed: {exc}")
-
-            return [], []
+            return (
+                allowed_calls,
+                [
+                    ToolResult(
+                        success=False,
+                        name=str(getattr(call, "name", "unknown")),
+                        content={
+                            "success": False,
+                            "error": {
+                                "type": "tool_batch_execution_error",
+                                "message": f"Tool batch execution failed: {type(exc).__name__}: {exc}",
+                            },
+                        },
+                        metadata={"recovery_hint": "Inspect the concrete dispatcher/runtime error before retrying."},
+                        summary=f"Tool batch execution failed: {type(exc).__name__}: {exc}",
+                    )
+                    for call in allowed_calls
+                ],
+            )
 
         if not isinstance(
             output,
             dict,
         ):
 
-            return [], []
+            message = "ToolManager returned an invalid batch result."
+            return (
+                allowed_calls,
+                [
+                    ToolResult(
+                        success=False,
+                        name=str(getattr(call, "name", "unknown")),
+                        content={
+                            "success": False,
+                            "error": {
+                                "type": "invalid_tool_batch_result",
+                                "message": message,
+                            },
+                        },
+                        metadata={},
+                        summary=message,
+                    )
+                    for call in allowed_calls
+                ],
+            )
 
         calls = output.get(
             "calls",
@@ -1188,6 +1255,115 @@ class Loop:
         content = result.content if isinstance(result.content, dict) else {}
         process_id = content.get("process_id")
         return str(process_id).strip() if process_id else None
+
+    @staticmethod
+    def _command_tokens(call) -> list[str]:
+        arguments = getattr(call, "args", {}) or {}
+        command = arguments.get("command") if isinstance(arguments, dict) else None
+        if not isinstance(command, list):
+            return []
+        return [str(item).strip().lower() for item in command if str(item).strip()]
+
+    @classmethod
+    def _is_verification_call(cls, call) -> bool:
+        name = str(getattr(call, "name", "")).strip().lower()
+        if name != "command_exec":
+            return False
+        tokens = cls._command_tokens(call)
+        if not tokens:
+            return False
+        markers = {
+            "test", "tests", "pytest", "jest", "vitest", "mocha",
+            "check", "lint", "build", "typecheck", "verify",
+        }
+        return any(
+            token.rsplit("/", 1)[-1].rsplit("\\", 1)[-1] in markers
+            or any(part in markers for part in re.split(r"[^a-z0-9_-]+", token))
+            for token in tokens
+        )
+
+    @classmethod
+    def _is_readonly_command(cls, call) -> bool:
+        tokens = cls._command_tokens(call)
+        if not tokens:
+            return False
+        first = tokens[0].rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        if first in {
+            "cat", "head", "tail", "less", "more", "sed", "awk",
+            "grep", "rg", "find", "ls", "tree", "pwd", "file",
+        }:
+            return True
+        if first == "git" and len(tokens) > 1:
+            return tokens[1] in {
+                "status", "diff", "log", "show", "branch", "rev-parse",
+                "ls-files", "ls-tree",
+            }
+        return False
+
+    @classmethod
+    def _is_recovery_evidence(cls, call, result: ToolResult) -> bool:
+        if not result.success:
+            return False
+        name = str(getattr(call, "name", result.name)).strip().lower()
+        if name in {"read_file", "search", "web_search", "web_fetch", "process_poll"}:
+            return True
+        if name == "command_exec":
+            return cls._is_readonly_command(call) or cls._is_verification_call(call)
+        return False
+
+    @classmethod
+    def _is_recovery_mutation(cls, call) -> bool:
+        name = str(getattr(call, "name", "")).strip().lower()
+        if name in {"apply_patch", "process_write"}:
+            return True
+        if name == "command_exec":
+            return not (
+                cls._is_readonly_command(call)
+                or cls._is_verification_call(call)
+            )
+        return False
+
+    def _is_recovery_failure_source(self, call) -> bool:
+        if self._is_recovery_mutation(call) or self._is_verification_call(call):
+            return True
+        name = str(getattr(call, "name", "")).strip().lower()
+        if name != "process_poll":
+            return False
+        process_id = self._tool_result_process_id_from_call(call)
+        return bool(process_id and process_id in self._verification_process_ids)
+
+    @staticmethod
+    def _tool_result_process_id_from_call(call) -> str | None:
+        arguments = getattr(call, "args", {}) or {}
+        if not isinstance(arguments, dict):
+            return None
+        process_id = arguments.get("process_id")
+        return str(process_id).strip() if process_id else None
+
+    def _recovery_context(self) -> dict[str, Any]:
+        if not self._recovery_failure:
+            return {"status": "clear"}
+
+        evidence_current = (
+            self._recovery_evidence_revision is not None
+            and self._recovery_evidence_revision == self.workspace_revision
+        )
+        failure = {
+            key: value
+            for key, value in self._recovery_failure.items()
+            if key not in {"call_key"}
+        }
+        return {
+            "status": "evidence_collected" if evidence_current else "diagnosis_required",
+            "workspace_revision": self.workspace_revision,
+            "evidence_collected_at_revision": self._recovery_evidence_revision,
+            "failure": failure,
+            "next_action": (
+                "Make a corrective mutation, then verify it."
+                if evidence_current
+                else "Inspect/search/reproduce the failure before making another mutation."
+            ),
+        }
 
     def _runtime_recovery_gate(self, call) -> ToolResult | None:
         name = str(getattr(call, "name", "")).strip().lower()
@@ -1235,6 +1411,45 @@ class Loop:
                     summary="RECOVERY BLOCKED: exact failed action repeated.",
                 )
 
+        # A changed mutation can have a different call signature while still
+        # retrying the same failed hypothesis. Require fresh evidence before
+        # another mutation/patch. Observation and verification tools remain
+        # available so the model can diagnose instead of being trapped.
+        if self._recovery_failure and self._is_recovery_mutation(call):
+            evidence_current = (
+                self._recovery_evidence_revision is not None
+                and self._recovery_evidence_revision == self.workspace_revision
+            )
+            if not evidence_current:
+                failure = self._recovery_failure
+                return ToolResult(
+                    success=False,
+                    name=name,
+                    content={
+                        "success": False,
+                        "error": {
+                            "type": "diagnosis_required",
+                            "message": (
+                                "A previous mutation/verification failed and no fresh "
+                                "evidence has been collected at the current workspace "
+                                "revision. Inspect/search/re-run verification before "
+                                "making another mutation."
+                            ),
+                            "previous_failure": failure.get("summary", ""),
+                        },
+                    },
+                    metadata={
+                        "runtime_gate": True,
+                        "recovery_required": True,
+                        "evidence_revision": self._recovery_evidence_revision,
+                        "workspace_revision": self.workspace_revision,
+                    },
+                    summary=(
+                        "RECOVERY BLOCKED: diagnose the previous failure before "
+                        "making another mutation."
+                    ),
+                )
+
         return None
 
     def _apply_result(
@@ -1273,14 +1488,67 @@ class Loop:
         if status == "running" and process_id:
             self._active_process_ids.add(process_id)
             self._recovery_mode = True
+            if self._is_verification_call(call):
+                self._verification_process_ids.add(process_id)
         elif process_id and status in {"exited", "terminated", "unknown"}:
             self._active_process_ids.discard(process_id)
+
+        metadata = result.metadata if isinstance(result.metadata, dict) else {}
+        runtime_block = bool(
+            metadata.get("runtime_gate")
+            or metadata.get("loop_guard_block")
+            or metadata.get("duplicate_action")
+            or metadata.get("plan_gate")
+        )
+
+        if result.success and self._is_recovery_evidence(call, result):
+            self._recovery_evidence_revision = self.workspace_revision
+
+        verification_process = (
+            str(process_id).strip()
+            if process_id and process_id in self._verification_process_ids
+            else None
+        )
+        verification_terminal = (
+            status in {"exited", "terminated", "unknown"}
+            and (self._is_verification_call(call) or verification_process is not None)
+        )
+
+        if verification_terminal and process_id:
+            self._verification_process_ids.discard(process_id)
+
+        if (
+            not result.success
+            and not runtime_block
+            and status != "running"
+            and self._is_recovery_failure_source(call)
+        ):
+            self._recovery_failure = {
+                "tool": str(getattr(call, "name", result.name)),
+                "action": str(getattr(call, "action", "")),
+                "target": str(getattr(call, "target", "")),
+                "summary": str(result.summary or "unknown failure"),
+                "iteration": iteration,
+                "revision": self.workspace_revision,
+                "call_key": self._tool_call_key(call),
+            }
+            self._recovery_evidence_revision = None
+            self._recovery_mode = True
+
+        if result.success and verification_terminal:
+            self._recovery_failure = {}
+            self._recovery_evidence_revision = None
+            self._recovery_mode = False
+
+        filesystem_changed = False
+        if result.success:
+            filesystem_changed = self.working_set.refresh_workspace()
 
         changed = self.working_set.update(
             tool_call=call,
             result=result,
             iteration=iteration,
-        )
+        ) or filesystem_changed
 
         self._plan_progress.record(
             tool_call=call,
@@ -1293,7 +1561,11 @@ class Loop:
             self.workspace_revision += 1
             # Workspace progress invalidates the exact-failure recovery gate.
             self._failed_call_keys.clear()
-            self._recovery_mode = False
+            # A mutation invalidates previously collected diagnostic evidence.
+            # The unresolved failure remains until a verification succeeds.
+            if self._recovery_failure:
+                self._recovery_evidence_revision = None
+            self._recovery_mode = bool(self._recovery_failure)
 
         if result.success:
             self.metrics["tool_successes"] = self.metrics.get("tool_successes", 0) + 1
@@ -1308,6 +1580,12 @@ class Loop:
 
         if isinstance(result.metadata, dict) and result.metadata.get("runtime_gate"):
             self.metrics["recovery_blocks"] = self.metrics.get("recovery_blocks", 0) + 1
+            content = result.content if isinstance(result.content, dict) else {}
+            error = content.get("error")
+            if isinstance(error, dict) and error.get("type") == "diagnosis_required":
+                self.metrics["recovery_diagnosis_required"] = (
+                    self.metrics.get("recovery_diagnosis_required", 0) + 1
+                )
 
         self.metrics["active_processes"] = len(self._active_process_ids)
 
@@ -1325,7 +1603,12 @@ class Loop:
             self.metrics["loop_guard_warnings"] = (
                 self.metrics.get("loop_guard_warnings", 0) + 1
             )
-            self._store_nudge(guard_decision.message)
+            self._queue_tool_nudge(guard_decision.message)
+        elif guard_decision.action == "block":
+            self.metrics["loop_guard_blocks"] = (
+                self.metrics.get("loop_guard_blocks", 0) + 1
+            )
+            self._post_guard_block_reason = guard_decision.message or guard_decision.code
 
         if result.success:
 
@@ -1375,7 +1658,7 @@ class Loop:
         )
 
         if status == "running":
-            self._store_nudge(
+            self._queue_tool_nudge(
                 f"'{result.name}' started a managed process "
                 f"{process_id or '(unknown id)'}. The command is not complete. "
                 "Poll it before treating the operation as finished."
@@ -1400,16 +1683,11 @@ class Loop:
             hint = ""
             if isinstance(result.metadata, dict):
                 hint = str(result.metadata.get("recovery_hint") or "").strip()
-            self._store_nudge(
+            self._queue_tool_nudge(
                 f"Tool '{result.name}' rejected the last call. "
                 f"{result.summary or 'Use valid arguments.'} "
                 f"{hint}".strip()
             )
-
-        # Refresh real filesystem state before the next model turn so a file
-        # that was created earlier cannot disappear from model-visible state
-        # merely because its original event aged out of STM.
-        self.working_set.refresh_workspace()
 
         self._sync_plan_runtime_state(
             call=call,
@@ -1516,22 +1794,11 @@ class Loop:
         )
 
         runtime_blocked: dict[int, ToolResult] = {}
-        runtime_allowed: list = []
 
         for index, call in enumerate(parsed_calls):
             gated = self._runtime_recovery_gate(call)
             if gated is not None:
                 runtime_blocked[index] = gated
-            else:
-                runtime_allowed.append(call)
-
-        runtime_index_map = {
-            new_index: original_index
-            for new_index, original_index in enumerate(
-                index for index in range(len(parsed_calls))
-                if index not in runtime_blocked
-            )
-        }
 
         (
             allowed_indices,
@@ -1615,6 +1882,14 @@ class Loop:
                 iteration=iteration,
             )
 
+            if self._post_guard_block_reason:
+                self._flush_tool_nudges()
+                self.agent_state.stop(
+                    "Tool loop guard blocked further progress: "
+                    + self._post_guard_block_reason
+                )
+                return True
+
             stop_reason = self._check_failure_stuck(
                 call,
                 result,
@@ -1625,6 +1900,8 @@ class Loop:
                 self.agent_state.stop(stop_reason)
 
                 return True
+
+        self._flush_tool_nudges()
 
         if blocked_results and not allowed_indices:
 
@@ -1768,6 +2045,8 @@ class Loop:
                     # The ONLY place where raw provider tool calls are
                     # converted into canonical ToolCall objects.
                     parsed_calls = self.tool.dispatcher.dispatch(llmresult.tool_calls)
+                    # Canonicalize once before duplicate/recovery/loop guards.
+                    parsed_calls = [self.tool.canonicalize_tool_call(call) for call in parsed_calls]
 
                 except Exception as exc:
 
@@ -1930,6 +2209,7 @@ class Loop:
 
         working_context = self.working_set.context()
         working_context["plan_progress"] = self._plan_progress.context()
+        working_context["recovery"] = self._recovery_context()
 
         context = self.context.get_context(
             session_id=self.session_id,
@@ -1939,8 +2219,8 @@ class Loop:
             observation=(self.working_set.observation_context()),
             recent_actions=(self.working_set.recent_actions_context()),
             workspace_directory=(workspace_directory),
-            recent_limit=(self.RECENT_CONTEXT_LIMIT),
-            search_top_k=(self.SEARCH_CONTEXT_TOP_K),
+            recent_limit=self.recent_context_limit,
+            search_top_k=self.search_context_top_k,
         )
 
         self.metrics["llm_calls"] = self.metrics.get("llm_calls", 0) + 1
@@ -2024,8 +2304,14 @@ class Loop:
         self._failed_call_keys.clear()
         self._active_process_ids.clear()
         self._recovery_mode = False
+        self._recovery_failure.clear()
+        self._recovery_evidence_revision = None
+        self._verification_process_ids.clear()
 
         self._generation_retries = 0
+        self._pending_tool_nudges: list[str] = []
+        self._post_guard_block_reason = None
+        self._post_guard_block_reason: str | None = None
         self._run_started_at = None
         self.metrics = {
             "iterations": 0,
@@ -2042,6 +2328,7 @@ class Loop:
             "loop_guard_blocks": 0,
             "active_processes": 0,
             "recovery_blocks": 0,
+            "recovery_diagnosis_required": 0,
             "completed": False,
             "stop_reason": "",
             "duration_ms": 0.0,

@@ -95,6 +95,15 @@ class ToolManager:
         self._bind_runtime_services()
         return self._find_tool(name)
 
+    def canonicalize_tool_call(self, toolcall: ToolCall) -> ToolCall:
+        """Canonicalize execution arguments before runtime deduplication/guards.
+
+        The same canonical call object is used for policy, duplicate detection,
+        guard signatures and execution, so relative/absolute workspace paths
+        cannot produce different identities.
+        """
+        return self._normalize_workspace_args(toolcall)
+
     def _normalize_workspace_args(self, toolcall: ToolCall) -> ToolCall:
         """Turn workspace-relative tool arguments into absolute safe paths.
 
@@ -283,6 +292,36 @@ class ToolManager:
                     )
                 )
                 continue
+
+            # The plan tool owns .daena/plan.md lifecycle state. Direct
+            # patch edits would bypass step/completion invariants.
+            if toolcall.name == "apply_patch":
+                patch_text = str((toolcall.args or {}).get("patch", ""))
+                if re.search(
+                    r"\*\*\*\s+(?:Add|Update|Delete) File:\s*[^\n]*\.daena[/\\]plan\.md\s*$",
+                    patch_text,
+                    flags=re.MULTILINE,
+                ):
+                    calls.append(toolcall)
+                    results.append(
+                        ToolResult(
+                            success=False,
+                            name=toolcall.name,
+                            content={
+                                "success": False,
+                                "error": {
+                                    "type": "plan_file_protected",
+                                    "message": "Edit .daena/plan.md through the plan tool so runtime plan state stays synchronized.",
+                                },
+                            },
+                            metadata={
+                                "tool_call_id": toolcall.id,
+                                "recovery_hint": "Use the plan tool for plan lifecycle changes.",
+                            },
+                            summary="Direct edits to .daena/plan.md are blocked.",
+                        )
+                    )
+                    continue
 
             try:
                 toolcall = self.security.check(toolcall)

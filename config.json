@@ -1,11 +1,7 @@
 {
   "llm": {
-    "provider": "ollama",
+    "provider": "gemini",
     "provider_config": {
-      "model_name": "gpt-oss:20b",
-      "generation_config": {
-        "temperature": 0.3
-      }
     }
   },
   "context": {

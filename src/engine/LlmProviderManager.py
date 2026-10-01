@@ -27,9 +27,12 @@ class LlmProvider:
             logger.info(f"Loading {provider_name} provider")
             self.model = self.registry.get(provider_name)
         else:
-            logger.error(
-                f"{provider_name} not found try one of {self.discovered_providers}"
+            message = (
+                f"Configured LLM provider '{provider_name}' is unavailable. "
+                f"Discovered providers: {self.discovered_providers}"
             )
+            logger.error(message)
+            raise RuntimeError(message)
 
     def generate(
         self,
