@@ -1430,6 +1430,8 @@ class Loop:
         if status == "running" and process_id:
             self._active_process_ids.add(process_id)
             self._recovery_mode = True
+            if self._is_verification_call(call):
+                self._verification_process_ids.add(process_id)
         elif process_id and status in {"exited", "terminated", "unknown"}:
             self._active_process_ids.discard(process_id)
 
@@ -1444,11 +1446,24 @@ class Loop:
         if result.success and self._is_recovery_evidence(call, result):
             self._recovery_evidence_revision = self.workspace_revision
 
+        verification_process = (
+            str(process_id).strip()
+            if process_id and process_id in self._verification_process_ids
+            else None
+        )
+        verification_terminal = (
+            status in {"exited", "terminated", "unknown"}
+            and (self._is_verification_call(call) or verification_process is not None)
+        )
+
+        if verification_terminal and process_id:
+            self._verification_process_ids.discard(process_id)
+
         if (
             not result.success
             and not runtime_block
             and status != "running"
-            and self._is_recovery_mutation(call)
+            and self._is_recovery_failure_source(call)
         ):
             self._recovery_failure = {
                 "tool": str(getattr(call, "name", result.name)),
@@ -1462,7 +1477,7 @@ class Loop:
             self._recovery_evidence_revision = None
             self._recovery_mode = True
 
-        if result.success and self._is_verification_call(call):
+        if result.success and verification_terminal:
             self._recovery_failure = {}
             self._recovery_evidence_revision = None
             self._recovery_mode = False
@@ -2228,6 +2243,7 @@ class Loop:
         self._recovery_mode = False
         self._recovery_failure.clear()
         self._recovery_evidence_revision = None
+        self._verification_process_ids.clear()
 
         self._generation_retries = 0
         self._run_started_at = None
