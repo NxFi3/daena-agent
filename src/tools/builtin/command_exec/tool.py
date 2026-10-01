@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import errno
+import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -154,6 +156,8 @@ class CommandExec(Tool):
         pipe_stdin: bool = False,
     ) -> ToolResult:
 
+        command = self._normalize_command(command)
+
         validation_error = self._validate_arguments(
             command=command,
             yield_time_ms=yield_time_ms,
@@ -177,6 +181,32 @@ class CommandExec(Tool):
             max_output_chars=max_output_chars,
             pipe_stdin=pipe_stdin,
         )
+
+    @staticmethod
+    def _normalize_command(
+        command: list[str],
+        *,
+        platform_name: str | None = None,
+        python_executable: str | None = None,
+    ) -> list[str]:
+        """Resolve common Python launcher aliases on Windows."""
+        normalized = list(command)
+        if not normalized:
+            return normalized
+
+        platform_name = platform_name or os.name
+        python_executable = python_executable or sys.executable
+        executable = str(normalized[0]).strip().lower()
+
+        if platform_name == "nt" and executable in {
+            "python",
+            "python3",
+            "python.exe",
+            "python3.exe",
+        }:
+            return [python_executable, *normalized[1:]]
+
+        return normalized
 
     def _validate_arguments(
         self,
