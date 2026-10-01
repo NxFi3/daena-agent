@@ -125,6 +125,14 @@ class Loop:
         self._generation_retries = 0
 
         self.max_iterations = self._read_max_iterations()
+        context_config = self.config.get("context") or {}
+        retrieval_config = self.config.get("retrieval") or {}
+        self.recent_context_limit = max(
+            1, int(context_config.get("recent_event_limit", self.RECENT_CONTEXT_LIMIT))
+        )
+        self.search_context_top_k = max(
+            1, int(retrieval_config.get("top_k", self.SEARCH_CONTEXT_TOP_K))
+        )
 
         self.tool_definitions = self.tool.get_tools()
 
@@ -2170,8 +2178,8 @@ class Loop:
             observation=(self.working_set.observation_context()),
             recent_actions=(self.working_set.recent_actions_context()),
             workspace_directory=(workspace_directory),
-            recent_limit=(self.RECENT_CONTEXT_LIMIT),
-            search_top_k=(self.SEARCH_CONTEXT_TOP_K),
+            recent_limit=self.recent_context_limit,
+            search_top_k=self.search_context_top_k,
         )
 
         self.metrics["llm_calls"] = self.metrics.get("llm_calls", 0) + 1
