@@ -2,6 +2,6 @@ pytest>=8,<10
 numpy>=1.26
 ollama
 openrouter
-ddds
+ddgs
 pypdf
 google-genai>=1.0,<2
