@@ -68,8 +68,6 @@ class ToolDispatcher:
             name = name.strip()
             arguments = self._normalize_arguments(arguments)
 
-            arguments = self._normalize_legacy_arguments(name, arguments)
-
             if arguments is None:
                 return ToolCall(
                     name=name,
@@ -80,6 +78,8 @@ class ToolDispatcher:
                         "Reissue the call with an object matching the tool schema."
                     ),
                 )
+
+            arguments = self._normalize_legacy_arguments(name, arguments)
 
             arguments = self._apply_aliases(name, arguments)
 
