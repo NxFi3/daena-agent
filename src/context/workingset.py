@@ -856,14 +856,21 @@ class WorkingSet:
 
     @staticmethod
     def _truncate(value: str, limit: int) -> str:
-
         value = str(value)
 
         if len(value) <= limit:
             return value
 
+        if limit <= 64:
+            return value[:limit]
+
+        head = max(1, int(limit * 0.60))
+        tail = max(1, limit - head - 40)
+        omitted = len(value) - head - tail
         return (
-            value[: limit - 40].rstrip()
-            + "\n"
-            + f"... {len(value) - (limit - 40)} chars omitted ..."
+            value[:head].rstrip()
+            + "\n\n"
+            + f"... {omitted} chars omitted ..."
+            + "\n\n"
+            + value[-tail:].lstrip()
         )
