@@ -917,7 +917,7 @@ class Loop:
             )
 
         if transition == "completed":
-            if self._recovery_required:
+            if getattr(self, "_recovery_required", False):
                 return (
                     "recovery_required",
                     (
@@ -1382,7 +1382,7 @@ class Loop:
 
         if result.success and not self._is_plan_call(call) and self._recovery_required:
             recovery_key = self._tool_call_key(call)
-            if recovery_key != self._recovery_failed_key:
+            if recovery_key != getattr(self, "_recovery_failed_key", None):
                 self._recovery_required = False
                 self._recovery_failed_key = None
 
