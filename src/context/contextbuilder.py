@@ -378,6 +378,18 @@ class ContextBuilder:
                     if plan_progress.get(key) not in (None, "", [])
                 }
 
+            recovery = working_set.get("recovery")
+            if isinstance(recovery, dict) and recovery:
+                compact_recovery = dict(recovery)
+                failure = compact_recovery.get("failure")
+                if isinstance(failure, dict):
+                    compact_recovery["failure"] = {
+                        key: failure.get(key)
+                        for key in ("tool", "action", "target", "summary", "iteration", "revision")
+                        if failure.get(key) not in (None, "")
+                    }
+                state["recovery"] = compact_recovery
+
             last_failed = working_set.get("last_failed_verification")
             if isinstance(last_failed, dict) and last_failed:
                 compact_failed = dict(last_failed)
