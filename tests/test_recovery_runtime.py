@@ -2,6 +2,8 @@ from pathlib import Path
 from uuid import uuid4
 
 from src.agent.agentloop import Loop
+from src.context.contextbuilder import ContextBuilder
+from src.models.ContextEvent import ContextEvent, ContextRole, ContextType
 from src.models.ToolCall import ToolCall
 from src.models.ToolResult import ToolResult
 
@@ -143,5 +145,34 @@ def test_recovery_state_is_model_visible(tmp_path, monkeypatch):
         assert state["status"] == "diagnosis_required"
         assert "Expected 200" in state["failure"]["summary"]
         assert "Inspect/search/reproduce" in state["next_action"]
+    finally:
+        loop.close()
+
+
+def test_recovery_state_is_rendered_in_execution_context(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    loop = Loop(_config(), _FakeLLM())
+    loop.session_id = uuid4()
+    loop.set_workspace(str(tmp_path))
+
+    try:
+        loop._apply_result(_failed_test_call(), _failed_test_result(), 1)
+        task = ContextEvent(
+            role=ContextRole.USER,
+            type=ContextType.MESSAGE,
+            content="fix the failing tests",
+        )
+        builder = ContextBuilder(_config(), _FakeLLM())
+        messages = builder.build_context(
+            events=[task],
+            task={"id": str(task.id), "content": task.content},
+            working_set={"recovery": loop._recovery_context()},
+        )
+        system = messages[0]["content"]
+        assert "<execution_state>" in system
+        assert "diagnosis_required" in system
+        assert "Expected 200" in system
+        assert "Inspect/search/reproduce" in system
     finally:
         loop.close()
