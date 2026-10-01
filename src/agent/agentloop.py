@@ -135,6 +135,7 @@ class Loop:
         )
 
         self.tool_definitions = self.tool.get_tools()
+        self.context.contextbuilder.tokenbudget.set_tools(self.tool_definitions)
 
     def _read_max_iterations(
         self,
