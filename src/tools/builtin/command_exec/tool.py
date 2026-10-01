@@ -351,8 +351,8 @@ class CommandExec(Tool):
                 "duration_ms",
                 self._duration_ms(started),
             ),
-            "stdout_truncated": False,
-            "stderr_truncated": False,
+            "stdout_truncated": bool(result.get("stdout_truncated", False)),
+            "stderr_truncated": bool(result.get("stderr_truncated", False)),
         }
 
         if failure_type:
