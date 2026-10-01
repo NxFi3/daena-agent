@@ -68,6 +68,8 @@ class ToolDispatcher:
             name = name.strip()
             arguments = self._normalize_arguments(arguments)
 
+            arguments = self._normalize_legacy_arguments(name, arguments)
+
             if arguments is None:
                 return ToolCall(
                     name=name,
@@ -301,6 +303,39 @@ class ToolDispatcher:
             )
 
         return call_id, None, None
+
+    @staticmethod
+    def _normalize_legacy_arguments(
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Normalize legacy command timeout aliases without changing units."""
+        normalized = dict(arguments or {})
+        if tool_name.strip().lower() != "command_exec":
+            return normalized
+
+        if "timeout" not in normalized:
+            return normalized
+
+        if any(
+            key in normalized
+            for key in ("yield_time_ms", "timeout_ms", "yield_time")
+        ):
+            normalized.pop("timeout", None)
+            return normalized
+
+        raw = normalized.pop("timeout")
+        try:
+            if isinstance(raw, bool):
+                raise ValueError
+            seconds = float(raw)
+            if seconds < 0:
+                raise ValueError
+            normalized["yield_time_ms"] = int(round(seconds * 1000.0))
+        except (TypeError, ValueError):
+            normalized["timeout"] = raw
+
+        return normalized
 
     @staticmethod
     def _normalize_arguments(arguments: Any) -> dict[str, Any] | None:
