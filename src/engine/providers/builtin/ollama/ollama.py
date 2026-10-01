@@ -22,7 +22,16 @@ class OllamaProvider(ProviderBase):
     defaultConfig: ClassVar[dict] = {
         "temperature": 0.3,
         "num_ctx": 32768,
+        "request_timeout": 600,
     }
+
+    def __init__(self) -> None:
+        timeout = self.defaultConfig.get("request_timeout", 600)
+        try:
+            timeout = float(timeout)
+        except (TypeError, ValueError):
+            timeout = 600.0
+        self.client = ollama.Client(timeout=max(1.0, timeout))
 
     # `think` was never being sent to ollama.chat(), so every "thinking"
     # model (gpt-oss, qwen3, gemma3, deepseek-r1...) fell back to its own
@@ -191,7 +200,7 @@ class OllamaProvider(ProviderBase):
 
         try:
 
-            chat_response = ollama.chat(
+            chat_response = self.client.chat(
                 model=model_name,
                 messages=messages,
                 tools=tools,
