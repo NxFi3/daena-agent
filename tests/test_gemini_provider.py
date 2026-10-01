@@ -110,3 +110,64 @@ def test_gemini_serialized_signature_round_trips():
     part = contents[0].parts[0]
     assert part.function_call.name == "read_file"
     assert part.thought_signature == b"signature-a"
+
+
+def test_gemini_generate_builds_native_tool_config(monkeypatch):
+    from src.models.LLMInput import LLMInput
+
+    captured = {}
+
+    class FakeModels:
+        def generate_content(self, **kwargs):
+            captured.update(kwargs)
+            candidate = SimpleNamespace(
+                content=SimpleNamespace(
+                    parts=[SimpleNamespace(
+                        text="ok",
+                        thought=False,
+                        function_call=None,
+                        thought_signature=None,
+                    )]
+                ),
+                finish_reason="STOP",
+                finish_message=None,
+            )
+            return SimpleNamespace(
+                candidates=[candidate],
+                usage_metadata=SimpleNamespace(
+                    prompt_token_count=3,
+                    candidates_token_count=2,
+                ),
+            )
+
+    provider = GeminiProvider()
+    provider.client = SimpleNamespace(models=FakeModels())
+
+    result = provider.generate(
+        LLMInput(
+            model_name="test-model",
+            messages=[{"role": "user", "content": "hello"}],
+            tools=[{
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "read a file",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+            }],
+            options={"tool_choice": "auto", "unknown_option": "ignored"},
+        )
+    )
+
+    assert result.response == "ok"
+    assert result.usage == 5
+    config = captured["config"]
+    assert config.tools
+    assert config.automatic_function_calling.disable is True
+    assert config.tool_config.function_calling_config.mode == "AUTO"
