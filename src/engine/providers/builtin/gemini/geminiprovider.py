@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 from typing import Any, ClassVar
@@ -83,6 +84,32 @@ class GeminiProvider(ProviderBase):
         return [types.Tool(function_declarations=declarations)]
 
     @staticmethod
+    def _encode_signature(value: Any) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, bytes):
+            return base64.b64encode(value).decode("ascii")
+        if isinstance(value, str):
+            return value
+        try:
+            return base64.b64encode(bytes(value)).decode("ascii")
+        except (TypeError, ValueError):
+            return str(value)
+
+    @staticmethod
+    def _decode_signature(value: Any) -> bytes | None:
+        if value is None:
+            return None
+        if isinstance(value, bytes):
+            return value
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            return base64.b64decode(value, validate=True)
+        except (ValueError, TypeError):
+            return value.encode("utf-8")
+
+    @staticmethod
     def _parse_tool_response(content: Any) -> Any:
         if not isinstance(content, str):
             return content
@@ -115,7 +142,8 @@ class GeminiProvider(ProviderBase):
                 continue
 
             if role == "tool":
-                name = message.get("name")
+                # ContextBuilder uses tool_name for canonical tool results.
+                name = message.get("name") or message.get("tool_name")
                 tool_call_id = message.get("tool_call_id")
 
                 if not name:
@@ -129,9 +157,10 @@ class GeminiProvider(ProviderBase):
                 if tool_call_id:
                     function_response.id = str(tool_call_id)
 
+                # generateContent expects function responses as user-role parts.
                 contents.append(
                     types.Content(
-                        role="tool",
+                        role="user",
                         parts=[types.Part(function_response=function_response)],
                     )
                 )
@@ -139,6 +168,57 @@ class GeminiProvider(ProviderBase):
 
             if role == "assistant":
                 parts: list[types.Part] = []
+
+                # Lossless Gemini history captured from the previous response.
+                # This preserves part ordering and thought signatures instead
+                # of reconstructing the model turn from the generic abstraction.
+                gemini_parts = message.get("gemini_parts")
+                if isinstance(gemini_parts, list):
+                    for raw_part in gemini_parts:
+                        if not isinstance(raw_part, dict):
+                            continue
+
+                        signature = GeminiProvider._decode_signature(
+                            raw_part.get("thought_signature")
+                        )
+                        kind = raw_part.get("kind")
+
+                        if kind == "text":
+                            text = raw_part.get("text")
+                            if text is None and signature is None:
+                                continue
+                            part_kwargs: dict[str, Any] = {
+                                "text": str(text or ""),
+                            }
+                            if raw_part.get("thought") is not None:
+                                part_kwargs["thought"] = bool(raw_part["thought"])
+                            if signature is not None:
+                                part_kwargs["thought_signature"] = signature
+                            parts.append(types.Part(**part_kwargs))
+                            continue
+
+                        if kind == "function_call":
+                            name = raw_part.get("name")
+                            if not name:
+                                continue
+                            arguments = raw_part.get("args") or {}
+                            if not isinstance(arguments, dict):
+                                arguments = {}
+                            function_call = types.FunctionCall(
+                                id=raw_part.get("id"),
+                                name=str(name),
+                                args=arguments,
+                            )
+                            part_kwargs: dict[str, Any] = {
+                                "function_call": function_call,
+                            }
+                            if signature is not None:
+                                part_kwargs["thought_signature"] = signature
+                            parts.append(types.Part(**part_kwargs))
+
+                    if parts:
+                        contents.append(types.Content(role="model", parts=parts))
+                    continue
 
                 if isinstance(content, str) and content:
                     parts.append(types.Part.from_text(text=content))
@@ -165,15 +245,20 @@ class GeminiProvider(ProviderBase):
                     if not isinstance(arguments, dict):
                         arguments = {}
 
-                    parts.append(
-                        types.Part(
-                            function_call=types.FunctionCall(
-                                id=tool_call.get("id"),
-                                name=str(name),
-                                args=arguments,
-                            )
+                    part_kwargs = {
+                        "function_call": types.FunctionCall(
+                            id=tool_call.get("id"),
+                            name=str(name),
+                            args=arguments,
                         )
+                    }
+                    signature = GeminiProvider._decode_signature(
+                        tool_call.get("thought_signature")
                     )
+                    if signature is not None:
+                        part_kwargs["thought_signature"] = signature
+
+                    parts.append(types.Part(**part_kwargs))
 
                 if parts:
                     contents.append(types.Content(role="model", parts=parts))
@@ -206,16 +291,42 @@ class GeminiProvider(ProviderBase):
         if candidate_content is None:
             return "", {}, [], None
 
+        serialized_parts: list[dict[str, Any]] = []
+
         for part in getattr(candidate_content, "parts", None) or []:
+            signature = GeminiProvider._encode_signature(
+                getattr(part, "thought_signature", None)
+            )
             text = getattr(part, "text", None)
-            if text:
-                if getattr(part, "thought", False):
-                    thinking_parts.append(str(text))
-                else:
-                    content_text += str(text)
+            thought = getattr(part, "thought", None)
+
+            if text is not None:
+                if text:
+                    if thought:
+                        thinking_parts.append(str(text))
+                    else:
+                        content_text += str(text)
+
+                serialized_part: dict[str, Any] = {
+                    "kind": "text",
+                    "text": str(text),
+                }
+                if thought is not None:
+                    serialized_part["thought"] = bool(thought)
+                if signature is not None:
+                    serialized_part["thought_signature"] = signature
+                serialized_parts.append(serialized_part)
 
             function_call = getattr(part, "function_call", None)
             if function_call is None:
+                if signature is not None and text is None:
+                    serialized_parts.append(
+                        {
+                            "kind": "text",
+                            "text": "",
+                            "thought_signature": signature,
+                        }
+                    )
                 continue
 
             name = getattr(function_call, "name", None)
@@ -223,19 +334,34 @@ class GeminiProvider(ProviderBase):
                 continue
 
             args = getattr(function_call, "args", None) or {}
-            tool_calls.append(
-                {
-                    "id": getattr(function_call, "id", None),
-                    "type": "function",
-                    "function": {
-                        "name": str(name),
-                        "arguments": json.dumps(
-                            dict(args),
-                            ensure_ascii=False,
-                        ),
-                    },
-                }
-            )
+            if not isinstance(args, dict):
+                args = dict(args)
+
+            serialized_call: dict[str, Any] = {
+                "id": getattr(function_call, "id", None),
+                "type": "function",
+                "function": {
+                    "name": str(name),
+                    "arguments": json.dumps(
+                        args,
+                        ensure_ascii=False,
+                    ),
+                },
+            }
+            if signature is not None:
+                serialized_call["thought_signature"] = signature
+
+            tool_calls.append(serialized_call)
+
+            serialized_part = {
+                "kind": "function_call",
+                "id": getattr(function_call, "id", None),
+                "name": str(name),
+                "args": args,
+            }
+            if signature is not None:
+                serialized_part["thought_signature"] = signature
+            serialized_parts.append(serialized_part)
 
         message: dict[str, Any] = {
             "role": "assistant",
@@ -243,6 +369,11 @@ class GeminiProvider(ProviderBase):
         }
         if tool_calls:
             message["tool_calls"] = tool_calls
+
+        # Provider-owned, JSON-safe history. This survives STM/ContextBuilder
+        # without exposing Google SDK objects to the generic runtime.
+        if serialized_parts:
+            message["gemini_parts"] = serialized_parts
 
         return (
             content_text,
