@@ -487,14 +487,26 @@ class CommandExec(Tool):
             return ""
 
         exe = ""
+        interpreter_names = {"python", "python3", "python.exe", "python3.exe"}
 
         for i, arg in enumerate(command):
-            if arg in ("-m", "-c", "--module"):
+            if arg in ("-m", "--module"):
                 if i + 1 < len(command):
                     exe = command[i + 1]
                     break
-            elif not arg.startswith("-"):
-                exe = arg.split("/")[-1]
+                continue
+
+            # The Python interpreter is transport, not the actual program.
+            # Continue so "python -m pytest" resolves to pytest.
+            basename = str(arg).replace("\\", "/").split("/")[-1].lower()
+            if i == 0 and basename in interpreter_names:
+                continue
+
+            if arg == "-c":
+                break
+
+            if not arg.startswith("-"):
+                exe = basename
                 break
 
         exe = exe.lower().replace(".py", "")
