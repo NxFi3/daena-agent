@@ -75,10 +75,15 @@ class ToolResult:
         if limit <= 32:
             return value[:limit]
 
+        head = max(1, int(limit * 0.60))
+        tail = max(1, limit - head - 32)
+        omitted = len(value) - head - tail
         return (
-            value[: limit - 32].rstrip()
-            + "\n"
-            + f"... {len(value) - (limit - 32)} chars omitted ..."
+            value[:head].rstrip()
+            + "\n\n"
+            + f"... {omitted} chars omitted ..."
+            + "\n\n"
+            + value[-tail:].lstrip()
         )
 
     @classmethod
