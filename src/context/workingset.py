@@ -38,6 +38,7 @@ class WorkingSet:
     # Deterministic filesystem state prevents the model from forgetting that
     # a file/directory already exists after its creation event ages out of STM.
     MAX_WORKSPACE_ENTRIES = 200
+    MAX_WORKSPACE_SCAN_ENTRIES = 5000
     WORKSPACE_IGNORE_DIRS = frozenset({
         ".git",
         "node_modules",
@@ -184,6 +185,8 @@ class WorkingSet:
                 truncated = True
 
         try:
+            scanned_entries = 0
+            stop_scan = False
             for current_root, dirs, files in os.walk(root, topdown=True, followlinks=False):
                 dirs[:] = sorted(
                     directory
@@ -194,9 +197,26 @@ class WorkingSet:
                 current = Path(current_root)
 
                 for directory in dirs:
+                    if scanned_entries >= self.MAX_WORKSPACE_SCAN_ENTRIES:
+                        truncated = True
+                        stop_scan = True
+                        break
                     add_entry(current / directory, "directory")
+                    scanned_entries += 1
+
+                if stop_scan:
+                    break
+
                 for filename in sorted(files):
+                    if scanned_entries >= self.MAX_WORKSPACE_SCAN_ENTRIES:
+                        truncated = True
+                        stop_scan = True
+                        break
                     add_entry(current / filename, "file")
+                    scanned_entries += 1
+
+                if stop_scan:
+                    break
         except OSError:
             return False
 
