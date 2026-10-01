@@ -148,8 +148,6 @@ class ContextWindow:
 
         if self.system_instruction:
             sections.append(self.system_instruction)
-        if self.plan:
-            sections.append(self._section("plan", self.plan))
         if self.experience:
             sections.append(self._section("experience", self.experience))
 
@@ -158,11 +156,16 @@ class ContextWindow:
                 self._section("learned_experience", self.learned_experience)
             )
 
-        if self.execution_state:
-            sections.append(self._section("execution_state", self.execution_state))
-
         sections.append(self._section("runtime", self.runtime))
 
+        return "\n\n".join(sections)
+
+    def build_dynamic_context(self) -> str:
+        sections: list[str] = []
+        if self.plan:
+            sections.append(self._section("plan", self.plan))
+        if self.execution_state:
+            sections.append(self._section("execution_state", self.execution_state))
         return "\n\n".join(sections)
 
     def get_prompt(self) -> list[Message]:
@@ -180,5 +183,15 @@ class ContextWindow:
             )
 
         messages.extend(self.conversation)
+
+        dynamic_context = self.build_dynamic_context()
+        if dynamic_context:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": dynamic_context,
+                    "metadata": {"dynamic_context": True},
+                }
+            )
 
         return messages
