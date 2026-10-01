@@ -632,7 +632,7 @@ class Plan(Tool):
 
                 target.status = status
 
-                if status == "completed":
+                if status in {"completed", "blocked"}:
                     for next_step in current_steps:
                         if next_step.status == "pending":
                             next_step.status = "in_progress"
