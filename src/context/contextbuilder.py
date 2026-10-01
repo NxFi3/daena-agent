@@ -196,6 +196,12 @@ class ContextBuilder:
 
         if raw.get("tool_calls"):
             message["tool_calls"] = raw["tool_calls"]
+        if isinstance(raw.get("gemini_parts"), list):
+            message["gemini_parts"] = raw["gemini_parts"]
+        if raw.get("finish_reason") is not None:
+            message["finish_reason"] = raw["finish_reason"]
+        if raw.get("finish_message") is not None:
+            message["finish_message"] = raw["finish_message"]
         for key in (
             "reasoning_details",
             "reasoning",
@@ -245,7 +251,7 @@ class ContextBuilder:
         if blocks:
             text += "\n\n" + "\n\n".join(blocks)
         if len(text) > self.MAX_TOOL_CHARS:
-            text = text[: self.MAX_TOOL_CHARS] + "\n...[truncated]"
+            text = self._truncate(text, self.MAX_TOOL_CHARS)
         return text
 
     def _sanitize_tool_protocol(
