@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
+import tempfile
 from typing import Any
 
 from src.models.ToolResult import ToolResult
@@ -785,70 +787,72 @@ class ApplyPatch(Tool):
         self,
         plan: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-
+        """Apply all operations with rollback on partial failure."""
         results: list[dict[str, Any]] = []
+        backups: dict[Path, bytes | None] = {}
+        created_dirs: list[Path] = []
 
-        for item in plan:
-            path: Path = item["path"]
-            operation = item["operation"]
+        def backup(path: Path) -> None:
+            if path in backups:
+                return
+            backups[path] = path.read_bytes() if path.exists() else None
 
-            if operation == "add":
-                path.parent.mkdir(
-                    parents=True,
-                    exist_ok=True,
-                )
+        try:
+            for item in plan:
+                path: Path = item["path"]
+                operation = item["operation"]
+                backup(path)
 
-                path.write_text(
-                    item["content"],
-                    encoding="utf-8",
-                )
+                if operation in {"add", "update"}:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    content = item.get("content") or ""
+                    with tempfile.NamedTemporaryFile(
+                        mode="w",
+                        encoding="utf-8",
+                        dir=path.parent,
+                        prefix=f".{path.name}.",
+                        suffix=".daena-tmp",
+                        delete=False,
+                    ) as temp:
+                        temp.write(content)
+                        temp_path = Path(temp.name)
+                    os.replace(temp_path, path)
 
-                content = item.get("content") or ""
-
-                results.append(
-                    self._build_file_result(
-                        operation="add",
-                        path=path,
-                        content=content,
-                        added=item["added"],
-                        removed=item["removed"],
+                    results.append(
+                        self._build_file_result(
+                            operation=operation,
+                            path=path,
+                            content=content,
+                            added=item["added"],
+                            removed=item["removed"],
+                        )
                     )
-                )
 
-            elif operation == "update":
-                path.write_text(
-                    item["content"],
-                    encoding="utf-8",
-                )
-
-                content = item.get("content") or ""
-
-                results.append(
-                    self._build_file_result(
-                        operation="update",
-                        path=path,
-                        content=content,
-                        added=item["added"],
-                        removed=item["removed"],
+                elif operation == "delete":
+                    path.unlink()
+                    results.append(
+                        {
+                            "path": str(path),
+                            "operation": "delete",
+                            "added": item["added"],
+                            "removed": item["removed"],
+                        }
                     )
-                )
+                else:
+                    raise RuntimeError(f"Unknown planned operation: {operation}")
 
-            elif operation == "delete":
-                path.unlink()
-
-                results.append(
-                    {
-                        "path": str(path),
-                        "operation": "delete",
-                        "added": item["added"],
-                        "removed": item["removed"],
-                    }
-                )
-
-            else:
-                raise RuntimeError(f"Unknown planned operation: " f"{operation}")
-
-        return results
+            return results
+        except Exception:
+            for path, previous in backups.items():
+                try:
+                    if previous is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(previous)
+                except OSError:
+                    pass
+            raise
 
     def _build_file_result(
         self,
