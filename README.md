@@ -40,7 +40,9 @@ Daena provides the runtime pieces needed to build a stateful software-engineerin
 - tool-result normalization
 - local and remote LLM providers
 - context compaction
-- failure and duplicate-action handling
+- failure recovery and evidence gates
+- duplicate/cycle-action handling
+- managed process lifecycle and verification
 
 The project is intentionally being built incrementally from real agent failures and end-to-end experiments.
 
@@ -502,6 +504,14 @@ The current implementation can use:
 
 Search results are treated as untrusted external data.
 
+### `plan`
+
+Maintains the task-local `.daena/plan.md` lifecycle and exposes explicit create/update/delete operations.
+
+### `process_poll`, `process_write`, `process_stop`
+
+Manage long-running commands without treating process startup as task success.
+
 ### `web_fetch`
 
 Fetches readable web pages and returns extracted text.
@@ -793,7 +803,10 @@ daena-agent/
 │   ├── agent/
 │   │   ├── agent.py
 │   │   ├── agentloop.py
-│   │   └── agentstate.py
+│   │   ├── agentstate.py
+│   │   ├── planstate.py
+│   │   ├── planprogress.py
+│   │   └── toolguard.py
 │   │
 │   ├── context/
 │   │   ├── compactor.py
@@ -824,9 +837,22 @@ daena-agent/
 │   │   ├── ToolDispatcher.py
 │   │   ├── ToolManager.py
 │   │   ├── ToolRegistry.py
+│   │   ├── ToolManager.py
 │   │   └── builtin/
+│   │       ├── applypatch/
+│   │       ├── command_exec/
+│   │       ├── plan/
+│   │       ├── process_poll/
+│   │       ├── process_stop/
+│   │       └── process_write/
 │   │
 │   └── utils/
+│
+├── tests/
+│   ├── test_loop_e2e.py
+│   ├── test_recovery_runtime.py
+│   ├── test_process_runtime.py
+│   └── ...
 │
 ├── config.json
 ├── Agent.md
@@ -846,8 +872,8 @@ daena-agent/
 - [x] Working set
 - [x] Context budgeting
 - [x] Context compaction foundation
-- [ ] Stronger task completion and verification
-- [ ] Better failure recovery
+- [x] Stronger task completion and verification gates
+- [x] Evidence-driven failure recovery
 - [ ] Checkpoint/resume
 
 ## Memory
@@ -874,6 +900,7 @@ daena-agent/
 ## Evaluation
 
 - [x] Real end-to-end agent task
+- [x] Core runtime regression suite
 - [ ] Repeatable benchmark suite
 - [ ] Learning-gain evaluation
 - [ ] Failure-recovery evaluation
