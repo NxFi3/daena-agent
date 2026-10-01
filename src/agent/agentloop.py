@@ -1364,6 +1364,16 @@ class Loop:
             self._failed_call_keys[key] = (self.workspace_revision, count)
             self._recovery_mode = True
 
+        # Always append the tool result before any corrective USER nudge.
+        # Inserting a user message between an assistant tool-call and its tool
+        # result breaks native tool-call grouping for providers.
+        self._store_event(
+            self._tool_result_event(
+                call,
+                result,
+            )
+        )
+
         if status == "running":
             self._store_nudge(
                 f"'{result.name}' started a managed process "
@@ -1371,12 +1381,35 @@ class Loop:
                 "Poll it before treating the operation as finished."
             )
 
-        self._store_event(
-            self._tool_result_event(
-                call,
-                result,
+        error_type = ""
+        if isinstance(result.content, dict):
+            error = result.content.get("error")
+            if isinstance(error, dict):
+                error_type = str(error.get("type", "")).strip().lower()
+            elif error:
+                error_type = str(error).strip().lower()
+
+        if (
+            not result.success
+            and error_type in {
+                "invalid_tool_call",
+                "tool_argument_error",
+                "invalid_argument",
+            }
+        ):
+            hint = ""
+            if isinstance(result.metadata, dict):
+                hint = str(result.metadata.get("recovery_hint") or "").strip()
+            self._store_nudge(
+                f"Tool '{result.name}' rejected the last call. "
+                f"{result.summary or 'Use valid arguments.'} "
+                f"{hint}".strip()
             )
-        )
+
+        # Refresh real filesystem state before the next model turn so a file
+        # that was created earlier cannot disappear from model-visible state
+        # merely because its original event aged out of STM.
+        self.working_set.refresh_workspace()
 
         self._sync_plan_runtime_state(
             call=call,
@@ -1883,6 +1916,11 @@ class Loop:
 
             raise RuntimeError("No active session.")
 
+        # Deterministic workspace truth is refreshed on every generation
+        # boundary. This is independent of STM retrieval and therefore remains
+        # correct even when old file-creation events are no longer in context.
+        self.working_set.refresh_workspace()
+
         plan_state = self._read_plan_state()
         self._plan_progress.sync(
             plan_state,
@@ -1949,6 +1987,7 @@ class Loop:
         self._workspace_root = Path(workspace_directory).expanduser().resolve()
         self.tool.set_workspace(workspace_directory)
         self.working_set.set_workspace(str(self._workspace_root))
+        self.working_set.refresh_workspace()
 
     def get_metrics(self) -> dict[str, Any]:
         return dict(self.metrics)
