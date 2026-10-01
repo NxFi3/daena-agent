@@ -95,6 +95,15 @@ class ToolManager:
         self._bind_runtime_services()
         return self._find_tool(name)
 
+    def canonicalize_tool_call(self, toolcall: ToolCall) -> ToolCall:
+        """Canonicalize execution arguments before runtime deduplication/guards.
+
+        The same canonical call object is used for policy, duplicate detection,
+        guard signatures and execution, so relative/absolute workspace paths
+        cannot produce different identities.
+        """
+        return self._normalize_workspace_args(toolcall)
+
     def _normalize_workspace_args(self, toolcall: ToolCall) -> ToolCall:
         """Turn workspace-relative tool arguments into absolute safe paths.
 
