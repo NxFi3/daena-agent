@@ -181,3 +181,33 @@ def test_known_execution_failure_keeps_concrete_diagnostic():
     assert result.success is False
     assert result.content["error"]["type"] == "resource_in_use"
     assert "EADDRINUSE" in result.content["error"]["message"]
+
+def test_command_exec_normalizes_python_aliases_on_windows():
+    assert CommandExec._normalize_command(
+        ["python", "-m", "pytest"],
+        platform_name="nt",
+        python_executable=r"C:\Python311\python.exe",
+    ) == [
+        r"C:\Python311\python.exe",
+        "-m",
+        "pytest",
+    ]
+
+
+def test_command_exec_keeps_python_alias_on_non_windows():
+    command = ["python3", "-m", "pytest"]
+    assert CommandExec._normalize_command(
+        command,
+        platform_name="posix",
+        python_executable="/usr/bin/python3",
+    ) == command
+
+
+def test_command_exec_recognizes_pytest_exit_code_hint():
+    assert (
+        CommandExec._exit_code_hint(
+            ["python", "-m", "pytest", "-q"],
+            1,
+        )
+        == "one or more tests failed"
+    )
