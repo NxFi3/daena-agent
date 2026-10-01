@@ -1750,22 +1750,11 @@ class Loop:
         )
 
         runtime_blocked: dict[int, ToolResult] = {}
-        runtime_allowed: list = []
 
         for index, call in enumerate(parsed_calls):
             gated = self._runtime_recovery_gate(call)
             if gated is not None:
                 runtime_blocked[index] = gated
-            else:
-                runtime_allowed.append(call)
-
-        runtime_index_map = {
-            new_index: original_index
-            for new_index, original_index in enumerate(
-                index for index in range(len(parsed_calls))
-                if index not in runtime_blocked
-            )
-        }
 
         (
             allowed_indices,
