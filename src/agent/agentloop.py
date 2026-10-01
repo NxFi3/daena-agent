@@ -1167,15 +1167,51 @@ class Loop:
         except Exception as exc:
 
             self.logger.error(f"Tool execution failed: {exc}")
-
-            return [], []
+            return (
+                allowed_calls,
+                [
+                    ToolResult(
+                        success=False,
+                        name=str(getattr(call, "name", "unknown")),
+                        content={
+                            "success": False,
+                            "error": {
+                                "type": "tool_batch_execution_error",
+                                "message": f"Tool batch execution failed: {type(exc).__name__}: {exc}",
+                            },
+                        },
+                        metadata={"recovery_hint": "Inspect the concrete dispatcher/runtime error before retrying."},
+                        summary=f"Tool batch execution failed: {type(exc).__name__}: {exc}",
+                    )
+                    for call in allowed_calls
+                ],
+            )
 
         if not isinstance(
             output,
             dict,
         ):
 
-            return [], []
+            message = "ToolManager returned an invalid batch result."
+            return (
+                allowed_calls,
+                [
+                    ToolResult(
+                        success=False,
+                        name=str(getattr(call, "name", "unknown")),
+                        content={
+                            "success": False,
+                            "error": {
+                                "type": "invalid_tool_batch_result",
+                                "message": message,
+                            },
+                        },
+                        metadata={},
+                        summary=message,
+                    )
+                    for call in allowed_calls
+                ],
+            )
 
         calls = output.get(
             "calls",
