@@ -1,41 +1,45 @@
 import os
 from typing import Any, ClassVar
 
-from openrouter import OpenRouter
+from cerebras.cloud.sdk import Cerebras as CerebrasSDK
 
 from src.engine.providers.ProviderBase import ProviderBase
 from src.models.LLMInput import LLMInput
 from src.models.LLMResult import LLMResult
 from src.utils.logger import get_logger
 
-logger = get_logger("[OPENROUTER]")
+logger = get_logger("[CEREBRAS]")
 
 
-class OpenRouterProvider(ProviderBase):
+class CerebrasProvider(ProviderBase):
 
-    name = "openrouter"
+    name = "cerebras"
 
-    defaultModel = "openrouter/free"
+    defaultModel = "qwen-3.8-27b"
 
     defaultConfig: ClassVar[dict] = {
-        "temperature": 0.3,
+        "temperature": 0.2,
         "tool_choice": "auto",
         "parallel_tool_calls": True,
     }
 
     def __init__(self) -> None:
-        self.client: OpenRouter | None = None
+        super().__init__()
+
+        self.client: CerebrasSDK | None = None
 
     def _create_client(self) -> None:
         if self.client is not None:
             return
 
-        api_key = os.getenv("OPENROUTER_API_KEY")
+        api_key = os.getenv("CEREBRAS_API_KEY")
 
         if not api_key:
-            raise RuntimeError("OPENROUTER_API_KEY environment variable is not set")
+            raise RuntimeError(
+                "CEREBRAS_API_KEY environment variable is not set"
+            )
 
-        self.client = OpenRouter(
+        self.client = CerebrasSDK(
             api_key=api_key,
         )
 
@@ -43,41 +47,31 @@ class OpenRouterProvider(ProviderBase):
     def _serialize_tool_call(
         tool_call: Any,
     ) -> dict:
-        """
-        Convert an OpenRouter SDK tool-call object into
-        a plain Python dictionary.
-        """
-
         if hasattr(tool_call, "model_dump"):
             return tool_call.model_dump(exclude_none=True)
 
         if isinstance(tool_call, dict):
             return dict(tool_call)
 
-        raise TypeError("Unsupported tool call type: " f"{type(tool_call).__name__}")
+        raise TypeError(
+            "Unsupported tool call type: "
+            f"{type(tool_call).__name__}"
+        )
 
     @staticmethod
     def _serialize_message(
         message: Any,
     ) -> dict:
-        """
-        Convert an OpenRouter SDK message object into
-        a plain Python dictionary.
-
-        The normalized message is used consistently for:
-            - content
-            - tool_calls
-            - reasoning
-            - persistence
-        """
-
         if hasattr(message, "model_dump"):
             return message.model_dump(exclude_none=True)
 
         if isinstance(message, dict):
             return dict(message)
 
-        raise TypeError("Unsupported message type: " f"{type(message).__name__}")
+        raise TypeError(
+            "Unsupported message type: "
+            f"{type(message).__name__}"
+        )
 
     def generate(
         self,
@@ -86,7 +80,13 @@ class OpenRouterProvider(ProviderBase):
 
         self._create_client()
 
-        model_name = llminput.model_name or self.defaultModel
+        if self.client is None:
+            raise RuntimeError("Cerebras client was not initialized")
+
+        model_name = (
+            llminput.model_name
+            or self.defaultModel
+        )
 
         messages = llminput.messages or []
 
@@ -97,11 +97,10 @@ class OpenRouterProvider(ProviderBase):
         if llminput.options:
             options.update(llminput.options)
 
-        # Do not send tool-specific options when
-        # the request has no tools.
+        # Tool-specific options only make sense
+        # when tools are actually supplied.
         if not tools:
             options.pop("tool_choice", None)
-
             options.pop("parallel_tool_calls", None)
 
         request_kwargs = {
@@ -115,99 +114,98 @@ class OpenRouterProvider(ProviderBase):
             request_kwargs["tools"] = tools
 
         try:
-            response = self.client.chat.send(**request_kwargs)
+            response = self.client.chat.completions.create(
+                **request_kwargs
+            )
 
         except Exception as exc:
-            logger.error("Chat generation failed: " f"{type(exc).__name__}: {exc}")
+            logger.error(
+                "Chat generation failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
 
             raise RuntimeError(
-                "OpenRouter generation failed: " f"{type(exc).__name__}: {exc}"
+                "Cerebras generation failed: "
+                f"{type(exc).__name__}: {exc}"
             ) from exc
 
         if not response.choices:
-            raise RuntimeError("OpenRouter returned no choices")
-
-        # ------------------------------------------------------------
-        # Normalize message FIRST.
-        # ------------------------------------------------------------
+            raise RuntimeError(
+                "Cerebras returned no choices"
+            )
 
         raw_message = response.choices[0].message
 
-        normalized_message = self._serialize_message(raw_message)
+        normalized_message = self._serialize_message(
+            raw_message
+        )
 
-        # ------------------------------------------------------------
-        # Extract tool calls from normalized message.
-        # ------------------------------------------------------------
-
-        raw_tool_calls = normalized_message.get("tool_calls") or []
+        raw_tool_calls = (
+            normalized_message.get("tool_calls")
+            or []
+        )
 
         normalized_tool_calls = []
 
         for tool_call in raw_tool_calls:
-            normalized_tool_calls.append(self._serialize_tool_call(tool_call))
+            normalized_tool_calls.append(
+                self._serialize_tool_call(tool_call)
+            )
 
-        # ------------------------------------------------------------
-        # Extract content.
-        # ------------------------------------------------------------
+        content = (
+            normalized_message.get("content")
+            or ""
+        )
 
-        content = normalized_message.get("content") or ""
-
-        if not isinstance(
-            content,
-            str,
-        ):
+        if not isinstance(content, str):
             content = str(content)
 
-        # ------------------------------------------------------------
-        # Extract reasoning.
-        # ------------------------------------------------------------
-
-        thinking = normalized_message.get("reasoning") or None
+        thinking = (
+            normalized_message.get("reasoning")
+            or normalized_message.get("reasoning_content")
+            or None
+        )
 
         if thinking is not None:
             thinking = str(thinking)
 
-        # ------------------------------------------------------------
-        # Usage.
-        # ------------------------------------------------------------
-
-        usage = getattr(response, "usage", None)
+        usage = getattr(
+            response,
+            "usage",
+            None,
+        )
 
         total_tokens = 0
 
         if usage is not None:
-            total_tokens = getattr(usage, "total_tokens", 0)
+            total_tokens = getattr(
+                usage,
+                "total_tokens",
+                0,
+            )
 
             if total_tokens is None:
                 total_tokens = 0
 
         try:
             total_tokens = int(total_tokens)
+
         except (
             TypeError,
             ValueError,
         ):
             total_tokens = 0
 
-        # ------------------------------------------------------------
-        # Diagnostics.
-        # ------------------------------------------------------------
-
         tool_names = []
 
         for call in normalized_tool_calls:
-            if not isinstance(
-                call,
-                dict,
-            ):
+
+            if not isinstance(call, dict):
                 continue
 
             function = call.get("function")
 
-            if not isinstance(
-                function,
-                dict,
-            ):
+            if not isinstance(function, dict):
                 continue
 
             name = function.get("name")
@@ -221,14 +219,15 @@ class OpenRouterProvider(ProviderBase):
             f"usage={total_tokens}"
         )
 
-        logger.debug("OpenRouter message keys=" f"{list(normalized_message.keys())}")
+        logger.debug(
+            "Cerebras message keys="
+            f"{list(normalized_message.keys())}"
+        )
 
         if tool_names:
-            logger.debug(f"OpenRouter tool call names={tool_names}")
-
-        # ------------------------------------------------------------
-        # Return runtime-independent result.
-        # ------------------------------------------------------------
+            logger.debug(
+                f"Cerebras tool call names={tool_names}"
+            )
 
         return LLMResult(
             response=content,
