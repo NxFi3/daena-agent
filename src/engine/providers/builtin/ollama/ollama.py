@@ -21,7 +21,7 @@ class OllamaProvider(ProviderBase):
 
     defaultConfig: ClassVar[dict] = {
         "temperature": 0.3,
-        "num_ctx": 120000,
+        "num_ctx": 32768,
     }
 
     # `think` was never being sent to ollama.chat(), so every "thinking"
