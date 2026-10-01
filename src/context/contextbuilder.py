@@ -54,7 +54,8 @@ class ContextBuilder:
     FULL_TOOL_RESULTS = 6
     MAX_EXPERIENCE_CHARS = 4000
     MAX_LEARNED_EXPERIENCE_CHARS = 3000
-    MAX_EXECUTION_STATE_CHARS = 6000
+    MAX_EXECUTION_STATE_CHARS = 7000
+    MAX_WORKSPACE_ENTRIES_FOR_CONTEXT = 80
 
     def __init__(self, config: dict[str, Any], llm_provider: LlmProvider) -> None:
         self.config = config
@@ -341,6 +342,24 @@ class ContextBuilder:
             }
 
         if isinstance(working_set, dict):
+            inventory = working_set.get("workspace_inventory")
+            if isinstance(inventory, list):
+                workspace_state = {
+                    "file_count": working_set.get("workspace_file_count", 0),
+                    "directory_count": working_set.get("workspace_directory_count", 0),
+                    "truncated": bool(working_set.get("workspace_inventory_truncated", False)),
+                    "entries": [],
+                }
+                for item in inventory[: self.MAX_WORKSPACE_ENTRIES_FOR_CONTEXT]:
+                    if not isinstance(item, dict):
+                        continue
+                    workspace_state["entries"].append({
+                        key: item.get(key)
+                        for key in ("path", "type", "size")
+                        if item.get(key) not in (None, "")
+                    })
+                state["workspace"] = workspace_state
+
             plan_progress = working_set.get("plan_progress")
             if isinstance(plan_progress, dict) and plan_progress:
                 state["plan_progress"] = {
