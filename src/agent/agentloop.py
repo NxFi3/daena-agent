@@ -1,4 +1,3 @@
-# src/agent/agentloop.py
 from __future__ import annotations
 
 import json
@@ -112,6 +111,12 @@ class Loop:
         self._failed_call_keys: dict[str, tuple[int, int]] = {}
         self._active_process_ids: set[str] = set()
         self._recovery_mode = False
+        # A failed work action requires one successful recovery action before
+        # the active plan step may be completed. Control-plane blocks (plan
+        # gates, duplicate guards, etc.) must not themselves become recovery
+        # failures and trap the loop.
+        self._recovery_required = False
+        self._recovery_failed_key: str | None = None
 
         self._generation_retries = 0
 
@@ -912,6 +917,17 @@ class Loop:
             )
 
         if transition == "completed":
+            if self._recovery_required:
+                return (
+                    "recovery_required",
+                    (
+                        f"Step {step_number} cannot be completed yet. "
+                        "A previous work action failed. Perform a different "
+                        "successful recovery/diagnostic action first, then "
+                        "retry plan completion."
+                    ),
+                )
+
             if not self._plan_progress.can_complete(step_number):
                 progress = self._plan_progress.context()
                 if progress.get("last_result_success") is False:
@@ -1354,7 +1370,28 @@ class Loop:
                     count,
                 )
 
-        if not result.success and status not in {"running"}:
+        control_plane_failure = (
+            isinstance(result.metadata, dict)
+            and (
+                result.metadata.get("plan_gate")
+                or result.metadata.get("runtime_gate")
+                or result.metadata.get("duplicate_action")
+                or result.metadata.get("loop_guard_block")
+            )
+        )
+
+        if result.success and not self._is_plan_call(call) and self._recovery_required:
+            recovery_key = self._tool_call_key(call)
+            if recovery_key != self._recovery_failed_key:
+                self._recovery_required = False
+                self._recovery_failed_key = None
+
+        if (
+            not result.success
+            and status not in {"running"}
+            and not self._is_plan_call(call)
+            and not control_plane_failure
+        ):
             key = self._tool_call_key(call)
             previous_revision, previous_count = self._failed_call_keys.get(
                 key,
@@ -1363,6 +1400,8 @@ class Loop:
             count = previous_count + 1 if previous_revision == self.workspace_revision else 1
             self._failed_call_keys[key] = (self.workspace_revision, count)
             self._recovery_mode = True
+            self._recovery_required = True
+            self._recovery_failed_key = key
 
         # Always append the tool result before any corrective USER nudge.
         # Inserting a user message between an assistant tool-call and its tool
@@ -1388,6 +1427,21 @@ class Loop:
                 error_type = str(error.get("type", "")).strip().lower()
             elif error:
                 error_type = str(error).strip().lower()
+
+        if not result.success and error_type == "completion_requires_success":
+            self._store_nudge(
+                "RECOVERY REQUIRED: the previous work action failed. "
+                "Do not call plan completion again yet. Perform a different "
+                "diagnostic or corrective action, verify its result, and only "
+                "then retry plan completion."
+            )
+
+        if not result.success and error_type == "recovery_required":
+            self._store_nudge(
+                "RECOVERY REQUIRED: do not repeat plan completion. "
+                "Choose a different tool/action that can diagnose or correct "
+                "the previous failure, and obtain a successful result first."
+            )
 
         if (
             not result.success
@@ -2024,6 +2078,8 @@ class Loop:
         self._failed_call_keys.clear()
         self._active_process_ids.clear()
         self._recovery_mode = False
+        self._recovery_required = False
+        self._recovery_failed_key = None
 
         self._generation_retries = 0
         self._run_started_at = None
