@@ -211,3 +211,9 @@ def test_command_exec_recognizes_pytest_exit_code_hint():
         )
         == "one or more tests failed"
     )
+
+def test_command_exec_rejects_non_list_command():
+    tool = CommandExec()
+    result = tool.execute(command="python")
+    assert result.success is False
+    assert result.content["error"]["type"] == "invalid_argument"
