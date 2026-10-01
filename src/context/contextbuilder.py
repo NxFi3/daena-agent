@@ -111,11 +111,15 @@ class ContextBuilder:
             return value
         if limit <= 64:
             return value[:limit]
-        omitted = len(value) - limit
+        head = max(1, int(limit * 0.60))
+        tail = max(1, limit - head - 64)
+        omitted = len(value) - head - tail
         return (
-            value[: limit - 64].rstrip()
+            value[:head].rstrip()
             + "\n\n"
             + f"... {omitted} characters omitted ..."
+            + "\n\n"
+            + value[-tail:].lstrip()
         )
 
     def _build_conversation(
