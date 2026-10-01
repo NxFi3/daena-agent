@@ -100,7 +100,14 @@ class ContextBuilder:
     @staticmethod
     def _last_index(messages: list[dict[str, Any]], role: str) -> int:
         for index in range(len(messages) - 1, -1, -1):
-            if messages[index].get("role") == role:
+            message = messages[index]
+            if (
+                message.get("role") == role
+                and not (
+                    isinstance(message.get("metadata"), dict)
+                    and message["metadata"].get("dynamic_context")
+                )
+            ):
                 return index
         return -1
 
@@ -617,7 +624,21 @@ class ContextBuilder:
         if latest_user_index < 0:
             return None
 
-        history = rest[:latest_user_index] + rest[latest_user_index + 1 :]
+        dynamic_messages = [
+            message
+            for message in rest
+            if isinstance(message.get("metadata"), dict)
+            and message["metadata"].get("dynamic_context")
+        ]
+        history = [
+            message
+            for index, message in enumerate(rest)
+            if index != latest_user_index
+            and not (
+                isinstance(message.get("metadata"), dict)
+                and message["metadata"].get("dynamic_context")
+            )
+        ]
         history_text = self._compaction_input(self._serialize_for_compaction(history))
         if not history_text.strip():
             return None
@@ -667,7 +688,7 @@ class ContextBuilder:
             }
         )
 
-        return [base_system, compacted_context, latest_user]
+        return [base_system, compacted_context, latest_user, *dynamic_messages]
 
     def _minimal_messages(self) -> list[dict[str, Any]]:
         system = {
