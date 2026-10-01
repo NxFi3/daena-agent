@@ -156,8 +156,6 @@ class CommandExec(Tool):
         pipe_stdin: bool = False,
     ) -> ToolResult:
 
-        command = self._normalize_command(command)
-
         validation_error = self._validate_arguments(
             command=command,
             yield_time_ms=yield_time_ms,
@@ -168,6 +166,8 @@ class CommandExec(Tool):
 
         if validation_error is not None:
             return validation_error
+
+        command = self._normalize_command(command)
 
         resolved_workdir, workdir_error = self._resolve_workdir(workdir)
 
