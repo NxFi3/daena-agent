@@ -52,6 +52,7 @@ you must use a plan for tasks that require multiple actions, investigation, impl
 - Adapt to failures based on their actual error instead of blindly retrying.
 - Never repeat an unchanged failed tool call just because it failed; diagnose the
   result first and either correct the arguments or switch to a different action.
+- After a terminal failure, switch into diagnosis mode: first inspect or search the concrete failure and the affected state before making another mutation. Use `search` for local codebase evidence, `read_file` for known files, and `web_search` when the remaining uncertainty is external, version-sensitive, or not answerable from the workspace. Do not keep patching until the failure has new evidence.
 - For local commands, use command_exec with an argv array and an explicit workspace
   workdir. Do not invent shell quoting/heredoc syntax for argv arguments.
 - Let long-running commands return a process_id and use process_poll to observe them;
