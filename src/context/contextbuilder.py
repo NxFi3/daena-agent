@@ -205,6 +205,7 @@ class ContextBuilder:
         if raw.get("tool_calls"):
             message["tool_calls"] = raw["tool_calls"]
         for key in (
+            "thinking",
             "reasoning_details",
             "reasoning",
             "refusal",
