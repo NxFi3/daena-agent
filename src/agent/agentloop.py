@@ -239,6 +239,17 @@ class Loop:
             )
         )
 
+    def _queue_tool_nudge(self, text: str) -> None:
+        text = str(text or "").strip()
+        if text:
+            self._pending_tool_nudges.append(text)
+
+    def _flush_tool_nudges(self) -> None:
+        pending = list(self._pending_tool_nudges)
+        self._pending_tool_nudges.clear()
+        for text in pending:
+            self._store_nudge(text)
+
     def _assistant_event(
         self,
         llmresult: LLMResult,
@@ -1482,11 +1493,15 @@ class Loop:
             self._recovery_evidence_revision = None
             self._recovery_mode = False
 
+        filesystem_changed = False
+        if result.success:
+            filesystem_changed = self.working_set.refresh_workspace()
+
         changed = self.working_set.update(
             tool_call=call,
             result=result,
             iteration=iteration,
-        )
+        ) or filesystem_changed
 
         self._plan_progress.record(
             tool_call=call,
@@ -1591,7 +1606,7 @@ class Loop:
         )
 
         if status == "running":
-            self._store_nudge(
+            self._queue_tool_nudge(
                 f"'{result.name}' started a managed process "
                 f"{process_id or '(unknown id)'}. The command is not complete. "
                 "Poll it before treating the operation as finished."
@@ -1616,16 +1631,11 @@ class Loop:
             hint = ""
             if isinstance(result.metadata, dict):
                 hint = str(result.metadata.get("recovery_hint") or "").strip()
-            self._store_nudge(
+            self._queue_tool_nudge(
                 f"Tool '{result.name}' rejected the last call. "
                 f"{result.summary or 'Use valid arguments.'} "
                 f"{hint}".strip()
             )
-
-        # Refresh real filesystem state before the next model turn so a file
-        # that was created earlier cannot disappear from model-visible state
-        # merely because its original event aged out of STM.
-        self.working_set.refresh_workspace()
 
         self._sync_plan_runtime_state(
             call=call,
@@ -1842,6 +1852,8 @@ class Loop:
 
                 return True
 
+        self._flush_tool_nudges()
+
         if blocked_results and not allowed_indices:
 
             index = min(blocked_results)
@@ -1984,6 +1996,8 @@ class Loop:
                     # The ONLY place where raw provider tool calls are
                     # converted into canonical ToolCall objects.
                     parsed_calls = self.tool.dispatcher.dispatch(llmresult.tool_calls)
+                    # Canonicalize once before duplicate/recovery/loop guards.
+                    parsed_calls = [self.tool.canonicalize_tool_call(call) for call in parsed_calls]
 
                 except Exception as exc:
 
@@ -2246,6 +2260,7 @@ class Loop:
         self._verification_process_ids.clear()
 
         self._generation_retries = 0
+        self._pending_tool_nudges: list[str] = []
         self._run_started_at = None
         self.metrics = {
             "iterations": 0,
