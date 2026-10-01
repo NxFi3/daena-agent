@@ -313,7 +313,7 @@ class ContextBuilder:
                     group.append(messages[end])
                 end += 1
 
-            if expected.issubset(matched):
+            if matched == expected:
                 sanitized.extend(group)
 
             index = end
