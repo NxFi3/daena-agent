@@ -14,8 +14,9 @@ DEFAULT_INSTRUCTION = (
     "You are Daena, an autonomous assistant and software engineering agent."
 )
 
-SYSTEM_INSTRUCTION_PATH = Path("AgentInstruction/systeminstruction.md")
-EXPERIENCE_PATH = Path("AgentInstruction/experience.md")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SYSTEM_INSTRUCTION_PATH = PROJECT_ROOT / "AgentInstruction" / "systeminstruction.md"
+EXPERIENCE_PATH = PROJECT_ROOT / "AgentInstruction" / "experience.md"
 PLANS_PATH = Path(".daena") / "plan.md"
 
 
