@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,22 @@ class WorkingSet:
 
     MAX_ARTIFACTS = 8
     MAX_ARTIFACT_PREVIEW_CHARS = 3000
+
+    # Deterministic filesystem state prevents the model from forgetting that
+    # a file/directory already exists after its creation event ages out of STM.
+    MAX_WORKSPACE_ENTRIES = 200
+    WORKSPACE_IGNORE_DIRS = frozenset({
+        ".git",
+        "node_modules",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".tox",
+        ".idea",
+    })
 
     MAX_FACTS = 10
     MAX_UNRESOLVED = 6
@@ -86,9 +103,114 @@ class WorkingSet:
 
         self.observations: list[dict[str, Any]] = []
 
+        self.workspace_inventory: list[dict[str, Any]] = []
+        self.workspace_inventory_truncated = False
+        self.workspace_file_count = 0
+        self.workspace_directory_count = 0
+        self._workspace_signature: tuple[tuple[Any, ...], ...] = ()
+
         # Compact process receipts keep active and recently finished managed
         # processes visible to the next model turn without exposing internals.
         self.processes: OrderedDict[str, dict[str, Any]] = OrderedDict()
+
+    def refresh_workspace(self) -> bool:
+        """Refresh deterministic filesystem state from the real workspace.
+
+        Returns True when the observable inventory changed. This is deliberately
+        separate from workspace_revision so STM/agent metadata churn does not
+        disable duplicate-action protection.
+        """
+        root = self.workspace_root
+        if root is None:
+            new_signature: tuple[tuple[Any, ...], ...] = ()
+            changed = new_signature != self._workspace_signature
+            self._workspace_signature = new_signature
+            self.workspace_inventory = []
+            self.workspace_inventory_truncated = False
+            self.workspace_file_count = 0
+            self.workspace_directory_count = 0
+            return changed
+
+        try:
+            root = root.resolve()
+        except (OSError, RuntimeError):
+            return False
+
+        if not root.exists() or not root.is_dir():
+            new_signature = (("<workspace-root>", "missing"),)
+            changed = new_signature != self._workspace_signature
+            self._workspace_signature = new_signature
+            self.workspace_inventory = [{"path": str(root), "type": "missing"}]
+            self.workspace_inventory_truncated = False
+            self.workspace_file_count = 0
+            self.workspace_directory_count = 0
+            return changed
+
+        entries: list[dict[str, Any]] = []
+        signature_rows: list[tuple[Any, ...]] = []
+        file_count = 0
+        directory_count = 0
+        truncated = False
+
+        def add_entry(path: Path, entry_type: str) -> None:
+            nonlocal file_count, directory_count, truncated
+            try:
+                relative = path.relative_to(root).as_posix()
+            except ValueError:
+                return
+
+            try:
+                stat_result = path.stat()
+            except OSError:
+                return
+
+            size = int(stat_result.st_size) if entry_type == "file" else None
+            mtime_ns = int(stat_result.st_mtime_ns)
+            signature_rows.append((relative, entry_type, size, mtime_ns))
+
+            if entry_type == "file":
+                file_count += 1
+            else:
+                directory_count += 1
+
+            if len(entries) < self.MAX_WORKSPACE_ENTRIES:
+                entries.append({
+                    "path": relative,
+                    "type": entry_type,
+                    "size": size,
+                    "mtime_ns": mtime_ns,
+                })
+            else:
+                truncated = True
+
+        try:
+            for current_root, dirs, files in os.walk(root, topdown=True, followlinks=False):
+                dirs[:] = sorted(
+                    directory
+                    for directory in dirs
+                    if directory not in self.WORKSPACE_IGNORE_DIRS
+                    and not directory.startswith(".git")
+                )
+                current = Path(current_root)
+
+                for directory in dirs:
+                    add_entry(current / directory, "directory")
+                for filename in sorted(files):
+                    add_entry(current / filename, "file")
+        except OSError:
+            return False
+
+        signature_rows.sort()
+        new_signature = tuple(signature_rows)
+        changed = new_signature != self._workspace_signature
+        self._workspace_signature = new_signature
+
+        entries.sort(key=lambda item: (item["path"], item["type"]))
+        self.workspace_inventory = entries
+        self.workspace_inventory_truncated = truncated
+        self.workspace_file_count = file_count
+        self.workspace_directory_count = directory_count
+        return changed
 
     def update(
         self,
@@ -688,6 +810,10 @@ class WorkingSet:
 
     def context(self) -> dict[str, Any]:
         return {
+            "workspace_inventory": list(self.workspace_inventory),
+            "workspace_inventory_truncated": self.workspace_inventory_truncated,
+            "workspace_file_count": self.workspace_file_count,
+            "workspace_directory_count": self.workspace_directory_count,
             "artifacts": dict(self.artifacts),
             "verification": dict(self.verification),
             "last_failed_verification": dict(self.last_failed_verification),
