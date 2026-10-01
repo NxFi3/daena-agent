@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import json
 import os
 from typing import Any, ClassVar
 
@@ -9,612 +12,334 @@ from src.models.LLMInput import LLMInput
 from src.models.LLMResult import LLMResult
 from src.utils.logger import get_logger
 
-
 logger = get_logger("[GEMINI]")
 
 
 class GeminiProvider(ProviderBase):
-
     name = "gemini"
-
-    # Use a model available through Gemini API.
     defaultModel = "gemini-2.5-flash-lite"
-
-    defaultConfig: ClassVar[dict] = {
-        "temperature": 0.3,
-    }
+    defaultConfig: ClassVar[dict] = {"temperature": 0.3}
 
     def __init__(self) -> None:
-        super().__init__()
         self.client: genai.Client | None = None
 
     def _create_client(self) -> None:
-
         if self.client is not None:
             return
-
         api_key = os.getenv("GEMINI_API_KEY")
-
         if not api_key:
-            raise RuntimeError(
-                "GEMINI_API_KEY environment variable is not set"
+            raise RuntimeError("GEMINI_API_KEY environment variable is not set")
+        self.client = genai.Client(api_key=api_key)
+
+    @staticmethod
+    def _sanitize_schema(value: Any) -> Any:
+        if isinstance(value, list):
+            return [GeminiProvider._sanitize_schema(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+
+        sanitized: dict[str, Any] = {}
+        for key, item in value.items():
+            if key == "additional_properties":
+                key = "additionalProperties"
+            sanitized[key] = GeminiProvider._sanitize_schema(item)
+        return sanitized
+
+    @staticmethod
+    def _convert_tools(tools: list[dict[str, Any]]) -> list[types.Tool]:
+        if not tools:
+            return []
+
+        declarations: list[types.FunctionDeclaration] = []
+
+        for tool in tools:
+            if not isinstance(tool, dict) or tool.get("type") != "function":
+                continue
+
+            function = tool.get("function")
+            if not isinstance(function, dict):
+                continue
+
+            name = function.get("name")
+            if not name:
+                continue
+
+            parameters = function.get(
+                "parameters",
+                {"type": "object", "properties": {}},
             )
 
-        self.client = genai.Client(
-            api_key=api_key
-        )
+            declarations.append(
+                types.FunctionDeclaration(
+                    name=str(name),
+                    description=str(function.get("description") or ""),
+                    parameters_json_schema=GeminiProvider._sanitize_schema(parameters),
+                )
+            )
+
+        if not declarations:
+            return []
+
+        return [types.Tool(function_declarations=declarations)]
+
+    @staticmethod
+    def _parse_tool_response(content: Any) -> Any:
+        if not isinstance(content, str):
+            return content
+        try:
+            return json.loads(content)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return {"result": content}
 
     @staticmethod
     def _convert_messages(
         messages: list[dict[str, Any]],
-    ) -> list[types.Content]:
-
+    ) -> tuple[list[types.Content], str | None]:
         contents: list[types.Content] = []
+        system_instruction: str | None = None
 
         for message in messages:
-
             if not isinstance(message, dict):
                 continue
 
-            role = message.get("role")
+            role = message.get("role", "user")
+            content = message.get("content")
 
-    
             if role == "system":
+                text = content if isinstance(content, str) else str(content or "")
+                system_instruction = (
+                    f"{system_instruction}\n\n{text}"
+                    if system_instruction
+                    else text
+                )
                 continue
 
-          
-            if role == "user":
+            if role == "tool":
+                name = message.get("name")
+                tool_call_id = message.get("tool_call_id")
 
-                content = message.get("content")
-
-                if content is None:
+                if not name:
                     continue
 
-                if not isinstance(content, str):
-                    content = str(content)
+                function_response = types.FunctionResponse(
+                    name=str(name),
+                    response=GeminiProvider._parse_tool_response(content),
+                )
+
+                if tool_call_id:
+                    function_response.id = str(tool_call_id)
 
                 contents.append(
                     types.Content(
-                        role="user",
-                        parts=[
-                            types.Part.from_text(
-                                text=content
-                            )
-                        ],
+                        role="tool",
+                        parts=[types.Part(function_response=function_response)],
                     )
                 )
-
                 continue
 
-         
             if role == "assistant":
-
                 parts: list[types.Part] = []
 
-                content = message.get("content")
+                if isinstance(content, str) and content:
+                    parts.append(types.Part.from_text(text=content))
 
-                if content:
-                    if not isinstance(content, str):
-                        content = str(content)
-
-                    parts.append(
-                        types.Part.from_text(
-                            text=content
-                        )
-                    )
-
-                tool_calls = message.get("tool_calls") or []
-
-                for tool_call in tool_calls:
-
-                    if hasattr(tool_call, "model_dump"):
-                        tool_call = tool_call.model_dump(
-                            exclude_none=True
-                        )
-
+                for tool_call in message.get("tool_calls") or []:
                     if not isinstance(tool_call, dict):
                         continue
 
                     function = tool_call.get("function")
-
                     if not isinstance(function, dict):
                         continue
 
                     name = function.get("name")
-
                     if not name:
                         continue
 
-                    arguments = function.get("arguments") or {}
-
-                    # OpenAI-compatible providers may return arguments
-                    # as a JSON string.
+                    arguments = function.get("arguments", {})
                     if isinstance(arguments, str):
-
-                        import json
-
                         try:
                             arguments = json.loads(arguments)
-                        except json.JSONDecodeError:
+                        except (json.JSONDecodeError, TypeError, ValueError):
                             arguments = {}
 
                     if not isinstance(arguments, dict):
                         arguments = {}
 
-                    call_id = tool_call.get("id")
-
                     parts.append(
-                        types.Part.from_function_call(
-                            name=name,
-                            args=arguments,
-                            id=call_id,
+                        types.Part(
+                            function_call=types.FunctionCall(
+                                id=tool_call.get("id"),
+                                name=str(name),
+                                args=arguments,
+                            )
                         )
                     )
 
                 if parts:
-
-                    contents.append(
-                        types.Content(
-                            role="model",
-                            parts=parts,
-                        )
-                    )
-
+                    contents.append(types.Content(role="model", parts=parts))
                 continue
 
-            if role == "tool":
-
-                tool_name = message.get("name")
-
-                if not tool_name:
-                    continue
-
-                result = message.get("content")
-
-                if result is None:
-                    result = ""
-
-                if not isinstance(result, str):
-                    result = str(result)
-
-                call_id = message.get("tool_call_id")
-
-                import json
-
-                response_data: dict[str, Any]
-
-                try:
-                    parsed = json.loads(result)
-
-                    if isinstance(parsed, dict):
-                        response_data = parsed
-                    else:
-                        response_data = {
-                            "result": parsed
-                        }
-
-                except (json.JSONDecodeError, TypeError):
-                    response_data = {
-                        "result": result
-                    }
-
+            text = content if isinstance(content, str) else str(content or "")
+            if text:
                 contents.append(
                     types.Content(
                         role="user",
-                        parts=[
-                            types.Part.from_function_response(
-                                name=tool_name,
-                                response=response_data,
-                                id=call_id,
-                            )
-                        ],
+                        parts=[types.Part.from_text(text=text)],
                     )
                 )
 
-                continue
-
-        return contents
-
+        return contents, system_instruction
 
     @staticmethod
-    def _extract_system_instruction(
-        messages: list[dict[str, Any]],
-    ) -> str | None:
+    def _normalize_response(
+        response: Any,
+    ) -> tuple[str, dict[str, Any], list[dict[str, Any]], str | None]:
+        content_text = ""
+        thinking_parts: list[str] = []
+        tool_calls: list[dict[str, Any]] = []
 
-        system_messages: list[str] = []
+        candidates = getattr(response, "candidates", None) or []
+        if not candidates:
+            return "", {}, [], None
 
-        for message in messages:
+        candidate_content = getattr(candidates[0], "content", None)
+        if candidate_content is None:
+            return "", {}, [], None
 
-            if not isinstance(message, dict):
+        for part in getattr(candidate_content, "parts", None) or []:
+            text = getattr(part, "text", None)
+            if text:
+                if getattr(part, "thought", False):
+                    thinking_parts.append(str(text))
+                else:
+                    content_text += str(text)
+
+            function_call = getattr(part, "function_call", None)
+            if function_call is None:
                 continue
 
-            if message.get("role") != "system":
+            name = getattr(function_call, "name", None)
+            if not name:
                 continue
 
-            content = message.get("content")
-
-            if content is None:
-                continue
-
-            if not isinstance(content, str):
-                content = str(content)
-
-            system_messages.append(content)
-
-        if not system_messages:
-            return None
-
-        return "\n\n".join(system_messages)
-
-
-    @staticmethod
-    def _convert_tools(
-        tools: list[dict[str, Any]],
-    ) -> list[types.Tool]:
-
-        if not tools:
-            return []
-
-        declarations: list[dict[str, Any]] = []
-
-        for tool in tools:
-
-            if not isinstance(tool, dict):
-                continue
-
-            # OpenAI format:
-            #
-            # {
-            #   "type": "function",
-            #   "function": {
-            #       "name": "...",
-            #       "description": "...",
-            #       "parameters": {...}
-            #   }
-            # }
-
-            if tool.get("type") == "function":
-
-                function = tool.get("function")
-
-                if not isinstance(function, dict):
-                    continue
-
-                declaration = {
-                    "name": function.get("name"),
-                    "description": function.get(
-                        "description",
-                        "",
-                    ),
-                    "parameters": function.get(
-                        "parameters",
-                        {
-                            "type": "object",
-                            "properties": {},
-                        },
-                    ),
+            args = getattr(function_call, "args", None) or {}
+            tool_calls.append(
+                {
+                    "id": getattr(function_call, "id", None),
+                    "type": "function",
+                    "function": {
+                        "name": str(name),
+                        "arguments": json.dumps(
+                            dict(args),
+                            ensure_ascii=False,
+                        ),
+                    },
                 }
-
-                if declaration["name"]:
-                    declarations.append(declaration)
-
-                continue
-
-            # Already Gemini-like declaration.
-
-            if tool.get("name"):
-                declarations.append(tool)
-
-        if not declarations:
-            return []
-
-        return [
-            types.Tool(
-                function_declarations=declarations
             )
-        ]
 
- 
-    @staticmethod
-    def _serialize_tool_call(
-        function_call: Any,
-    ) -> dict[str, Any]:
-
-        name = getattr(
-            function_call,
-            "name",
-            None,
-        )
-
-        args = getattr(
-            function_call,
-            "args",
-            None,
-        )
-
-        call_id = getattr(
-            function_call,
-            "id",
-            None,
-        )
-
-        if args is None:
-            args = {}
-
-        return {
-            "id": call_id,
-            "type": "function",
-            "function": {
-                "name": name,
-                "arguments": args,
-            },
+        message: dict[str, Any] = {
+            "role": "assistant",
+            "content": content_text,
         }
+        if tool_calls:
+            message["tool_calls"] = tool_calls
 
-    def generate(
-        self,
-        llminput: LLMInput,
-    ) -> LLMResult:
+        return (
+            content_text,
+            message,
+            tool_calls,
+            "\n".join(thinking_parts) or None,
+        )
 
+    @staticmethod
+    def _usage_tokens(response: Any) -> int:
+        usage = getattr(response, "usage_metadata", None)
+        if usage is None:
+            return 0
+
+        total = getattr(usage, "total_token_count", None)
+        if total is not None:
+            try:
+                return int(total)
+            except (TypeError, ValueError):
+                pass
+
+        prompt = getattr(usage, "prompt_token_count", 0) or 0
+        output = getattr(usage, "candidates_token_count", 0) or 0
+
+        try:
+            return int(prompt) + int(output)
+        except (TypeError, ValueError):
+            return 0
+
+    def generate(self, llminput: LLMInput) -> LLMResult:
         self._create_client()
 
-        if self.client is None:
-            raise RuntimeError(
-                "Gemini client was not initialized"
-            )
-
-        model_name = (
-            llminput.model_name
-            or self.defaultModel
+        model_name = llminput.model_name or self.defaultModel
+        messages, system_instruction = self._convert_messages(
+            llminput.messages or []
         )
+        tools = self._convert_tools(llminput.tools or [])
 
-        messages = llminput.messages or []
-        tools = llminput.tools or []
-
-        options = dict(
-            self.defaultConfig
-        )
-
+        options = dict(self.defaultConfig)
         if llminput.options:
-            options.update(
-                llminput.options
-            )
+            options.update(llminput.options)
 
-        contents = self._convert_messages(
-            messages
-        )
+        tool_choice = options.pop("tool_choice", None)
+        options.pop("parallel_tool_calls", None)
 
-        system_instruction = (
-            self._extract_system_instruction(
-                messages
-            )
-        )
-
-        gemini_tools = self._convert_tools(
-            tools
-        )
-
-        config_kwargs: dict[str, Any] = {}
-
-      
-        if "temperature" in options:
-            config_kwargs["temperature"] = (
-                options["temperature"]
-            )
-
-        if "top_p" in options:
-            config_kwargs["top_p"] = (
-                options["top_p"]
-            )
-
-        if "top_k" in options:
-            config_kwargs["top_k"] = (
-                options["top_k"]
-            )
-
-        if "max_output_tokens" in options:
-            config_kwargs["max_output_tokens"] = (
-                options["max_output_tokens"]
-            )
+        config_kwargs = dict(options)
 
         if system_instruction:
-            config_kwargs["system_instruction"] = (
-                system_instruction
+            config_kwargs["system_instruction"] = system_instruction
+
+        if tools:
+            config_kwargs["tools"] = tools
+            config_kwargs["automatic_function_calling"] = (
+                types.AutomaticFunctionCallingConfig(disable=True)
             )
 
-        if gemini_tools:
-            config_kwargs["tools"] = gemini_tools
+            if tool_choice == "none":
+                mode = "NONE"
+            elif tool_choice in ("required", "any"):
+                mode = "ANY"
+            else:
+                mode = "AUTO"
 
-            # We want DAENA to execute tools itself.
-            config_kwargs[
-                "automatic_function_calling"
-            ] = types.AutomaticFunctionCallingConfig(
-                disable=True
+            config_kwargs["tool_config"] = types.ToolConfig(
+                function_calling_config=types.FunctionCallingConfig(mode=mode)
             )
 
-        config = types.GenerateContentConfig(
-            **config_kwargs
-        )
-
-  
         try:
-
             response = self.client.models.generate_content(
                 model=model_name,
-                contents=contents,
-                config=config,
+                contents=messages,
+                config=types.GenerateContentConfig(**config_kwargs),
             )
-
         except Exception as exc:
-
             logger.error(
                 "Chat generation failed: "
                 f"{type(exc).__name__}: {exc}"
             )
-
             raise RuntimeError(
                 "Gemini generation failed: "
                 f"{type(exc).__name__}: {exc}"
             ) from exc
 
-    
-        if not response.candidates:
-            raise RuntimeError(
-                "Gemini returned no candidates"
-            )
-
-        candidate = response.candidates[0]
-
-        if candidate.content is None:
-            raise RuntimeError(
-                "Gemini returned an empty candidate"
-            )
-
-     
-        text_parts: list[str] = []
-        normalized_tool_calls: list[dict[str, Any]] = []
-
-        for part in candidate.content.parts:
-
-            if getattr(part, "text", None):
-
-                text_parts.append(
-                    str(part.text)
-                )
-
-            function_call = getattr(
-                part,
-                "function_call",
-                None,
-            )
-
-            if function_call is not None:
-
-                normalized_tool_calls.append(
-                    self._serialize_tool_call(
-                        function_call
-                    )
-                )
-
-        content = "\n".join(
-            text_parts
-        )
-
-      
-        thinking_parts: list[str] = []
-
-        for part in candidate.content.parts:
-
-            thought = getattr(
-                part,
-                "thought",
-                False,
-            )
-
-            text = getattr(
-                part,
-                "text",
-                None,
-            )
-
-            if thought and text:
-                thinking_parts.append(
-                    str(text)
-                )
-
-        thinking = (
-            "\n".join(thinking_parts)
-            if thinking_parts
-            else None
-        )
-
-     
-        usage = getattr(
-            response,
-            "usage_metadata",
-            None,
-        )
-
-        total_tokens = 0
-
-        if usage is not None:
-
-            total_tokens = getattr(
-                usage,
-                "total_token_count",
-                0,
-            )
-
-            if total_tokens is None:
-                total_tokens = 0
-
-        try:
-            total_tokens = int(
-                total_tokens
-            )
-
-        except (TypeError, ValueError):
-            total_tokens = 0
-
-        normalized_message: dict[str, Any] = {
-            "role": "assistant",
-            "content": content or None,
-        }
-
-        if normalized_tool_calls:
-
-            normalized_message[
-                "tool_calls"
-            ] = normalized_tool_calls
-
-
-        tool_names = []
-
-        for call in normalized_tool_calls:
-
-            function = call.get(
-                "function"
-            )
-
-            if not isinstance(
-                function,
-                dict,
-            ):
-                continue
-
-            name = function.get(
-                "name"
-            )
-
-            if name:
-                tool_names.append(
-                    str(name)
-                )
+        content, message, tool_calls, thinking = self._normalize_response(response)
+        usage = self._usage_tokens(response)
 
         logger.debug(
             f"Model={model_name} "
-            f"tool_calls="
-            f"{len(normalized_tool_calls)} "
-            f"usage={total_tokens}"
+            f"tool_calls={len(tool_calls)} "
+            f"usage={usage}"
         )
 
-        logger.debug(
-            "Gemini message keys="
-            f"{list(normalized_message.keys())}"
-        )
-
-        if tool_names:
-
-            logger.debug(
-                "Gemini tool call names="
-                f"{tool_names}"
-            )
-
-  
         return LLMResult(
             response=content,
-            message=normalized_message,
-            tool_calls=normalized_tool_calls,
+            message=message,
+            tool_calls=tool_calls,
             thinking=thinking,
-            usage=total_tokens,
+            usage=usage,
             raw=response,
         )
