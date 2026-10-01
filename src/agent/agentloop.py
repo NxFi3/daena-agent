@@ -1485,7 +1485,9 @@ class Loop:
 
         if isinstance(result.metadata, dict) and result.metadata.get("runtime_gate"):
             self.metrics["recovery_blocks"] = self.metrics.get("recovery_blocks", 0) + 1
-            if result.content.get("error", {}).get("type") == "diagnosis_required":
+            content = result.content if isinstance(result.content, dict) else {}
+            error = content.get("error")
+            if isinstance(error, dict) and error.get("type") == "diagnosis_required":
                 self.metrics["recovery_diagnosis_required"] = (
                     self.metrics.get("recovery_diagnosis_required", 0) + 1
                 )
