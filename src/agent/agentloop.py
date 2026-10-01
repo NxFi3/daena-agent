@@ -120,6 +120,7 @@ class Loop:
         # retry of the same hypothesis.
         self._recovery_failure: dict[str, Any] = {}
         self._recovery_evidence_revision: int | None = None
+        self._verification_process_ids: set[str] = set()
 
         self._generation_retries = 0
 
@@ -1263,6 +1264,23 @@ class Loop:
                 or cls._is_verification_call(call)
             )
         return False
+
+    def _is_recovery_failure_source(self, call) -> bool:
+        if self._is_recovery_mutation(call) or self._is_verification_call(call):
+            return True
+        name = str(getattr(call, "name", "")).strip().lower()
+        if name != "process_poll":
+            return False
+        process_id = self._tool_result_process_id_from_call(call)
+        return bool(process_id and process_id in self._verification_process_ids)
+
+    @staticmethod
+    def _tool_result_process_id_from_call(call) -> str | None:
+        arguments = getattr(call, "args", {}) or {}
+        if not isinstance(arguments, dict):
+            return None
+        process_id = arguments.get("process_id")
+        return str(process_id).strip() if process_id else None
 
     def _recovery_context(self) -> dict[str, Any]:
         if not self._recovery_failure:
