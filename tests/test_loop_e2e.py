@@ -268,3 +268,81 @@ def test_runtime_blocks_plan_while_process_is_active_and_repeats_failed_action(t
         assert "exact failed action" in blocked_retry.summary
     finally:
         loop.close()
+
+
+def test_failed_work_requires_different_success_before_plan_completion():
+    loop = _loop_for_validation()
+    loop._recovery_required = True
+    loop._recovery_failed_key = "failed-key"
+
+    state = active_plan()
+    error = loop._validate_plan_transition(
+        plan_completion_call(),
+        state,
+    )
+
+    assert error is not None
+    assert error[0] == "recovery_required"
+
+    loop._recovery_required = False
+    loop._recovery_failed_key = None
+    loop._plan_progress.record(
+        ToolCall(
+            name="read_file",
+            id="recovery-read",
+            valid=True,
+            action="inspect",
+            target="package.json",
+        ),
+        ToolResult(
+            success=True,
+            name="read_file",
+            content={"path": "package.json", "content": "{}"},
+        ),
+        iteration=3,
+    )
+
+    assert loop._validate_plan_transition(
+        plan_completion_call(),
+        state,
+    ) is None
+
+
+def test_control_plane_plan_failure_does_not_enter_recovery_state():
+    loop = _loop_for_validation()
+    loop._recovery_required = False
+    loop._recovery_failed_key = None
+    loop._failed_call_keys = {}
+    loop._active_process_ids = set()
+    loop._recovery_mode = False
+    loop.workspace_revision = 0
+    loop._store_event = lambda event: None
+    loop.agent_state = type("State", (), {
+        "begin": lambda *args, **kwargs: None,
+        "update_from_result": lambda *args, **kwargs: None,
+    })()
+    loop._tool_call_event = lambda call: None
+    loop._tool_result_event = lambda call, result: None
+    loop.working_set.update = lambda **kwargs: False
+    loop._plan_progress.record = lambda **kwargs: None
+    loop.tool = type("Tools", (), {
+        "get_tool": lambda self, name: None,
+    })()
+
+    plan = plan_completion_call()
+    result = ToolResult(
+        success=False,
+        name="plan",
+        content={
+            "success": False,
+            "error": {
+                "type": "completion_requires_success",
+                "message": "previous work failed",
+            },
+        },
+        metadata={"plan_gate": True},
+    )
+
+    loop._apply_result(plan, result, 2)
+
+    assert loop._recovery_required is False

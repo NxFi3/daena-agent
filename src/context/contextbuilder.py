@@ -196,6 +196,11 @@ class ContextBuilder:
 
         if raw.get("tool_calls"):
             message["tool_calls"] = raw["tool_calls"]
+        # Preserve provider-owned history needed to reconstruct model parts
+        # losslessly (e.g. Gemini 3 thought signatures).
+        if isinstance(raw.get("gemini_parts"), list):
+            message["gemini_parts"] = raw["gemini_parts"]
+
         for key in (
             "reasoning_details",
             "reasoning",
