@@ -4,3 +4,4 @@ ollama
 openrouter
 ddgs
 pypdf
+google-genai>=1.50,<2
