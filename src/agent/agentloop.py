@@ -1033,6 +1033,8 @@ class Loop:
             current_response_keys.add(key)
 
             guard_decision = self._tool_loop_guard.before_call(call)
+            if guard_decision.action == "warn":
+                self._queue_tool_nudge(guard_decision.message)
             if guard_decision.should_block:
                 blocked_results[index] = self._loop_guard_result(
                     call=call,
@@ -1565,7 +1567,12 @@ class Loop:
             self.metrics["loop_guard_warnings"] = (
                 self.metrics.get("loop_guard_warnings", 0) + 1
             )
-            self._store_nudge(guard_decision.message)
+            self._queue_tool_nudge(guard_decision.message)
+        elif guard_decision.action == "block":
+            self.metrics["loop_guard_blocks"] = (
+                self.metrics.get("loop_guard_blocks", 0) + 1
+            )
+            self._post_guard_block_reason = guard_decision.message or guard_decision.code
 
         if result.success:
 
@@ -1838,6 +1845,14 @@ class Loop:
                 result=result,
                 iteration=iteration,
             )
+
+            if self._post_guard_block_reason:
+                self._flush_tool_nudges()
+                self.agent_state.stop(
+                    "Tool loop guard blocked further progress: "
+                    + self._post_guard_block_reason
+                )
+                return True
 
             stop_reason = self._check_failure_stuck(
                 call,
@@ -2259,6 +2274,8 @@ class Loop:
 
         self._generation_retries = 0
         self._pending_tool_nudges: list[str] = []
+        self._post_guard_block_reason = None
+        self._post_guard_block_reason: str | None = None
         self._run_started_at = None
         self.metrics = {
             "iterations": 0,
