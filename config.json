@@ -1,38 +1,36 @@
 {
+  "runtime": {
+    "max_agent_iterations": 300
+  },
+
+  "logging": {
+    "level": "INFO",
+    "console": true,
+    "file": true,
+    "directory": "logs"
+  },
+
   "llm": {
     "provider": "ollama",
     "provider_config": {
       "model_name": "gpt-oss:20b",
       "generation_config": {
-        "temperature": 0.3
+        "temperature": 0.5
       }
     }
   },
+
   "context": {
-    "safe_margin": -1,
-    "recent_event_limit": 200,
+    "recent_event_limit": 100,
+    "search_top_k": 3,
     "compaction_enabled": true,
     "compaction_target_tokens": 4096
   },
-  "retrieval": {
-    "top_k": 3
-  },
+
   "security": {
     "workspace_only": true,
     "allow_background": true,
     "allow_network_tools": true,
     "force_approve": true
-  },
-  "models": {
-    "embedding": {
-      "model_name": "intfloat/multilingual-e5-base"
-    },
-    "reranker": {
-      "model_name": "BAAI/bge-reranker-v2-m3"
-    }
-  },
-  "max_agent_iterations": 300,
-  "experience": {
-    "enabled": false
   }
 }

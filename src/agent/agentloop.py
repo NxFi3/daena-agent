@@ -48,7 +48,7 @@ class Loop:
     # regardless of how much progress had already been made.
     MAX_GENERATION_RETRIES = 3
 
-    DEFAULT_MAX_ITERATIONS = 100
+    DEFAULT_MAX_ITERATIONS = 200
 
     RECENT_CONTEXT_LIMIT = 100
     SEARCH_CONTEXT_TOP_K = 5
