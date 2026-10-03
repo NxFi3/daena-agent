@@ -59,18 +59,14 @@ def command_call():
     )
 
 
-def plan_call(step: int, status: str):
+def plan_call(action: str):
     return ToolCall(
         name="plan",
         id=str(uuid4()),
-        args={
-            "operation": "update",
-            "step": step,
-            "status": status,
-        },
+        args={"action": action},
         valid=True,
         action="modify",
-        target="AgentInstruction/plan.md",
+        target=".daena/plan.md",
     )
 
 
@@ -122,12 +118,6 @@ def test_loop_plan_gate_enforces_step_lifecycle(tmp_path, monkeypatch):
         assert allowed == [0]
         assert blocked == {}
 
-        # Starting the already-active step is idempotent.
-        start = plan_call(1, "in_progress")
-        allowed, blocked = loop._classify_calls([start])
-        assert allowed == [0]
-        assert blocked == {}
-
         loop._plan_progress = PlanProgressTracker()
         loop._plan_progress.sync(
             plan_tool.snapshot(),
@@ -135,7 +125,7 @@ def test_loop_plan_gate_enforces_step_lifecycle(tmp_path, monkeypatch):
             workspace_revision=0,
         )
 
-        complete = plan_call(1, "completed")
+        complete = plan_call("complete")
         allowed, blocked = loop._classify_calls([complete])
         assert allowed == []
         assert blocked[0].content["error"]["type"] == "completion_requires_success"
