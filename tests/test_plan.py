@@ -161,3 +161,40 @@ def test_plan_normalizes_inferred_operation_for_runtime_dispatch(tmp_path, monke
 
     assert normalized["operation"] == "create"
     assert "operation inferred as 'create'." in notes
+
+
+def test_plan_simple_actions_own_step_lifecycle(tmp_path, monkeypatch):
+    plan_path = tmp_path / ".daena" / "plan.md"
+    monkeypatch.setattr(Plan, "PLAN_PATH", Path(plan_path))
+    tool = Plan()
+
+    created = tool.execute(
+        action="create",
+        goal="Ship CLI",
+        steps=["Implement", "Verify"],
+    )
+    assert created.success is True
+
+    completed = tool.execute(action="complete")
+    assert completed.success is True
+    state = tool.snapshot()
+    assert state.current_step is not None
+    assert state.current_step.number == 2
+    assert state.current_step.status == "in_progress"
+
+    blocked = tool.execute(action="block", reason="Missing dependency")
+    assert blocked.success is True
+    assert tool.snapshot().is_complete is True
+
+    duplicate = tool.execute(action="add", step="Implement")
+    assert duplicate.success is False
+    assert duplicate.content["error"]["type"] == "duplicate_step"
+
+
+def test_plan_public_validation_is_minimal():
+    tool = Plan()
+    assert tool.validate({"action": "complete"}) is True
+    assert tool.validate({"action": "block", "reason": "dependency unavailable"}) is True
+    assert tool.validate({"action": "add", "step": "Run tests"}) is True
+    assert tool.validate({"action": "complete", "step": 2}) is False
+    assert tool.validate({"operation": "update", "step": 2, "status": "completed"}) is False
