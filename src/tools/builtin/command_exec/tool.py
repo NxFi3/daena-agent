@@ -189,6 +189,7 @@ class CommandExec(Tool):
             yield_time_ms=(0 if background else yield_time_ms),
             max_output_chars=max_output_chars,
             pipe_stdin=pipe_stdin,
+            tty=tty,
         )
 
     def _validate_arguments(
@@ -373,6 +374,7 @@ class CommandExec(Tool):
             "status": status,
             "process_id": result.get("process_id"),
             "pid": result.get("pid"),
+            "tty": bool(result.get("tty", tty)),
             "reused_existing_process": result.get(
                 "reused_existing_process",
                 False,
