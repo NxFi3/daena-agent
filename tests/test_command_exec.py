@@ -5,6 +5,7 @@ import sys
 
 from src.tools.builtin.command_exec.tool import CommandExec
 from src.tools.builtin.command_exec.process_manager import PROCESS_MANAGER
+from src.tools.builtin.process_poll.tool import ProcessPoll
 
 
 def test_quick_command_completes():
@@ -160,6 +161,36 @@ def test_tty_command_does_not_reuse_a_non_tty_process():
 
     PROCESS_MANAGER.stop(process_id=tty_process.content["process_id"])
     PROCESS_MANAGER.stop(process_id=pipe_process.content["process_id"])
+
+
+def test_process_poll_marks_nonzero_exit_as_failure():
+    tool = CommandExec()
+    poll_tool = ProcessPoll()
+
+    result = tool.execute(
+        command=[
+            sys.executable,
+            "-c",
+            "import time; time.sleep(0.05); raise SystemExit(23)",
+        ],
+        yield_time_ms=1,
+    )
+
+    assert result.content["status"] == "running"
+    process_id = result.content["process_id"]
+    assert isinstance(process_id, str)
+
+    finished = poll_tool.execute(
+        process_id=process_id,
+        wait_ms=2_000,
+        max_output_chars=8_000,
+    )
+
+    assert finished.success is False
+    assert finished.content["status"] == "exited"
+    assert finished.content["exit_code"] == 23
+    assert finished.content["success"] is False
+
 
 
 def test_process_stop_terminates_running_process():
