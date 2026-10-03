@@ -249,3 +249,35 @@ def test_dispatcher_repairs_unique_misrouted_read_file_call():
     assert call.args["start_line"] == 1
     assert call.args["end_line"] == 20
     assert any("repaired" in note.lower() for note in call.normalization_notes)
+
+
+def test_dispatcher_drops_read_file_result_fields_from_input():
+    from src.tools.builtin.readfile.tool import ReadFile
+
+    class Registry:
+        def is_available(self, name):
+            return name == "read_file"
+
+        def get(self, name):
+            return ReadFile() if name == "read_file" else None
+
+    dispatcher = ToolDispatcher(Registry())
+    call = dispatcher.dispatch({
+        "name": "read_file",
+        "arguments": {
+            "file_path": "agent.py",
+            "start_line": 1,
+            "lines_requested": 50,
+            "lines_returned": 50,
+            "total_lines": 100,
+            "truncated": False,
+            "content": "copied output",
+        },
+    })[0]
+
+    assert call.valid is True
+    assert call.args == {
+        "file_path": "agent.py",
+        "start_line": 1,
+    }
+    assert any("lines_requested" in note for note in call.normalization_notes)
