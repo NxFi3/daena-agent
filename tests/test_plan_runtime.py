@@ -329,4 +329,4 @@ def test_plan_actions_do_not_require_model_selected_step_numbers():
     )
 
     assert error is not None
-    assert error[0] == "completion_requires_success"
+    assert error[0] == "completion_requires_work"
