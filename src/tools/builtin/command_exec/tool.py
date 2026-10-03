@@ -74,10 +74,11 @@ class CommandExec(Tool):
         "do not treat elapsed time as proof that a command is a server.\n"
         "\n"
         "Set background=true only when you want the command to return immediately "
-        "without the initial yield wait. Set pipe_stdin=true only for processes that "
-        "need later stdin input through process_write; it is false by default so normal "
-        "commands receive EOF and do not wait on an unused stdin pipe. Managed processes "
-        "are never killed merely because they remain alive.\n"
+        "without the initial yield wait. Set pipe_stdin=true for non-TTY processes that "
+        "need later stdin input through process_write. Set tty=true for terminal-aware "
+        "interactive programs such as ssh, sudo, password prompts, shells, and REPLs. "
+        "TTY processes keep a real pseudo-terminal and can be written to with process_write. "
+        "Managed processes are never killed merely because they remain alive.\n"
         "\n"
         "Always set workdir explicitly."
     )
@@ -134,8 +135,18 @@ class CommandExec(Tool):
             "pipe_stdin": {
                 "type": "boolean",
                 "description": (
-                    "Keep stdin writable for process_write. Defaults to false so "
-                    "normal commands receive EOF on stdin."
+                    "Keep stdin writable for a non-TTY process through process_write. "
+                    "Ignored when tty=true."
+                ),
+                "default": False,
+            },
+            "tty": {
+                "type": "boolean",
+                "description": (
+                    "Run the command inside a real pseudo-terminal (PTY). Use this "
+                    "for terminal-aware interactive programs that need TTY input, "
+                    "password prompts, shells, REPLs, or terminal control. PTY input "
+                    "remains writable through process_write."
                 ),
                 "default": False,
             },
@@ -152,6 +163,7 @@ class CommandExec(Tool):
         max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS,
         background: bool = False,
         pipe_stdin: bool = False,
+        tty: bool = False,
     ) -> ToolResult:
 
         validation_error = self._validate_arguments(
@@ -160,6 +172,7 @@ class CommandExec(Tool):
             max_output_chars=max_output_chars,
             background=background,
             pipe_stdin=pipe_stdin,
+            tty=tty,
         )
 
         if validation_error is not None:
@@ -186,6 +199,7 @@ class CommandExec(Tool):
         max_output_chars: Any,
         background: Any,
         pipe_stdin: Any,
+        tty: Any,
     ) -> ToolResult | None:
 
         if not isinstance(command, list):
@@ -255,6 +269,12 @@ class CommandExec(Tool):
                 message="pipe_stdin must be a boolean.",
             )
 
+        if not isinstance(tty, bool):
+            return self._error(
+                error_type="invalid_argument",
+                message="tty must be a boolean.",
+            )
+
         return None
 
     def _execute_managed(
@@ -265,6 +285,7 @@ class CommandExec(Tool):
         yield_time_ms: int,
         max_output_chars: int,
         pipe_stdin: bool = False,
+        tty: bool = False,
     ) -> ToolResult:
         started = time.perf_counter()
 
@@ -275,6 +296,7 @@ class CommandExec(Tool):
                 yield_time_ms=yield_time_ms,
                 max_output_chars=max_output_chars,
                 pipe_stdin=pipe_stdin,
+                tty=tty,
             )
         except FileNotFoundError as exc:
             return self._execution_error(
@@ -282,6 +304,14 @@ class CommandExec(Tool):
                 workdir=workdir,
                 started=started,
                 error_type="command_not_found",
+                message=str(exc),
+            )
+        except NotImplementedError as exc:
+            return self._execution_error(
+                command=command,
+                workdir=workdir,
+                started=started,
+                error_type="unsupported_tty",
                 message=str(exc),
             )
         except PermissionError as exc:
