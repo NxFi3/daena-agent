@@ -35,99 +35,52 @@ class Plan(Tool):
     action = "modify"
 
     description = (
-        "Your execution checklist for multi-step tasks. The current plan is stored "
-        "at .daena/plan.md in the active workspace and shown in your context under <plan>. "
-        "It is only accurate if you keep it updated. "
-        "A plan whose statuses do not match the real work is a bug.\n"
-        "\n"
-        "WHEN TO UPDATE (this is part of the work, not optional):\n"
-        "- The plan is workspace-scoped; never use a repository-root or installation-level plan file.\n"
-        "- Creating a plan automatically starts the first step as in_progress.\n"
-        "- Complete the active step when you judge its work finished; completion automatically advances the next pending step.\n"
-        "- Use an in_progress update only to repair a plan that has no active step; normal execution does not need manual starts.\n"
-        "- If a step cannot be completed, mark it blocked and continue with the next pending step.\n"
-        "- If you discover new required work: add_step before doing it.\n"
-        "- Before your final answer: every step must be completed or blocked. After the plan is complete, normal workspace tools remain available for verification, cleanup, and final checks.\n"
-        "- Never mark a step completed unless the work actually succeeded.\n"
-        "- Do not repeat an update that would leave the plan unchanged.\n"
-        "- Do not create duplicate steps with the same description.\n"
-        "\n"
-        "OPERATIONS (each update call changes exactly ONE thing):\n"
-        '- create (only when no plan exists): {"operation":"create","goal":"...","steps":["...","..."]}\n'
-        '- manually start a step only for recovery or plan repair: {"operation":"update","step":2,"status":"in_progress"}\n'
-        '- finish a step: {"operation":"update","step":2,"status":"completed"}\n'
-        '- block a step: {"operation":"update","step":2,"status":"blocked"}\n'
-        '- reword a step: {"operation":"update","step":2,"description":"..."}\n'
-        '- append a step: {"operation":"update","add_step":"..."}\n'
-        '- remove a step: {"operation":"update","remove_step":5}\n'
-        '- change the goal: {"operation":"update","goal":"..."}\n'
-        '- delete the plan: {"operation":"delete"}\n'
-        "\n"
-        "Do not combine goal, step, add_step and remove_step in one call. "
-        "Use 1-based step numbers. Statuses: pending, in_progress, completed, blocked.\n"
-        "\n"
-        "WRITING GOOD STEPS: 5-12 concrete steps, ordered the way you will actually "
-        "execute them, each with a clear finish condition. Include verification steps "
-        "(build, tests, running the app), not only implementation."
+        "Manage the execution plan for the current task. Keep this tool simple: "
+        "the runtime owns the current step and status. You only decide what to do next.\n\n"
+        "A plan lives at .daena/plan.md in the active workspace and is already "
+        "provided to you in <plan>. Do not read that file with read_file or search.\n\n"
+        "ACTIONS:\n"
+        '- create: start a new plan. {"action":"create","goal":"...","steps":["...","..."]}\n'
+        '- complete: finish the current step after its work actually succeeded. {"action":"complete"}\n'
+        '- block: mark the current step blocked when it cannot be completed. {"action":"block","reason":"..."}\n'
+        '- add: append newly discovered required work. {"action":"add","step":"..."}\n'
+        "Completing or blocking a step automatically advances the next pending step. "
+        "Never try to choose a step number or manually set a status. "
+        "Use exactly one action per plan call. Include verification work in the plan. "
+        "Before the final answer, every step must be completed or blocked."
     )
 
     parameters = {
         "type": "object",
         "properties": {
-            "operation": {
+            "action": {
                 "type": "string",
-                "enum": ["create", "update", "delete"],
-                "description": "Plan operation.",
+                "enum": ["create", "complete", "block", "add"],
+                "description": "What to do with the current execution plan.",
             },
             "goal": {
                 "type": "string",
-                "description": (
-                    "Plan goal. Required when creating a plan. "
-                    "Use it in update to replace the current goal."
-                ),
+                "description": "Goal for create.",
             },
             "steps": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": (
-                    "Initial plan steps. Use with create. "
-                    "Each item is a short concrete step."
-                ),
+                "description": "Initial ordered steps for create.",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Why the current step is blocked.",
             },
             "step": {
-                "type": "integer",
-                "minimum": 1,
-                "description": "1-based step number to update.",
-            },
-            "status": {
                 "type": "string",
-                "enum": [
-                    "pending",
-                    "in_progress",
-                    "completed",
-                    "blocked",
-                ],
-                "description": "New status for the selected step.",
-            },
-            "description": {
-                "type": "string",
-                "description": "New description for the selected step.",
-            },
-            "add_step": {
-                "type": "string",
-                "description": "Add a new step to the end of the plan.",
-            },
-            "remove_step": {
-                "type": "integer",
-                "minimum": 1,
-                "description": "Remove the given 1-based step number.",
+                "description": "New step to append with add.",
             },
         },
-        "required": [],
-        "additionalProperties": False,
+        "required": ["action"],
+        "additionalProperties": false,
     }
 
-    # Plan state belongs to the active workspace, not Daena's installation.
+    # Plan state belongs    # Plan state belongs to the active workspace, not Daena's installation.
     # Runtime callers set the active workspace through set_workspace().
     PLAN_PATH = Path(".daena") / "plan.md"
 
@@ -218,137 +171,33 @@ class Plan(Tool):
         if not isinstance(arguments, dict):
             return False
 
-        arguments = dict(arguments)
+        action = arguments.get("action")
 
-        operation = arguments.get("operation")
-        if operation is None:
-            if "goal" in arguments or "steps" in arguments:
-                operation = "create"
-                arguments["operation"] = operation
-            elif any(
-                key in arguments
-                for key in ("step", "status", "description", "add_step", "remove_step")
-            ):
-                operation = "update"
-                arguments["operation"] = operation
-
-        if operation not in {"create", "update", "delete"}:
-            return False
-
-        if operation == "create":
+        if action == "create":
             return (
-                set(arguments).issubset(
-                    {
-                        "operation",
-                        "goal",
-                        "steps",
-                    }
-                )
-                and self._valid_text(
-                    arguments.get("goal"),
-                    self.MAX_GOAL_CHARS,
-                )
+                set(arguments) == {"action", "goal", "steps"}
+                and self._valid_text(arguments.get("goal"), self.MAX_GOAL_CHARS)
                 and self._valid_steps(arguments.get("steps"))
             )
 
-        if operation == "delete":
-            return set(arguments) == {"operation"}
+        if action == "complete":
+            return set(arguments) == {"action"}
 
-        allowed = {
-            "operation",
-            "goal",
-            "step",
-            "status",
-            "description",
-            "add_step",
-            "remove_step",
-        }
-
-        if not set(arguments).issubset(allowed):
-            return False
-
-        has_goal = arguments.get("goal") is not None
-
-        has_step_edit = arguments.get("step") is not None and (
-            arguments.get("status") is not None
-            or arguments.get("description") is not None
-        )
-
-        has_add = arguments.get("add_step") is not None
-        has_remove = arguments.get("remove_step") is not None
-
-        modes = sum(
-            (
-                has_goal,
-                has_step_edit,
-                has_add,
-                has_remove,
-            )
-        )
-
-        if modes != 1:
-            return False
-
-        if has_goal:
-            return self._valid_text(
-                arguments.get("goal"),
-                self.MAX_GOAL_CHARS,
-            ) and set(arguments) == {
-                "operation",
-                "goal",
-            }
-
-        if has_step_edit:
-            step = arguments.get("step")
-
-            if type(step) is not int or step < 1:
-                return False
-
-            if (
-                arguments.get("status") is not None
-                and arguments.get("status") not in self._STATUSES
-            ):
-                return False
-
-            if arguments.get("description") is not None and not self._valid_text(
-                arguments.get("description"),
-                self.MAX_STEP_CHARS,
-            ):
-                return False
-
-            return set(arguments).issubset(
-                {
-                    "operation",
-                    "step",
-                    "status",
-                    "description",
-                }
-            )
-
-        if has_add:
-            return set(arguments) == {
-                "operation",
-                "add_step",
-            } and self._valid_text(
-                arguments.get("add_step"),
-                self.MAX_STEP_CHARS,
-            )
-
-        if has_remove:
-            step = arguments.get("remove_step")
-
+        if action == "block":
             return (
-                set(arguments)
-                == {
-                    "operation",
-                    "remove_step",
-                }
-                and type(step) is int
-                and step >= 1
+                set(arguments) == {"action", "reason"}
+                and self._valid_text(arguments.get("reason"), self.MAX_STEP_CHARS)
+            )
+
+        if action == "add":
+            return (
+                set(arguments) == {"action", "step"}
+                and self._valid_text(arguments.get("step"), self.MAX_STEP_CHARS)
             )
 
         return False
 
+    def describe_call(
     def describe_call(
         self,
         arguments: dict[str, Any],
@@ -401,49 +250,177 @@ class Plan(Tool):
 
     def execute(
         self,
-        operation: str | None = None,
+        action: str | None = None,
         goal: str | None = None,
         steps: list[str] | None = None,
-        step: int | None = None,
+        reason: str | None = None,
+        step: str | None = None,
+        # Legacy direct-call compatibility. These fields are not exposed in the
+        # model schema, but keeping them here avoids breaking existing callers/tests.
+        operation: str | None = None,
         status: str | None = None,
         description: str | None = None,
         add_step: str | None = None,
         remove_step: int | None = None,
     ) -> ToolResult:
 
-        if operation is None:
-            if goal is not None or steps is not None:
-                operation = "create"
-            elif any(
-                value is not None
-                for value in (step, status, description, add_step, remove_step)
-            ):
-                operation = "update"
+        if action is None and operation is not None:
+            if operation == "create":
+                action = "create"
+            elif operation == "delete":
+                return self._error(
+                    "unsupported_action",
+                    "Plan deletion is no longer available to the model.",
+                )
+            elif operation == "update":
+                if status == "completed":
+                    action = "complete"
+                elif status == "blocked":
+                    action = "block"
+                elif add_step is not None:
+                    action = "add"
+                    step = add_step
+                else:
+                    return self._error(
+                        "unsupported_action",
+                        "Use create, complete, block, or add.",
+                    )
 
-        if operation == "create":
-            return self._create(
-                goal=goal,
-                steps=steps,
-            )
+        if action == "create":
+            return self._create(goal=goal, steps=steps)
 
-        if operation == "update":
-            return self._update(
-                goal=goal,
-                step=step,
-                status=status,
-                description=description,
-                add_step=add_step,
-                remove_step=remove_step,
-            )
+        if action == "complete":
+            return self._set_current_status("completed")
 
-        if operation == "delete":
-            return self._delete()
+        if action == "block":
+            return self._set_current_status("blocked", reason=reason)
+
+        if action == "add":
+            return self._add_step(step)
 
         return self._error(
-            "invalid_operation",
-            "operation must be create, update, or delete.",
+            "invalid_action",
+            "action must be create, complete, block, or add.",
         )
 
+    def _set_current_status(
+        self,
+        status: str,
+        *,
+        reason: str | None = None,
+    ) -> ToolResult:
+        try:
+            raw = self._read_raw()
+        except OSError as exc:
+            return self._error("read_error", f"Could not read the plan: {exc}")
+
+        if not raw.strip():
+            return self._error("plan_missing", "No plan exists. Use create first.")
+
+        try:
+            current_goal, current_steps = self._parse(raw)
+        except ValueError as exc:
+            return self._error("invalid_plan", str(exc))
+
+        current = self._find_in_progress(current_steps)
+        if current is None:
+            return self._error(
+                "no_active_step",
+                "There is no in_progress step to update.",
+            )
+
+        current.status = status
+
+        if status == "completed":
+            next_active = None
+            for item in current_steps:
+                if item.status == "pending":
+                    item.status = "in_progress"
+                    next_active = item
+                    break
+
+            if next_active is not None:
+                summary = (
+                    f"Plan updated: step {current.number} completed; "
+                    f"step {next_active.number} is now in_progress."
+                )
+            else:
+                summary = (
+                    f"Plan updated: step {current.number} completed; "
+                    "the plan is now complete."
+                )
+        else:
+            summary = f"Plan updated: step {current.number} blocked."
+            if reason and reason.strip():
+                summary += f" Reason: {reason.strip()}"
+            for item in current_steps:
+                if item.status == "pending":
+                    item.status = "in_progress"
+                    summary += f" Step {item.number} is now in_progress."
+                    break
+
+        content = self._render(current_goal, current_steps)
+        write_error = self._write_atomic(content)
+        if write_error is not None:
+            return write_error
+
+        return self._success(summary, action="update")
+
+    def _add_step(self, step: str | None) -> ToolResult:
+        if not self._valid_text(step, self.MAX_STEP_CHARS):
+            return self._error(
+                "invalid_argument",
+                "step must be a non-empty string.",
+            )
+
+        try:
+            raw = self._read_raw()
+        except OSError as exc:
+            return self._error("read_error", f"Could not read the plan: {exc}")
+
+        if not raw.strip():
+            return self._error("plan_missing", "No plan exists. Use create first.")
+
+        try:
+            current_goal, current_steps = self._parse(raw)
+        except ValueError as exc:
+            return self._error("invalid_plan", str(exc))
+
+        normalized = self._normalize_text(step or "")
+        if any(
+            self._normalize_text(item.description) == normalized
+            for item in current_steps
+        ):
+            return self._error(
+                "duplicate_step",
+                "A step with the same description already exists.",
+            )
+
+        if len(current_steps) >= self.MAX_STEPS:
+            return self._error(
+                "plan_limit",
+                f"Plan cannot contain more than {self.MAX_STEPS} steps.",
+            )
+
+        number = len(current_steps) + 1
+        current_steps.append(
+            PlanStep(
+                number=number,
+                status="pending",
+                description=str(step).strip(),
+            )
+        )
+        content = self._render(current_goal, current_steps)
+        write_error = self._write_atomic(content)
+        if write_error is not None:
+            return write_error
+
+        return self._success(
+            f"Plan updated: added step {number}.",
+            action="update",
+        )
+
+    def _create(
     def _create(
         self,
         *,
