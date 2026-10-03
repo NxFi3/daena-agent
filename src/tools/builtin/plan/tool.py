@@ -123,7 +123,7 @@ class Plan(Tool):
                 "description": "Remove the given 1-based step number.",
             },
         },
-        "required": ["operation"],
+        "required": [],
         "additionalProperties": False,
     }
 
@@ -187,6 +187,17 @@ class Plan(Tool):
 
         if operation not in {"create", "update", "delete"}:
             return False
+
+        if operation is None:
+            if any(key in locals() for key in ()):
+                pass
+            if goal is not None or steps is not None:
+                operation = "create"
+            elif any(
+                value is not None
+                for value in (step, status, description, add_step, remove_step)
+            ):
+                operation = "update"
 
         if operation == "create":
             return (
@@ -354,7 +365,7 @@ class Plan(Tool):
 
     def execute(
         self,
-        operation: str,
+        operation: str | None = None,
         goal: str | None = None,
         steps: list[str] | None = None,
         step: int | None = None,
