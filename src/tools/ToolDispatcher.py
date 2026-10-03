@@ -277,7 +277,11 @@ class ToolDispatcher:
         """Repair a uniquely identifiable tool/argument mismatch."""
         candidates: list[tuple[str, Any, dict[str, Any]]] = []
 
-        for candidate_name, candidate in self.tool_registry.tools.items():
+        registered_tools = getattr(self.tool_registry, "tools", None)
+        if not isinstance(registered_tools, dict):
+            return None
+
+        for candidate_name, candidate in registered_tools.items():
             if candidate_name == current_name:
                 continue
 
