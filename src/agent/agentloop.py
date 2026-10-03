@@ -824,7 +824,6 @@ class Loop:
         return None
 
     def _final_response_gate(
-    def _final_response_gate(
         self,
     ) -> tuple[str, str] | None:
         """Prevent a natural-language final answer while the plan is unfinished."""
