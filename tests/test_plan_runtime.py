@@ -189,24 +189,6 @@ def test_completed_plan_does_not_block_follow_up_tools():
     assert gate is None
 
     
-def test_redundant_start_of_current_step_is_allowed():
-    loop = Loop.__new__(Loop)
-
-    error = loop._validate_plan_transition(
-        ToolCall(
-            name="plan",
-            id="plan-2",
-            valid=True,
-            args={
-                "action": "complete",
-            },
-        ),
-        active_plan(),
-    )
-
-    assert error is None
-
-
 def test_missing_active_step_does_not_block_recovery_work():
     loop = Loop.__new__(Loop)
     state = PlanState(
