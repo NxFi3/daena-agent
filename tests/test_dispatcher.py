@@ -156,6 +156,24 @@ class StrictRegistry:
         return StrictTool() if name == "read_file" else None
 
 
+
+def test_dispatcher_recovers_without_registry_tools_map():
+    class Registry:
+        def is_available(self, name):
+            return name == "read_file"
+
+        def get(self, name):
+            return StrictTool() if name == "read_file" else None
+
+    dispatcher = ToolDispatcher(Registry())
+    call = dispatcher.dispatch({
+        "name": "read_file",
+        "arguments": {"file_path": "main.py", "timeout": 1000},
+    })[0]
+
+    assert call.valid is False
+    assert "Unknown argument" in call.validation_error
+
 def test_dispatcher_rejects_unknown_args_for_strict_tools():
     dispatcher = ToolDispatcher(StrictRegistry())
     call = dispatcher.dispatch({
