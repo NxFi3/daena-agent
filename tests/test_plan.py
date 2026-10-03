@@ -137,3 +137,27 @@ def test_plan_accepts_inferred_operation_when_omitted(tmp_path, monkeypatch):
     )
 
     assert result.success is True
+    assert "2. [in_progress] Implement change" in plan_path.read_text(encoding="utf-8")
+    assert "step 2 is now in_progress" in result.summary
+
+
+def test_plan_normalizes_inferred_operation_for_runtime_dispatch(tmp_path, monkeypatch):
+    plan_path = tmp_path / ".daena" / "plan.md"
+    monkeypatch.setattr(Plan, "PLAN_PATH", Path(plan_path))
+    tool = Plan()
+
+    normalized, notes = tool.normalize_arguments({
+        "step": 1,
+        "status": "completed",
+    })
+
+    assert normalized["operation"] == "update"
+    assert "operation inferred as 'update'." in notes
+
+    normalized, notes = tool.normalize_arguments({
+        "goal": "Ship CLI",
+        "steps": ["Implement", "Test"],
+    })
+
+    assert normalized["operation"] == "create"
+    assert "operation inferred as 'create'." in notes
