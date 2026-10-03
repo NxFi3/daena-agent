@@ -183,14 +183,24 @@ class Plan(Tool):
         if not isinstance(arguments, dict):
             return False
 
+        arguments = dict(arguments)
+
         operation = arguments.get("operation")
+        if operation is None:
+            if "goal" in arguments or "steps" in arguments:
+                operation = "create"
+                arguments["operation"] = operation
+            elif any(
+                key in arguments
+                for key in ("step", "status", "description", "add_step", "remove_step")
+            ):
+                operation = "update"
+                arguments["operation"] = operation
 
         if operation not in {"create", "update", "delete"}:
             return False
 
         if operation is None:
-            if any(key in locals() for key in ()):
-                pass
             if goal is not None or steps is not None:
                 operation = "create"
             elif any(
