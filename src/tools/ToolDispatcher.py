@@ -124,18 +124,27 @@ class ToolDispatcher:
                 if key not in properties
             )
             if unknown and schema.get("additionalProperties", True) is False:
-                return ToolCall(
-                    name=name,
-                    id=call_id,
-                    args=arguments,
-                    valid=False,
-                    validation_error=(
-                        "Unknown argument(s): "
-                        + ", ".join(unknown)
-                        + ". Remove them and use only the documented parameters."
-                    ),
-                    normalization_notes=normalization_notes,
-                )
+                repaired = self._repair_misrouted_tool(name, arguments)
+                if repaired is not None:
+                    name, tool, arguments, repair_note = repaired
+                    normalization_notes.append(repair_note)
+                    schema = getattr(tool, "parameters", {}) or {}
+                    properties = schema.get("properties", {})
+                    if not isinstance(properties, dict):
+                        properties = {}
+                else:
+                    return ToolCall(
+                        name=name,
+                        id=call_id,
+                        args=arguments,
+                        valid=False,
+                        validation_error=(
+                            "Unknown argument(s): "
+                            + ", ".join(unknown)
+                            + ". Remove them and use only the documented parameters."
+                        ),
+                        normalization_notes=normalization_notes,
+                    )
 
             if unknown:
                 self.logger.warning(
@@ -259,6 +268,66 @@ class ToolDispatcher:
             normalized[canonical] = value
         return normalized
 
+    def _repair_misrouted_tool(
+        self,
+        current_name: str,
+        arguments: dict[str, Any],
+    ) -> tuple[str, Any, dict[str, Any], str] | None:
+        """Repair a uniquely identifiable tool/argument mismatch."""
+        candidates: list[tuple[str, Any, dict[str, Any]]] = []
+
+        for candidate_name, candidate in self.tool_registry.tools.items():
+            if candidate_name == current_name:
+                continue
+
+            schema = getattr(candidate, "parameters", {}) or {}
+            properties = schema.get("properties", {})
+            if not isinstance(properties, dict):
+                continue
+
+            candidate_args = self._apply_aliases(candidate_name, arguments)
+            if not set(candidate_args).issubset(properties):
+                continue
+
+            required = schema.get("required", [])
+            if isinstance(required, list):
+                if any(key not in candidate_args for key in required):
+                    continue
+
+            normalize = getattr(candidate, "normalize_arguments", None)
+            if callable(normalize):
+                try:
+                    normalized = normalize(candidate_args)
+                    if isinstance(normalized, tuple) and len(normalized) == 2:
+                        candidate_args = normalized[0]
+                    elif isinstance(normalized, dict):
+                        candidate_args = normalized
+                except Exception:
+                    continue
+
+            if not set(candidate_args).issubset(properties):
+                continue
+
+            validate = getattr(candidate, "validate", None)
+            if callable(validate):
+                try:
+                    if validate(candidate_args) is False:
+                        continue
+                except Exception:
+                    continue
+
+            candidates.append((candidate_name, candidate, candidate_args))
+
+        if len(candidates) != 1:
+            return None
+
+        candidate_name, candidate, candidate_args = candidates[0]
+        return (
+            candidate_name,
+            candidate,
+            candidate_args,
+            f"Tool name repaired from {current_name!r} to {candidate_name!r} based on the argument schema.",
+        )
     @staticmethod
     def _normalize_call_id(raw_id: Any) -> str:
         if raw_id is None:
