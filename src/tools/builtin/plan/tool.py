@@ -77,7 +77,7 @@ class Plan(Tool):
             },
         },
         "required": ["action"],
-        "additionalProperties": false,
+        "additionalProperties": False,
     }
 
     # Plan state belongs to the active workspace, not Daena's installation.
