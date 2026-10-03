@@ -179,6 +179,41 @@ class Plan(Tool):
         "Do not ignore or silently bypass it.",
     ]
 
+    @staticmethod
+    def _infer_operation(arguments: dict[str, Any]) -> str | None:
+        """Infer a plan operation from its payload when the model omits it."""
+        if not isinstance(arguments, dict):
+            return None
+
+        operation = arguments.get("operation")
+        if operation in {"create", "update", "delete"}:
+            return operation
+
+        if "goal" in arguments or "steps" in arguments:
+            return "create"
+
+        if any(
+            key in arguments
+            for key in ("step", "status", "description", "add_step", "remove_step")
+        ):
+            return "update"
+
+        return None
+
+    def normalize_arguments(
+        self,
+        arguments: dict[str, Any],
+    ) -> tuple[dict[str, Any], list[str]]:
+        """Canonicalize omitted plan operations before validation and runtime gating."""
+        normalized, notes = super().normalize_arguments(arguments)
+
+        operation = self._infer_operation(normalized)
+        if operation is not None and "operation" not in normalized:
+            normalized["operation"] = operation
+            notes.append(f"operation inferred as {operation!r}.")
+
+        return normalized, notes
+
     def validate(self, arguments: dict[str, Any]) -> bool:
         if not isinstance(arguments, dict):
             return False
@@ -654,12 +689,22 @@ class Plan(Tool):
                 target.status = status
 
                 if status == "completed":
+                    next_active: PlanStep | None = None
                     for next_step in current_steps:
                         if next_step.status == "pending":
                             next_step.status = "in_progress"
+                            next_active = next_step
                             break
 
-                summary = f"Plan updated: step {step} status."
+                    if next_active is not None:
+                        summary = (
+                            f"Plan updated: step {step} completed; "
+                            f"step {next_active.number} is now in_progress."
+                        )
+                    else:
+                        summary = f"Plan updated: step {step} completed; the plan is now complete."
+                else:
+                    summary = f"Plan updated: step {step} status."
 
             else:
                 return self._error(
