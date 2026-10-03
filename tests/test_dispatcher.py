@@ -197,3 +197,55 @@ def test_dispatcher_normalizes_trailing_punctuation_in_tool_name():
 
     assert call.valid is True
     assert call.name == "read_file"
+
+
+def test_dispatcher_repairs_unique_misrouted_read_file_call():
+    class PlanTool:
+        parameters = {
+            "type": "object",
+            "properties": {
+                "operation": {"type": "string"},
+            },
+            "additionalProperties": False,
+        }
+
+        def validate(self, args):
+            return True
+
+    class ReadTool(FakeTool):
+        parameters = {
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string"},
+                "start_line": {"type": "integer"},
+                "end_line": {"type": "integer"},
+            },
+            "required": ["file_path"],
+            "additionalProperties": False,
+        }
+
+    class Registry:
+        tools = {"plan": PlanTool(), "read_file": ReadTool()}
+
+        def is_available(self, name):
+            return name in self.tools
+
+        def get(self, name):
+            return self.tools.get(name)
+
+    dispatcher = ToolDispatcher(Registry())
+    call = dispatcher.dispatch({
+        "name": "plan",
+        "arguments": {
+            "file_path": "agent.py",
+            "start_line": 1,
+            "end_line": 20,
+        },
+    })[0]
+
+    assert call.valid is True
+    assert call.name == "read_file"
+    assert call.args["file_path"] == "agent.py"
+    assert call.args["start_line"] == 1
+    assert call.args["end_line"] == 20
+    assert any("repaired" in note.lower() for note in call.normalization_notes)
