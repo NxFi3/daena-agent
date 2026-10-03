@@ -486,6 +486,7 @@ class ProcessManager:
         command: list[str],
         workdir: Path | None,
         pipe_stdin: bool,
+        tty: bool,
     ) -> ManagedProcess | None:
         normalized_workdir = str(workdir) if workdir is not None else None
         for entry in self._processes.values():
