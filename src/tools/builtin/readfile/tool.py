@@ -108,6 +108,34 @@ class ReadFile(Tool):
 
         return normalized
 
+    def normalize_arguments(
+        self,
+        arguments: dict[str, Any],
+    ) -> tuple[dict[str, Any], list[str]]:
+        """Strip fields that belong to this tool's result, not its input."""
+        normalized = dict(arguments or {})
+        notes: list[str] = []
+        output_only = {
+            "success",
+            "type",
+            "path",
+            "content",
+            "lines_requested",
+            "lines_returned",
+            "total_lines",
+            "truncated",
+        }
+        removed = sorted(key for key in normalized if key in output_only)
+        for key in removed:
+            normalized.pop(key, None)
+        if removed:
+            notes.append(
+                "Dropped read_file result fields from input: "
+                + ", ".join(removed)
+                + "."
+            )
+        return normalized, notes
+
     def execute(
         self,
         file_path: str,
