@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 
 from src.tools.builtin.command_exec.tool import CommandExec
@@ -103,7 +104,7 @@ def test_tty_process_supports_interactive_stdin():
         command=[
             sys.executable,
             "-c",
-            "import sys; print('READY', flush=True); value=sys.stdin.readline(); print('GOT:' + value.strip(), flush=True)",
+            "import getpass; print('READY', flush=True); value=getpass.getpass('Password: '); print('GOT:' + value, flush=True)",
         ],
         yield_time_ms=100,
         tty=True,
