@@ -93,6 +93,74 @@ def test_incremental_output_and_process_write():
     assert second_poll["stderr"] == ""
 
 
+def test_tty_process_supports_interactive_stdin():
+    if os.name != "posix":
+        return
+
+    tool = CommandExec()
+
+    result = tool.execute(
+        command=[
+            sys.executable,
+            "-c",
+            "import sys; print('READY', flush=True); value=sys.stdin.readline(); print('GOT:' + value.strip(), flush=True)",
+        ],
+        yield_time_ms=100,
+        tty=True,
+    )
+
+    assert result.success is False
+    assert result.content["status"] == "running"
+    assert result.content["tty"] is True
+
+    process_id = result.content["process_id"]
+    assert isinstance(process_id, str)
+
+    write = PROCESS_MANAGER.write(
+        process_id=process_id,
+        input_text="interactive-test\n",
+    )
+    assert write["status"] == "accepted"
+
+    finished = PROCESS_MANAGER.poll(
+        process_id=process_id,
+        wait_ms=2_000,
+        max_output_chars=8_000,
+    )
+
+    assert finished["status"] == "exited"
+    assert finished["exit_code"] == 0
+
+    output = result.content["stdout"] + finished["stdout"]
+    assert "READY" in output
+    assert "GOT:interactive-test" in output
+    assert finished["tty"] is True
+
+    PROCESS_MANAGER.stop(process_id=process_id)
+
+
+def test_tty_command_does_not_reuse_a_non_tty_process():
+    if os.name != "posix":
+        return
+
+    tool = CommandExec()
+    command = [
+        sys.executable,
+        "-c",
+        "import time; time.sleep(1.5)",
+    ]
+
+    tty_process = tool.execute(command=command, yield_time_ms=25, tty=True)
+    pipe_process = tool.execute(command=command, yield_time_ms=25, pipe_stdin=True)
+
+    assert tty_process.content["status"] == "running"
+    assert pipe_process.content["status"] == "running"
+    assert tty_process.content["process_id"] != pipe_process.content["process_id"]
+
+    PROCESS_MANAGER.stop(process_id=tty_process.content["process_id"])
+    PROCESS_MANAGER.stop(process_id=pipe_process.content["process_id"])
+
+
 def test_process_stop_terminates_running_process():
     tool = CommandExec()
 
