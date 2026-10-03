@@ -316,7 +316,7 @@ def test_plan_file_observation_is_blocked_at_runtime():
 
 
 def test_plan_actions_do_not_require_model_selected_step_numbers():
-    loop = Loop.__new__(Loop)
+    loop = _loop_for_validation()
 
     error = loop._validate_plan_transition(
         ToolCall(
