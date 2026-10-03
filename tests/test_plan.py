@@ -30,13 +30,8 @@ def test_plan_create_complete_block_add(tmp_path, monkeypatch):
     assert "2. [pending] Implement login" in content
     assert "3. [pending] Run tests" in content
 
-    result = tool.execute(action="complete")
-    assert result.success is False
-    assert result.content["error"]["type"] == "completion_requires_work"
-
-    # The plan tool itself owns lifecycle storage; direct tool execution does not
-    # decide whether work evidence exists. For unit coverage, completion is tested
-    # through the runtime validator instead. Here we verify block/add semantics.
+    # The runtime validates whether completion has real work evidence; the
+    # storage primitive itself only applies the requested lifecycle transition.
     result = tool.execute(action="block", reason="Architecture is unavailable")
     assert result.success is True
     assert "2. [in_progress] Implement login" in plan_path.read_text(encoding="utf-8")
