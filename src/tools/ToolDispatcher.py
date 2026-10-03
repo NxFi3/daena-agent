@@ -30,6 +30,7 @@ class ToolDispatcher:
             "timeout_ms": "yield_time_ms",
             "yield_time": "yield_time_ms",
             "yield_time": "yield_time_ms",
+            "interactive": "tty",
         },
     }
 
