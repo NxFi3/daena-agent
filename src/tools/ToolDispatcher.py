@@ -66,7 +66,7 @@ class ToolDispatcher:
                     validation_error="Tool name is missing or empty.",
                 )
 
-            name = name.strip()
+            name = self._normalize_tool_name(name)
             arguments = self._normalize_arguments(arguments)
 
             if arguments is None:
@@ -235,6 +235,12 @@ class ToolDispatcher:
                 validation_error=f"Unexpected tool-dispatch error: {exc}",
             )
 
+    @staticmethod
+    def _normalize_tool_name(name: str) -> str:
+        """Normalize harmless punctuation around a model-emitted tool name."""
+        normalized = str(name).strip().lower().strip("`'\"")
+        normalized = normalized.rstrip("?!")
+        return normalized
     @classmethod
     def _apply_aliases(
         cls,
