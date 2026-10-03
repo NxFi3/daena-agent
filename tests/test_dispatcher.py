@@ -187,3 +187,13 @@ def test_command_exec_yield_time_alias_is_normalized():
     assert len(calls) == 1
     assert calls[0].valid is True
     assert calls[0].args["yield_time_ms"] == 1000
+
+def test_dispatcher_normalizes_trailing_punctuation_in_tool_name():
+    dispatcher = ToolDispatcher(FakeRegistry())
+    call = dispatcher.dispatch({
+        "name": "read_file?",
+        "arguments": {"file_path": "main.py"},
+    })[0]
+
+    assert call.valid is True
+    assert call.name == "read_file"
