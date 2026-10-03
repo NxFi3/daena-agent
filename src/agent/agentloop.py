@@ -749,8 +749,6 @@ class Loop:
 
     @staticmethod
     def _plan_gate_result(
-    @staticmethod
-    def _plan_gate_result(
         call,
         error_type: str,
         message: str,
