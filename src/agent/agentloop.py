@@ -732,23 +732,23 @@ class Loop:
             return None
 
         arguments = getattr(call, "args", {}) or {}
-
         if not isinstance(arguments, dict):
             return None
 
-        if arguments.get("operation") == "create":
+        action = arguments.get("action")
+        if action == "create":
             return "create"
-
-        if arguments.get("operation") != "update":
-            return None
-
-        status = arguments.get("status")
-
-        if status in {"in_progress", "completed", "blocked"}:
-            return str(status)
+        if action == "complete":
+            return "completed"
+        if action == "block":
+            return "blocked"
+        if action == "add":
+            return "add"
 
         return None
 
+    @staticmethod
+    def _plan_gate_result(
     @staticmethod
     def _plan_gate_result(
         call,
@@ -773,6 +773,26 @@ class Loop:
             summary=message,
         )
 
+    def _is_plan_file_observation(self, call) -> bool:
+        name = str(getattr(call, "name", "")).strip().lower()
+        if name not in {"read_file", "search"}:
+            return False
+
+        arguments = getattr(call, "args", {}) or {}
+        if not isinstance(arguments, dict):
+            return False
+
+        candidates = (
+            arguments.get("file_path"),
+            arguments.get("path"),
+            arguments.get("query"),
+        )
+        return any(
+            ".daena/plan.md" in str(value).replace("\\", "/").lower()
+            for value in candidates
+            if value is not None
+        )
+
     def _plan_gate_message(
         self,
         call,
@@ -781,12 +801,18 @@ class Loop:
         """
         Return an execution-order violation for a non-plan call, or None.
 
-        Planning itself remains model-directed. Once a plan exists, however,
-        the runtime enforces the step lifecycle and prevents work from jumping
-        across plan boundaries.
+        Planning remains model-directed, but the persisted plan is internal
+        runtime state and should be consumed through <plan>, not rediscovered
+        with filesystem tools.
         """
         if self._is_plan_call(call):
             return None
+
+        if self._is_plan_file_observation(call):
+            return (
+                "plan_internal_state",
+                "Do not read .daena/plan.md with filesystem tools. The current plan is already provided in <plan>; use the plan tool to change it.",
+            )
 
         if state.error:
             return (
@@ -797,14 +823,9 @@ class Loop:
         if not state.exists:
             return None
 
-        # A completed plan is a planning milestone, not a runtime shutdown signal.
-        # The agent must still be able to run verification, inspect results, perform
-        # cleanup, or make other final workspace changes after the last plan step.
-        # A missing active step is a recoverable plan-state inconsistency.
-        # Non-plan work remains available so the model can inspect/repair state
-        # instead of being trapped behind a hard gate.
         return None
 
+    def _final_response_gate(
     def _final_response_gate(
         self,
     ) -> tuple[str, str] | None:
@@ -843,75 +864,40 @@ class Loop:
         state: PlanState,
     ) -> tuple[str, str] | None:
         transition = self._plan_transition(call)
-
         if transition is None:
             return None
-
-        arguments = getattr(call, "args", {}) or {}
-        if not isinstance(arguments, dict):
-            return (
-                "invalid_plan_update",
-                "Plan update arguments must be an object.",
-            )
 
         if state.error and transition != "create":
             return (
                 "plan_invalid",
-                "The current plan is invalid. Repair or replace it before continuing.",
+                "The current plan is invalid. Repair the plan before continuing.",
             )
 
         if transition == "create":
             if state.exists:
                 return (
                     "plan_exists",
-                    "A plan already exists. Use update instead.",
+                    "A plan already exists. Use plan action update on the current state instead of creating a second plan.",
                 )
             return None
 
-        step_number = arguments.get("step")
-        if type(step_number) is not int or step_number < 1:
-            return (
-                "invalid_step",
-                "Plan status updates require a valid 1-based step number.",
-            )
+        if transition == "add":
+            if not state.exists:
+                return (
+                    "plan_missing",
+                    "No plan exists. Create the plan before adding steps.",
+                )
+            return None
 
         current = state.current_step
-
-        if transition == "in_progress":
-            # Starting the already-active step is idempotent. Some models still
-            # emit this call even though plan creation auto-started step 1.
-            # Treat it as a harmless no-op instead of spending an iteration on
-            # a predictable runtime error.
-            if current is not None:
-                if step_number == current.number:
-                    return None
-                return (
-                    "active_step_exists",
-                    f"Step {current.number} is already in_progress. Complete or block it before starting another step.",
-                )
-
-            expected = state.next_pending_step
-            if expected is not None and step_number != expected.number:
-                return (
-                    "wrong_step_order",
-                    f"Step {step_number} cannot start yet. Start step {expected.number} next.",
-                )
-
-            return None
-
         if current is None:
             return (
                 "no_active_step",
-                "There is no in_progress step to finalize.",
-            )
-
-        if step_number != current.number:
-            return (
-                "not_current_step",
-                f"Step {step_number} is not the current in_progress step. Current step is {current.number}.",
+                "There is no in_progress step. Inspect the current <plan> state and choose a valid action.",
             )
 
         if transition == "completed":
+            step_number = current.number
             if not self._plan_progress.can_complete(step_number):
                 progress = self._plan_progress.context()
                 if progress.get("last_result_success") is False:
@@ -944,6 +930,7 @@ class Loop:
 
         return None
 
+    def _classify_calls(
     def _classify_calls(
         self,
         parsed_calls: list,
