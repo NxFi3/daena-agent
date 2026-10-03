@@ -39,6 +39,11 @@ class PlanProgressTracker:
     def reset(self) -> None:
         self.current_step: StepProgress | None = None
         self._history: dict[int, StepProgress] = {}
+        # Successful terminal work that happened before a plan was created is
+        # retained so a recovered first step can use that real evidence.
+        self._pending_terminal_successes: list[
+            tuple[ToolCall, ToolResult, int]
+        ] = []
 
     def sync(
         self,
@@ -67,6 +72,16 @@ class PlanProgressTracker:
 
         self.current_step = progress
 
+        if self._pending_terminal_successes and progress.successful_actions == 0:
+            pending = list(self._pending_terminal_successes)
+            self._pending_terminal_successes.clear()
+            for tool_call, result, recorded_iteration in pending:
+                self.record(
+                    tool_call,
+                    result,
+                    iteration=recorded_iteration,
+                )
+
     def record(
         self,
         tool_call: ToolCall,
@@ -74,10 +89,21 @@ class PlanProgressTracker:
         *,
         iteration: int = 0,
     ) -> None:
-        if self.current_step is None:
+        if str(getattr(tool_call, "name", "")).strip().lower() == "plan":
             return
 
-        if str(getattr(tool_call, "name", "")).strip().lower() == "plan":
+        content = result.content if isinstance(result.content, dict) else {}
+        status = str(content.get("status", "") or "").strip().lower()
+        process_id = str(content.get("process_id", "") or "").strip()
+        terminal = status not in {"running"} and not (
+            process_id and status not in {"exited", "terminated"}
+        )
+
+        if self.current_step is None:
+            if result.success and terminal:
+                self._pending_terminal_successes.append(
+                    (tool_call, result, int(iteration or 0))
+                )
             return
 
         content = result.content if isinstance(result.content, dict) else {}
