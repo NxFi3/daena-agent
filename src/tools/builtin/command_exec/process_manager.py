@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import atexit
+import errno
 import os
 import signal
 import subprocess
 import tempfile
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO
 
@@ -24,6 +25,10 @@ class ManagedProcess:
     stdout_offset: int = 0
     stderr_offset: int = 0
     pipe_stdin: bool = False
+    tty: bool = False
+    pty_master_fd: int | None = None
+    pty_reader_thread: threading.Thread | None = None
+    output_lock: threading.Lock = field(default_factory=threading.Lock)
     status: str = "running"
     exit_code: int | None = None
 
@@ -74,6 +79,7 @@ class ProcessManager:
         yield_time_ms: int,
         max_output_chars: int,
         pipe_stdin: bool = True,
+        tty: bool = False,
     ) -> dict:
         # Reuse an already-running identical process instead of spawning a
         # second copy. The agent should poll the existing process.
@@ -82,6 +88,7 @@ class ProcessManager:
                 command=command,
                 workdir=workdir,
                 pipe_stdin=pipe_stdin,
+                tty=tty,
             )
             if existing is not None:
                 self._refresh_locked(existing)
@@ -90,6 +97,14 @@ class ProcessManager:
                     **self._entry_result(existing, output),
                     "reused_existing_process": True,
                 }
+
+        if tty:
+            return self._start_tty(
+                command=command,
+                workdir=workdir,
+                yield_time_ms=yield_time_ms,
+                max_output_chars=max_output_chars,
+            )
 
         stdout_file = tempfile.TemporaryFile(mode="w+b")
         stderr_file = tempfile.TemporaryFile(mode="w+b")
@@ -308,6 +323,137 @@ class ProcessManager:
 
             self._prune_finished_locked()
 
+    def _start_tty(
+        self,
+        *,
+        command: list[str],
+        workdir: Path | None,
+        yield_time_ms: int,
+        max_output_chars: int,
+    ) -> dict:
+        if os.name != "posix":
+            raise NotImplementedError(
+                "tty=true requires a POSIX host with PTY support."
+            )
+
+        import fcntl
+        import pty
+        import termios
+
+        master_fd, slave_fd = pty.openpty()
+        stdout_file = tempfile.TemporaryFile(mode="w+b")
+        stderr_file = tempfile.TemporaryFile(mode="w+b")
+
+        def configure_tty_child() -> None:
+            _set_parent_death_signal()
+            os.setsid()
+            fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
+
+        try:
+            process = subprocess.Popen(
+                args=command,
+                cwd=str(workdir) if workdir is not None else None,
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                text=False,
+                close_fds=True,
+                preexec_fn=configure_tty_child,
+            )
+        except Exception:
+            os.close(master_fd)
+            os.close(slave_fd)
+            stdout_file.close()
+            stderr_file.close()
+            raise
+        finally:
+            try:
+                os.close(slave_fd)
+            except OSError:
+                pass
+
+        started = time.perf_counter()
+        process_id = f"proc-{os.urandom(6).hex()}"
+        entry = ManagedProcess(
+            process_id=process_id,
+            command=list(command),
+            workdir=workdir,
+            process=process,
+            stdout_file=stdout_file,
+            stderr_file=stderr_file,
+            started_at=started,
+            pipe_stdin=True,
+            tty=True,
+            pty_master_fd=master_fd,
+        )
+
+        with self._lock:
+            while process_id in self._processes:
+                process_id = f"proc-{os.urandom(6).hex()}"
+                entry.process_id = process_id
+            self._processes[process_id] = entry
+
+        reader = threading.Thread(
+            target=self._read_pty,
+            args=(entry,),
+            name=f"daena-pty-{process_id}",
+            daemon=True,
+        )
+        entry.pty_reader_thread = reader
+        reader.start()
+
+        try:
+            process.wait(timeout=yield_time_ms / 1000.0)
+        except subprocess.TimeoutExpired:
+            pass
+
+        with self._lock:
+            self._refresh_locked(entry)
+            output = self._read_incremental(entry, max_output_chars)
+
+        return {
+            **self._entry_result(entry, output),
+            "duration_ms": self._duration_ms(started),
+        }
+
+    def _read_pty(self, entry: ManagedProcess) -> None:
+        master_fd = entry.pty_master_fd
+        if master_fd is None:
+            return
+
+        try:
+            while True:
+                try:
+                    data = os.read(master_fd, 64 * 1024)
+                except OSError as exc:
+                    if exc.errno in {errno.EIO, errno.EBADF}:
+                        break
+                    break
+
+                if not data:
+                    break
+
+                with entry.output_lock:
+                    entry.stdout_file.seek(0, os.SEEK_END)
+                    entry.stdout_file.write(data)
+                    entry.stdout_file.flush()
+        finally:
+            try:
+                os.close(master_fd)
+            except OSError:
+                pass
+            entry.pty_master_fd = None
+
+    def _close_pty_master(self, entry: ManagedProcess) -> None:
+        master_fd = entry.pty_master_fd
+        if master_fd is None:
+            return
+        entry.pty_master_fd = None
+        try:
+            os.close(master_fd)
+        except OSError:
+            pass
+
     def _spawn(
         self,
         *,
@@ -352,6 +498,8 @@ class ProcessManager:
                 continue
             if entry.pipe_stdin != pipe_stdin:
                 continue
+            if entry.tty != tty:
+                continue
             return entry
         return None
 
@@ -388,17 +536,18 @@ class ProcessManager:
     ) -> dict[str, str]:
         max_bytes = max(1, max_output_chars)
 
-        stdout, entry.stdout_offset = self._read_file_incremental(
-            entry.stdout_file,
-            entry.stdout_offset,
-            max_bytes,
-        )
+        with entry.output_lock:
+            stdout, entry.stdout_offset = self._read_file_incremental(
+                entry.stdout_file,
+                entry.stdout_offset,
+                max_bytes,
+            )
 
-        stderr, entry.stderr_offset = self._read_file_incremental(
-            entry.stderr_file,
-            entry.stderr_offset,
-            max_bytes,
-        )
+            stderr, entry.stderr_offset = self._read_file_incremental(
+                entry.stderr_file,
+                entry.stderr_offset,
+                max_bytes,
+            )
 
         return {
             "stdout": stdout,
@@ -417,6 +566,7 @@ class ProcessManager:
             "process_id": entry.process_id,
             "pid": entry.process.pid,
             "exit_code": entry.exit_code,
+            "tty": entry.tty,
             "stdout": output["stdout"],
             "stderr": output["stderr"],
             "duration_ms": self._duration_ms(entry.started_at),
@@ -438,6 +588,7 @@ class ProcessManager:
 
         for entry in finished[:overflow]:
             self._processes.pop(entry.process_id, None)
+            self._close_pty_master(entry)
             try:
                 entry.stdout_file.close()
             finally:
