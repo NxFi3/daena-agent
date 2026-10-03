@@ -874,7 +874,7 @@ class Loop:
             if state.exists:
                 return (
                     "plan_exists",
-                    "A plan already exists. Use plan action update on the current state instead of creating a second plan.",
+                    "A plan already exists. Continue using the current plan.",
                 )
             return None
 
@@ -890,7 +890,7 @@ class Loop:
         if current is None:
             return (
                 "no_active_step",
-                "There is no in_progress step. Inspect the current <plan> state and choose a valid action.",
+                "There is no in_progress step. Use the plan action that matches the current <plan> state.",
             )
 
         if transition == "completed":
@@ -927,7 +927,6 @@ class Loop:
 
         return None
 
-    def _classify_calls(
     def _classify_calls(
         self,
         parsed_calls: list,
