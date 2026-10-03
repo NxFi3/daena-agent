@@ -200,15 +200,6 @@ class Plan(Tool):
         if operation not in {"create", "update", "delete"}:
             return False
 
-        if operation is None:
-            if goal is not None or steps is not None:
-                operation = "create"
-            elif any(
-                value is not None
-                for value in (step, status, description, add_step, remove_step)
-            ):
-                operation = "update"
-
         if operation == "create":
             return (
                 set(arguments).issubset(
@@ -384,6 +375,15 @@ class Plan(Tool):
         add_step: str | None = None,
         remove_step: int | None = None,
     ) -> ToolResult:
+
+        if operation is None:
+            if goal is not None or steps is not None:
+                operation = "create"
+            elif any(
+                value is not None
+                for value in (step, status, description, add_step, remove_step)
+            ):
+                operation = "update"
 
         if operation == "create":
             return self._create(
