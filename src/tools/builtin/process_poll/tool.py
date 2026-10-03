@@ -67,7 +67,19 @@ class ProcessPoll(Tool):
             max_output_chars=max_output_chars,
         )
 
-        success = result.get("status") != "unknown"
+        status = result.get("status")
+        exit_code = result.get("exit_code")
+
+        # Polling a running process is a successful observation, but once the
+        # managed command terminates, the tool result must reflect whether the
+        # command itself succeeded. This keeps non-zero exits (for example SSH
+        # exit 255) from being recorded as successful work by the agent.
+        if status == "running":
+            success = True
+        elif status == "exited":
+            success = exit_code == 0
+        else:
+            success = False
 
         return ToolResult(
             success=success,
