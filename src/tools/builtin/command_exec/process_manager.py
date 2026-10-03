@@ -92,6 +92,8 @@ class ProcessManager:
             )
             if existing is not None:
                 self._refresh_locked(existing)
+                if existing.status != "running" and existing.pty_reader_thread is not None:
+                    existing.pty_reader_thread.join(timeout=1.0)
                 output = self._read_incremental(existing, max_output_chars)
                 return {
                     **self._entry_result(existing, output),
@@ -406,6 +408,9 @@ class ProcessManager:
             process.wait(timeout=yield_time_ms / 1000.0)
         except subprocess.TimeoutExpired:
             pass
+
+        if process.poll() is not None and entry.pty_reader_thread is not None:
+            entry.pty_reader_thread.join(timeout=1.0)
 
         with self._lock:
             self._refresh_locked(entry)
