@@ -11,11 +11,7 @@ def plan_completion_call() -> ToolCall:
         name="plan",
         id="plan-1",
         valid=True,
-        args={
-            "operation": "update",
-            "step": 1,
-            "status": "completed",
-        },
+        args={"action": "complete"},
     )
 
 
@@ -202,9 +198,7 @@ def test_redundant_start_of_current_step_is_allowed():
             id="plan-2",
             valid=True,
             args={
-                "operation": "update",
-                "step": 1,
-                "status": "in_progress",
+                "action": "complete",
             },
         ),
         active_plan(),
@@ -321,3 +315,36 @@ def test_plan_progress_retains_successful_work_done_before_plan_creation():
 
     assert tracker.can_complete(1) is True
     assert tracker.context()["last_result_tool"] == "read_file"
+
+
+def test_plan_file_observation_is_blocked_at_runtime():
+    loop = Loop.__new__(Loop)
+
+    call = ToolCall(
+        name="read_file",
+        id="plan-read",
+        valid=True,
+        args={"file_path": ".daena/plan.md"},
+    )
+
+    gate = loop._plan_gate_message(call, active_plan())
+
+    assert gate is not None
+    assert gate[0] == "plan_internal_state"
+
+
+def test_plan_actions_do_not_require_model_selected_step_numbers():
+    loop = Loop.__new__(Loop)
+
+    error = loop._validate_plan_transition(
+        ToolCall(
+            name="plan",
+            id="complete-current",
+            valid=True,
+            args={"action": "complete"},
+        ),
+        active_plan(),
+    )
+
+    assert error is not None
+    assert error[0] == "completion_requires_success"
