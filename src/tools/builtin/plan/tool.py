@@ -80,7 +80,7 @@ class Plan(Tool):
         "additionalProperties": false,
     }
 
-    # Plan state belongs    # Plan state belongs to the active workspace, not Daena's installation.
+    # Plan state belongs to the active workspace, not Daena's installation.
     # Runtime callers set the active workspace through set_workspace().
     PLAN_PATH = Path(".daena") / "plan.md"
 
@@ -114,58 +114,18 @@ class Plan(Tool):
 
     _PLAN_INSTRUCTIONS = [
         "This is the active execution plan.",
-        "The agent MUST keep this plan synchronized with actual work.",
+        "The runtime owns the current step and status.",
         "",
-        "Plan update rules:",
+        "Plan rules:",
         "- The first step becomes [in_progress] when the plan is created.",
-        "- Completing the active step automatically advances the next pending step to [in_progress].",
-        "- Manually starting [in_progress] is only for repairing a plan with no active step.",
-        "- If a step cannot be completed, mark it [blocked] and continue with the next pending step.",
-        "- If new required work is discovered, add a new step before performing that work.",
-        "- Keep only one step [in_progress] at a time.",
-        "- Never mark a step [completed] unless the corresponding work actually succeeded.",
-        "- Do not repeat an update that would leave the plan unchanged.",
-        "- Do not create duplicate steps with the same description.",
+        "- Use [complete] only after the current step's work actually succeeded.",
+        "- Use [block] when the current step cannot be completed; give a concise reason.",
+        "- Completing or blocking a step automatically advances the next pending step.",
+        "- Use [add] when new required work is discovered before doing that work.",
+        "- Keep exactly one step [in_progress] at a time.",
         "- Before finishing the task, all steps must be [completed] or [blocked].",
-        "",
-        "The plan is persistent and represents the current state of the task.",
-        "Do not ignore or silently bypass it.",
+        "The plan is persistent and represents the current task state.",
     ]
-
-    @staticmethod
-    def _infer_operation(arguments: dict[str, Any]) -> str | None:
-        """Infer a plan operation from its payload when the model omits it."""
-        if not isinstance(arguments, dict):
-            return None
-
-        operation = arguments.get("operation")
-        if operation in {"create", "update", "delete"}:
-            return operation
-
-        if "goal" in arguments or "steps" in arguments:
-            return "create"
-
-        if any(
-            key in arguments
-            for key in ("step", "status", "description", "add_step", "remove_step")
-        ):
-            return "update"
-
-        return None
-
-    def normalize_arguments(
-        self,
-        arguments: dict[str, Any],
-    ) -> tuple[dict[str, Any], list[str]]:
-        """Canonicalize omitted plan operations before validation and runtime gating."""
-        normalized, notes = super().normalize_arguments(arguments)
-
-        operation = self._infer_operation(normalized)
-        if operation is not None and "operation" not in normalized:
-            normalized["operation"] = operation
-            notes.append(f"operation inferred as {operation!r}.")
-
-        return normalized, notes
 
     def validate(self, arguments: dict[str, Any]) -> bool:
         if not isinstance(arguments, dict):
@@ -197,7 +157,6 @@ class Plan(Tool):
 
         return False
 
-    def describe_call(
     def describe_call(
         self,
         arguments: dict[str, Any],
@@ -421,7 +380,6 @@ class Plan(Tool):
         )
 
     def _create(
-    def _create(
         self,
         *,
         goal: str | None,
@@ -462,7 +420,7 @@ class Plan(Tool):
         if existing.strip():
             return self._error(
                 "plan_exists",
-                "A plan already exists. Use update or delete.",
+                "A plan already exists. Continue using the current plan.",
             )
 
         plan_steps = [
