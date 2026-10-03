@@ -264,24 +264,52 @@ class ProcessManager:
                     "exit_code": entry.exit_code,
                 }
 
-            if entry.process.stdin is None:
-                return {
-                    "status": "failed",
-                    "process_id": process_id,
-                    "error": "Process stdin is not writable.",
-                }
+            if entry.tty:
+                master_fd = entry.pty_master_fd
+                if master_fd is None:
+                    return {
+                        "status": entry.status if entry.status != "running" else "failed",
+                        "process_id": process_id,
+                        "error": "PTY input is no longer writable.",
+                        "exit_code": entry.exit_code,
+                    }
 
-            try:
-                entry.process.stdin.write(input_text.encode("utf-8"))
-                entry.process.stdin.flush()
-            except (BrokenPipeError, OSError) as exc:
-                self._refresh_locked(entry)
-                return {
-                    "status": entry.status if entry.status != "running" else "failed",
-                    "process_id": process_id,
-                    "error": str(exc),
-                    "exit_code": entry.exit_code,
-                }
+                try:
+                    payload = input_text.encode("utf-8")
+                    total = 0
+                    while total < len(payload):
+                        written = os.write(master_fd, payload[total:])
+                        if written <= 0:
+                            raise OSError("PTY write returned no progress.")
+                        total += written
+                except (BrokenPipeError, OSError) as exc:
+                    self._refresh_locked(entry)
+                    return {
+                        "status": entry.status if entry.status != "running" else "failed",
+                        "process_id": process_id,
+                        "error": str(exc),
+                        "exit_code": entry.exit_code,
+                    }
+
+            else:
+                if entry.process.stdin is None:
+                    return {
+                        "status": "failed",
+                        "process_id": process_id,
+                        "error": "Process stdin is not writable.",
+                    }
+
+                try:
+                    entry.process.stdin.write(input_text.encode("utf-8"))
+                    entry.process.stdin.flush()
+                except (BrokenPipeError, OSError) as exc:
+                    self._refresh_locked(entry)
+                    return {
+                        "status": entry.status if entry.status != "running" else "failed",
+                        "process_id": process_id,
+                        "error": str(exc),
+                        "exit_code": entry.exit_code,
+                    }
 
             return {
                 "status": "accepted",
