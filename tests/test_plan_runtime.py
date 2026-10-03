@@ -292,3 +292,32 @@ def test_plan_completion_rejects_live_process_receipt():
 
     assert error is not None
     assert error[0] == "completion_requires_terminal_result"
+
+
+def test_plan_progress_retains_successful_work_done_before_plan_creation():
+    tracker = PlanProgressTracker()
+
+    tracker.record(
+        ToolCall(
+            name="read_file",
+            id="read-before-plan",
+            valid=True,
+            action="inspect",
+            target="agent.py",
+        ),
+        ToolResult(
+            success=True,
+            name="read_file",
+            content={"path": "agent.py", "content": "agent"},
+        ),
+        iteration=2,
+    )
+
+    tracker.sync(
+        active_plan(),
+        iteration=4,
+        workspace_revision=0,
+    )
+
+    assert tracker.can_complete(1) is True
+    assert tracker.context()["last_result_tool"] == "read_file"
