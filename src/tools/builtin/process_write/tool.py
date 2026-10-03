@@ -12,8 +12,8 @@ class ProcessWrite(Tool):
     action = "modify"
 
     description = (
-        "Write text to the stdin of a managed process. Use only for a process that "
-        "was started with writable stdin and is still running."
+        "Write text to the stdin of a managed process, including PTY-backed commands. "
+        "Use only for a process that is still running."
     )
 
     parameters = {
