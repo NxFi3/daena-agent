@@ -132,6 +132,7 @@ class ToolDispatcher:
                     properties = schema.get("properties", {})
                     if not isinstance(properties, dict):
                         properties = {}
+                    unknown = []
                 else:
                     return ToolCall(
                         name=name,
