@@ -116,3 +116,24 @@ def test_plan_create_update_delete(tmp_path, monkeypatch):
 
     deleted_again = tool.execute(operation="delete")
     assert deleted_again.success is True
+
+
+def test_plan_accepts_inferred_operation_when_omitted(tmp_path, monkeypatch):
+    plan_path = tmp_path / ".daena" / "plan.md"
+    monkeypatch.setattr(Plan, "PLAN_PATH", Path(plan_path))
+    tool = Plan()
+
+    result = tool.execute(
+        goal="Build authentication",
+        steps=["Inspect code", "Implement change"],
+    )
+
+    assert result.success is True
+    assert "1. [in_progress] Inspect code" in plan_path.read_text(encoding="utf-8")
+
+    result = tool.execute(
+        step=1,
+        status="completed",
+    )
+
+    assert result.success is True
