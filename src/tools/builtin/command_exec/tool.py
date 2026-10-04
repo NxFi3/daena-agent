@@ -173,7 +173,6 @@ class CommandExec(Tool):
             background=background,
             pipe_stdin=pipe_stdin,
             tty=tty,
-            background=background,
         )
 
         if validation_error is not None:
@@ -191,6 +190,7 @@ class CommandExec(Tool):
             max_output_chars=max_output_chars,
             pipe_stdin=pipe_stdin,
             tty=tty,
+            background=background,
         )
 
     def _validate_arguments(
@@ -288,6 +288,7 @@ class CommandExec(Tool):
         max_output_chars: int,
         pipe_stdin: bool = False,
         tty: bool = False,
+        background: bool = False,
     ) -> ToolResult:
         started = time.perf_counter()
 
@@ -299,6 +300,7 @@ class CommandExec(Tool):
                 max_output_chars=max_output_chars,
                 pipe_stdin=pipe_stdin,
                 tty=tty,
+                background=background,
             )
         except FileNotFoundError as exc:
             return self._execution_error(
