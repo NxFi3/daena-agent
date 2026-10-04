@@ -54,6 +54,34 @@ def test_long_running_command_returns_managed_process():
     assert "started" in combined_output
 
 
+def test_background_flag_is_preserved_for_running_commands():
+    tool = CommandExec()
+    command = [sys.executable, "-c", "import time; time.sleep(2)"]
+
+    background_result = tool.execute(
+        command=command,
+        yield_time_ms=25,
+        background=True,
+    )
+    assert background_result.success is False
+    assert background_result.content["status"] == "running"
+    assert background_result.content["background"] is True
+    assert isinstance(background_result.content["process_id"], str)
+
+    foreground_result = tool.execute(
+        command=[sys.executable, "-c", "import time; time.sleep(2)"],
+        yield_time_ms=25,
+        background=False,
+    )
+    assert foreground_result.success is False
+    assert foreground_result.content["status"] == "running"
+    assert foreground_result.content["background"] is False
+    assert isinstance(foreground_result.content["process_id"], str)
+
+    PROCESS_MANAGER.stop(process_id=background_result.content["process_id"])
+    PROCESS_MANAGER.stop(process_id=foreground_result.content["process_id"])
+
+
 def test_incremental_output_and_process_write():
     tool = CommandExec()
 
