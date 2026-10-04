@@ -173,6 +173,7 @@ class CommandExec(Tool):
             background=background,
             pipe_stdin=pipe_stdin,
             tty=tty,
+            background=background,
         )
 
         if validation_error is not None:
