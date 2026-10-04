@@ -199,6 +199,78 @@ def test_duplicate_detector_canonicalizes_read_paths_and_allows_dynamic_polling(
         loop.close()
 
 
+def test_apply_result_tracks_only_foreground_running_processes(tmp_path):
+    config = {
+        "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
+        "context": {
+            "safe_margin": 0,
+            "recent_event_limit": 10,
+            "compaction_enabled": False,
+            "compaction_target_tokens": 256,
+        },
+        "retrieval": {"top_k": 3},
+        "security": {
+            "workspace_only": True,
+            "allow_background": True,
+            "allow_network_tools": True,
+            "force_approve": True,
+        },
+        "max_agent_iterations": 5,
+        "experience": {"enabled": False},
+    }
+
+    loop = Loop(config, FakeLLM())
+    loop.session_id = uuid4()
+    loop.set_workspace(str(tmp_path))
+
+    try:
+        background_call = ToolCall(
+            name="command_exec",
+            id="background-1",
+            valid=True,
+            args={"command": ["python", "-m", "http.server"], "background": True},
+        )
+        loop._apply_result(
+            background_call,
+            ToolResult(
+                success=False,
+                name="command_exec",
+                content={
+                    "status": "running",
+                    "process_id": "proc-background",
+                    "background": True,
+                },
+                metadata={},
+            ),
+            1,
+        )
+        assert loop._active_process_ids == set()
+
+        foreground_call = ToolCall(
+            name="command_exec",
+            id="foreground-1",
+            valid=True,
+            args={"command": ["python", "-m", "pytest"], "background": False},
+        )
+        loop._apply_result(
+            foreground_call,
+            ToolResult(
+                success=False,
+                name="command_exec",
+                content={
+                    "status": "running",
+                    "process_id": "proc-foreground",
+                    "background": False,
+                },
+                metadata={},
+            ),
+            2,
+        )
+        assert loop._active_process_ids == {"proc-foreground"}
+    finally:
+        loop.close()
+
+
 def test_runtime_requires_process_observation_while_foreground_process_is_active(tmp_path):
     config = {
         "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
