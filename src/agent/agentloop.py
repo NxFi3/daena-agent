@@ -40,6 +40,10 @@ class Loop:
     # observation should not become an infinite loop.
     OBSERVATION_REPEAT_LIMIT = 3
 
+    # After two consecutive failures with the same tool and normalized error,
+    # block the next identical failure pattern so the model must change strategy.
+    SEMANTIC_FAILURE_REPEAT_LIMIT = 2
+
     # Once a foreground managed process is running, the runtime owns the
     # execution boundary until that process is observed, fed, or stopped.
     # Read/search/edit/other work must not run around a still-live command.
@@ -1217,6 +1221,40 @@ class Loop:
                     "process_control_tools": sorted(self.PROCESS_CONTROL_TOOLS),
                 },
                 summary=summary,
+            )
+
+        # If the same tool has produced the same normalized failure repeatedly,
+        # stop spending iterations on argument variations that do not address it.
+        # The model may retry after producing new evidence or switching strategy.
+        recent_failures = self._recent_failure_signatures[-self.SEMANTIC_FAILURE_REPEAT_LIMIT:]
+        failure_prefix = f"{name}::"
+        if (
+            len(recent_failures) == self.SEMANTIC_FAILURE_REPEAT_LIMIT
+            and all(signature.startswith(failure_prefix) for signature in recent_failures)
+            and len(set(recent_failures)) == 1
+        ):
+            message = (
+                f"'{name}' has produced the same failure {self.SEMANTIC_FAILURE_REPEAT_LIMIT} "
+                "times in a row. Do not retry the same failing strategy. Inspect the "
+                "concrete error, correct the arguments, or choose a different tool."
+            )
+            return ToolResult(
+                success=False,
+                name=name,
+                content={
+                    "success": False,
+                    "error": {
+                        "type": "semantic_failure_repeat",
+                        "message": message,
+                    },
+                },
+                metadata={
+                    "runtime_gate": True,
+                    "recovery_required": True,
+                    "failure_signature": recent_failures[-1],
+                    "repeat_count": self.SEMANTIC_FAILURE_REPEAT_LIMIT,
+                },
+                summary=f"RECOVERY BLOCKED: {message}",
             )
 
         # Never repeat the exact failed action unchanged at the same revision.
