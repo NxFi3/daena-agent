@@ -199,6 +199,130 @@ def test_duplicate_detector_canonicalizes_read_paths_and_allows_dynamic_polling(
         loop.close()
 
 
+def test_run_routes_around_no_unrelated_work_while_foreground_process_runs(tmp_path):
+    class ProcessGateLLM:
+        def __init__(self):
+            self.model = FakeModel()
+            self.calls = 0
+
+        def generate(self, messages, tools=None):
+            self.calls += 1
+
+            if self.calls == 1:
+                raw = {
+                    "id": "call-command-running",
+                    "type": "function",
+                    "function": {
+                        "name": "command_exec",
+                        "arguments": {
+                            "command": [
+                                sys.executable,
+                                "-c",
+                                "import time; time.sleep(0.4)",
+                            ],
+                            "workdir": ".",
+                            "yield_time_ms": 25,
+                        },
+                    },
+                }
+                return LLMResult(
+                    response="",
+                    message={"role": "assistant", "content": "", "tool_calls": [raw]},
+                    tool_calls=[raw],
+                    thinking=None,
+                    usage=10,
+                )
+
+            if self.calls == 2:
+                raw = {
+                    "id": "call-read-blocked",
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": {"file_path": "hello.txt"},
+                    },
+                }
+                return LLMResult(
+                    response="",
+                    message={"role": "assistant", "content": "", "tool_calls": [raw]},
+                    tool_calls=[raw],
+                    thinking=None,
+                    usage=10,
+                )
+
+            if self.calls == 3:
+                import re
+                process_ids = re.findall(r"proc-[0-9a-f]+", str(messages))
+                assert process_ids, "the running process id must remain model-visible"
+                raw = {
+                    "id": "call-process-poll",
+                    "type": "function",
+                    "function": {
+                        "name": "process_poll",
+                        "arguments": {"process_id": process_ids[-1], "wait_ms": 1000},
+                    },
+                }
+                return LLMResult(
+                    response="",
+                    message={"role": "assistant", "content": "", "tool_calls": [raw]},
+                    tool_calls=[raw],
+                    thinking=None,
+                    usage=10,
+                )
+
+            return LLMResult(
+                response="done",
+                message={"role": "assistant", "content": "done"},
+                tool_calls=[],
+                thinking=None,
+                usage=10,
+            )
+
+    config = {
+        "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
+        "context": {
+            "safe_margin": 0,
+            "recent_event_limit": 40,
+            "compaction_enabled": False,
+            "compaction_target_tokens": 256,
+        },
+        "retrieval": {"top_k": 3},
+        "security": {
+            "workspace_only": True,
+            "allow_background": True,
+            "allow_network_tools": True,
+            "force_approve": True,
+        },
+        "max_agent_iterations": 6,
+        "experience": {"enabled": False},
+    }
+
+    (tmp_path / "hello.txt").write_text("hello", encoding="utf-8")
+    llm = ProcessGateLLM()
+    loop = Loop(config, llm)
+    loop.session_id = uuid4()
+
+    try:
+        task = ContextEvent(
+            role=ContextRole.USER,
+            type=ContextType.MESSAGE,
+            content="Run the command and then finish the task.",
+        )
+        result = loop.run(task, workspace_directory=str(tmp_path))
+
+        assert result is not None
+        assert result.response == "done"
+        assert llm.calls == 4
+        assert loop.get_metrics()["recovery_blocks"] >= 1
+        assert loop._active_process_ids == set()
+        assert not any(
+            item.get("tool") == "read_file" and item.get("outcome") == "success"
+            for item in loop.working_set.recent_actions
+        )
+    finally:
+        loop.close()
+
+
 def test_apply_result_tracks_only_foreground_running_processes(tmp_path):
     config = {
         "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
