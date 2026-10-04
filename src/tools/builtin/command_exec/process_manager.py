@@ -26,6 +26,7 @@ class ManagedProcess:
     stderr_offset: int = 0
     pipe_stdin: bool = False
     tty: bool = False
+    background: bool = False
     pty_master_fd: int | None = None
     pty_reader_thread: threading.Thread | None = None
     output_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -80,6 +81,7 @@ class ProcessManager:
         max_output_chars: int,
         pipe_stdin: bool = True,
         tty: bool = False,
+        background: bool = False,
     ) -> dict:
         # Reuse an already-running identical process instead of spawning a
         # second copy. The agent should poll the existing process.
@@ -89,6 +91,7 @@ class ProcessManager:
                 workdir=workdir,
                 pipe_stdin=pipe_stdin,
                 tty=tty,
+                background=background,
             )
             if existing is not None:
                 self._refresh_locked(existing)
@@ -106,6 +109,7 @@ class ProcessManager:
                 workdir=workdir,
                 yield_time_ms=yield_time_ms,
                 max_output_chars=max_output_chars,
+                background=background,
             )
 
         stdout_file = tempfile.TemporaryFile(mode="w+b")
@@ -141,6 +145,7 @@ class ProcessManager:
                 stderr_file=stderr_file,
                 started_at=started,
                 pipe_stdin=pipe_stdin,
+                background=background,
                 status="exited",
                 exit_code=process.returncode,
             )
@@ -152,6 +157,7 @@ class ProcessManager:
                 "process_id": None,
                 "pid": process.pid,
                 "exit_code": process.returncode,
+                "background": background,
                 "stdout": output["stdout"],
                 "stderr": output["stderr"],
                 "duration_ms": self._duration_ms(started),
@@ -168,6 +174,7 @@ class ProcessManager:
             stderr_file=stderr_file,
             started_at=started,
             pipe_stdin=pipe_stdin,
+            background=background,
         )
 
         with self._lock:
@@ -360,6 +367,7 @@ class ProcessManager:
         workdir: Path | None,
         yield_time_ms: int,
         max_output_chars: int,
+        background: bool = False,
     ) -> dict:
         if os.name != "posix":
             raise NotImplementedError(
@@ -414,6 +422,7 @@ class ProcessManager:
             started_at=started,
             pipe_stdin=True,
             tty=True,
+            background=background,
             pty_master_fd=master_fd,
         )
 
@@ -520,6 +529,7 @@ class ProcessManager:
         workdir: Path | None,
         pipe_stdin: bool,
         tty: bool,
+        background: bool,
     ) -> ManagedProcess | None:
         normalized_workdir = str(workdir) if workdir is not None else None
         for entry in self._processes.values():
@@ -533,6 +543,8 @@ class ProcessManager:
             if entry.pipe_stdin != pipe_stdin:
                 continue
             if entry.tty != tty:
+                continue
+            if entry.background != background:
                 continue
             return entry
         return None
@@ -601,6 +613,7 @@ class ProcessManager:
             "pid": entry.process.pid,
             "exit_code": entry.exit_code,
             "tty": entry.tty,
+            "background": entry.background,
             "stdout": output["stdout"],
             "stderr": output["stderr"],
             "duration_ms": self._duration_ms(entry.started_at),
