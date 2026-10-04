@@ -40,8 +40,8 @@ class Loop:
     # observation should not become an infinite loop.
     OBSERVATION_REPEAT_LIMIT = 3
 
-    # After two consecutive failures with the same tool and normalized error,
-    # block the next identical failure pattern so the model must change strategy.
+    # After repeated failures with the same tool and normalized error, block
+    # the next matching failure pattern so the model must change strategy.
     SEMANTIC_FAILURE_REPEAT_LIMIT = 2
 
     # Once a foreground managed process is running, the runtime owns the
@@ -114,7 +114,6 @@ class Loop:
 
         self._tool_loop_guard = ToolLoopGuard()
 
-        self._recent_failure_signatures: list[str] = []
         # Per-tool semantic failure evidence. Unrelated successful tools must
         # not erase a different tool's recovery history.
         self._semantic_failure_counts: dict[str, int] = {}
@@ -2097,7 +2096,6 @@ class Loop:
 
         self._duplicate_block_streak = 0
 
-        self._recent_failure_signatures.clear()
         self._semantic_failure_counts.clear()
         self._failed_call_keys.clear()
         self._active_process_ids.clear()
