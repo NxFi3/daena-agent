@@ -367,7 +367,10 @@ class CommandExec(Tool):
             "stdout": stdout,
             "stderr": stderr,
             "timed_out": False,
-            "background": status == "running",
+            # Preserve the caller's explicit intent. A long-running
+            # foreground command is not a background task just because it
+            # crossed the synchronous yield boundary.
+            "background": bool(background),
             "managed": True,
             "operation_complete": status == "exited",
             "process_state": status,
