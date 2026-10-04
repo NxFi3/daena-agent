@@ -496,9 +496,9 @@ class Loop:
     @staticmethod
     def _canonical_failure_message(message: str) -> str:
         """Normalize equivalent validation errors to one semantic cause."""
-        text = re.sub(r"\\s+", " ", str(message or "")).strip().lower()
+        text = re.sub(r"\s+", " ", str(message or "")).strip().lower()
         text = re.sub(r"0x[0-9a-f]+", "0xaddr", text)
-        text = re.sub(r"\\d+", "N", text)
+        text = re.sub(r"\d+", "N", text)
 
         match = re.search(
             r"missing required argument(?:\\(s\\))?:\\s*([^.;]+)",
@@ -509,7 +509,7 @@ class Loop:
             if names:
                 return "missing_required:" + ",".join(sorted(set(names)))
 
-        match = re.search(r"\\b([a-z_][a-z0-9_]*)\\s+is required\\b", text)
+        match = re.search(r"\b([a-z_][a-z0-9_]*)\s+is required\b", text)
         if match:
             return "missing_required:" + match.group(1)
 
