@@ -200,6 +200,53 @@ def test_duplicate_detector_canonicalizes_read_paths_and_allows_dynamic_polling(
         loop.close()
 
 
+def test_runtime_blocks_repeated_semantic_tool_failure(tmp_path):
+    config = {
+        "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
+        "context": {
+            "safe_margin": 0,
+            "recent_event_limit": 10,
+            "compaction_enabled": False,
+            "compaction_target_tokens": 256,
+        },
+        "retrieval": {"top_k": 3},
+        "security": {
+            "workspace_only": True,
+            "allow_background": True,
+            "allow_network_tools": True,
+            "force_approve": True,
+        },
+        "max_agent_iterations": 5,
+        "experience": {"enabled": False},
+    }
+
+    loop = Loop(config, FakeLLM())
+    loop.session_id = uuid4()
+    loop.set_workspace(str(tmp_path))
+
+    try:
+        loop._recent_failure_signatures.extend([
+            "search::query is required.",
+            "search::query is required.",
+        ])
+
+        call = ToolCall(
+            name="search",
+            id="search-recovery",
+            valid=True,
+            args={"query": "", "path": "."},
+        )
+        blocked = loop._runtime_recovery_gate(call)
+
+        assert blocked is not None
+        assert blocked.metadata["runtime_gate"] is True
+        assert blocked.metadata["recovery_required"] is True
+        assert blocked.content["error"]["type"] == "semantic_failure_repeat"
+        assert "same failure" in blocked.summary
+    finally:
+        loop.close()
+
+
 def test_run_routes_around_no_unrelated_work_while_foreground_process_runs(tmp_path):
     class ProcessGateLLM:
         def __init__(self):
