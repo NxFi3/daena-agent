@@ -199,6 +199,97 @@ def test_duplicate_detector_canonicalizes_read_paths_and_allows_dynamic_polling(
         loop.close()
 
 
+def test_runtime_requires_process_observation_while_foreground_process_is_active(tmp_path):
+    config = {
+        "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
+        "context": {
+            "safe_margin": 0,
+            "recent_event_limit": 10,
+            "compaction_enabled": False,
+            "compaction_target_tokens": 256,
+        },
+        "retrieval": {"top_k": 3},
+        "security": {
+            "workspace_only": True,
+            "allow_background": True,
+            "allow_network_tools": True,
+            "force_approve": True,
+        },
+        "max_agent_iterations": 5,
+        "experience": {"enabled": False},
+    }
+
+    loop = Loop(config, FakeLLM())
+    loop.session_id = uuid4()
+    loop.set_workspace(str(tmp_path))
+
+    try:
+        loop._active_process_ids.add("proc-live")
+
+        read_call = ToolCall(
+            name="read_file",
+            id="read-live",
+            valid=True,
+            args={"file_path": "hello.txt"},
+        )
+        blocked = loop._runtime_recovery_gate(read_call)
+        assert blocked is not None
+        assert blocked.metadata["runtime_gate"] is True
+        assert blocked.content["error"]["type"] == "active_process_requires_observation"
+
+        search_call = ToolCall(
+            name="search",
+            id="search-live",
+            valid=True,
+            args={"query": "hello", "path": "."},
+        )
+        assert loop._runtime_recovery_gate(search_call) is not None
+
+        command_call = ToolCall(
+            name="command_exec",
+            id="command-live",
+            valid=True,
+            args={"command": ["python", "-c", "print('unrelated')"], "workdir": "."},
+        )
+        assert loop._runtime_recovery_gate(command_call) is not None
+
+        plan_call = ToolCall(
+            name="plan",
+            id="plan-live",
+            valid=True,
+            args={"action": "complete"},
+        )
+        plan_block = loop._runtime_recovery_gate(plan_call)
+        assert plan_block is not None
+        assert plan_block.content["error"]["type"] == "active_process"
+
+        poll_call = ToolCall(
+            name="process_poll",
+            id="poll-live",
+            valid=True,
+            args={"process_id": "proc-live"},
+        )
+        assert loop._runtime_recovery_gate(poll_call) is None
+
+        write_call = ToolCall(
+            name="process_write",
+            id="write-live",
+            valid=True,
+            args={"process_id": "proc-live", "input_text": "ok\\n"},
+        )
+        assert loop._runtime_recovery_gate(write_call) is None
+
+        stop_call = ToolCall(
+            name="process_stop",
+            id="stop-live",
+            valid=True,
+            args={"process_id": "proc-live"},
+        )
+        assert loop._runtime_recovery_gate(stop_call) is None
+    finally:
+        loop.close()
+
+
 def test_runtime_blocks_plan_while_process_is_active_and_repeats_failed_action(tmp_path):
     config = {
         "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
