@@ -1,4 +1,4 @@
-from src.tools.builtin.search.tool import Search
+from src.tools.builtin.search import Search
 
 
 def test_search_finds_matches_and_reports_line_numbers(tmp_path):
