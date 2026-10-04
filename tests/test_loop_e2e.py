@@ -200,7 +200,7 @@ def test_duplicate_detector_canonicalizes_read_paths_and_allows_dynamic_polling(
         loop.close()
 
 
-def test_runtime_blocks_repeated_semantic_tool_failure(tmp_path):
+def test_runtime_blocks_repeated_semantic_tool_failure_across_unrelated_success(tmp_path):
     config = {
         "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
         "context": {
@@ -225,24 +225,73 @@ def test_runtime_blocks_repeated_semantic_tool_failure(tmp_path):
     loop.set_workspace(str(tmp_path))
 
     try:
-        loop._recent_failure_signatures.extend([
-            "search::query is required.",
-            "search::query is required.",
-        ])
-
-        call = ToolCall(
+        first_bad_call = ToolCall(
             name="search",
-            id="search-recovery",
+            id="search-bad-1",
+            valid=False,
+            validation_error="Missing required argument(s): query. Provide every required parameter.",
+        )
+        first_bad_result = ToolResult(
+            success=False,
+            name="search",
+            content={
+                "success": False,
+                "error": {
+                    "type": "invalid_tool_call",
+                    "message": first_bad_call.validation_error,
+                },
+            },
+        )
+        loop._apply_result(first_bad_call, first_bad_result, 1)
+
+        read_call = ToolCall(
+            name="read_file",
+            id="read-between",
+            valid=False,
+            validation_error="File path is required.",
+        )
+        read_result = ToolResult(
+            success=True,
+            name="read_file",
+            content={"success": True, "path": "hello.txt", "content": "hello"},
+        )
+        loop._apply_result(read_call, read_result, 2)
+
+        second_bad_call = ToolCall(
+            name="search",
+            id="search-bad-2",
             valid=True,
             args={"query": "", "path": "."},
         )
-        blocked = loop._runtime_recovery_gate(call)
+        second_bad_result = ToolResult(
+            success=False,
+            name="search",
+            content={
+                "success": False,
+                "error": {
+                    "type": "invalid_argument",
+                    "message": "query is required.",
+                },
+            },
+        )
+        loop._apply_result(second_bad_call, second_bad_result, 3)
+
+        matching_key = "search::missing_required:query"
+        assert loop._semantic_failure_counts[matching_key] == 2
+
+        retry_call = ToolCall(
+            name="search",
+            id="search-bad-3",
+            valid=False,
+            validation_error="Missing required argument(s): query. Provide every required parameter.",
+        )
+        blocked = loop._runtime_recovery_gate(retry_call)
 
         assert blocked is not None
         assert blocked.metadata["runtime_gate"] is True
         assert blocked.metadata["recovery_required"] is True
         assert blocked.content["error"]["type"] == "semantic_failure_repeat"
-        assert "same failure" in blocked.summary
+        assert blocked.metadata["failure_signature"] == matching_key
     finally:
         loop.close()
 
