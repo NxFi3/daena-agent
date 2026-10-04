@@ -270,7 +270,7 @@ def test_dispatcher_repairs_unique_misrouted_read_file_call():
 
 
 def test_dispatcher_drops_read_file_result_fields_from_input():
-    from src.tools.builtin.readfile.tool import ReadFile
+    from src.tools.builtin.readfile import ReadFile
 
     class Registry:
         def is_available(self, name):
