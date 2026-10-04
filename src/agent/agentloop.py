@@ -40,6 +40,11 @@ class Loop:
     # observation should not become an infinite loop.
     OBSERVATION_REPEAT_LIMIT = 3
 
+    # Once a foreground managed process is running, the runtime owns the
+    # execution boundary until that process is observed, fed, or stopped.
+    # Read/search/edit/other work must not run around a still-live command.
+    PROCESS_CONTROL_TOOLS = frozenset({"process_poll", "process_write", "process_stop"})
+
     # How many times a single iteration may be retried in place after a
     # generation failure (provider exception, e.g. Ollama's own tool-call
     # parser choking on malformed output) or a dispatch failure (the model
@@ -1175,23 +1180,43 @@ class Loop:
     def _runtime_recovery_gate(self, call) -> ToolResult | None:
         name = str(getattr(call, "name", "")).strip().lower()
 
-        # A plan transition cannot outrun an active managed process.
-        if name == "plan" and self._active_process_ids:
+        # A foreground managed process owns the execution boundary until it
+        # reaches a terminal state. Allow only the tools that can observe or
+        # control that process; unrelated work cannot run around it.
+        if self._active_process_ids and name not in self.PROCESS_CONTROL_TOOLS:
+            if name == "plan":
+                message = (
+                    "A foreground managed process is still running. "
+                    "Poll or stop it before updating/completing the plan."
+                )
+                summary = "PLAN BLOCKED: managed process still running."
+                error_type = "active_process"
+            else:
+                message = (
+                    "A foreground managed process is still running. "
+                    "Use process_poll to observe it, process_write to provide "
+                    "input when needed, or process_stop to terminate it before "
+                    "performing unrelated work."
+                )
+                summary = "RUNTIME BLOCKED: foreground process requires observation."
+                error_type = "active_process_requires_observation"
+
             return ToolResult(
                 success=False,
                 name=name,
                 content={
                     "success": False,
                     "error": {
-                        "type": "active_process",
-                        "message": (
-                            "A managed process is still running. "
-                            "Poll or stop it before updating/completing the plan."
-                        ),
+                        "type": error_type,
+                        "message": message,
                     },
                 },
-                metadata={"runtime_gate": True, "active_process_ids": sorted(self._active_process_ids)},
-                summary="PLAN BLOCKED: managed process still running.",
+                metadata={
+                    "runtime_gate": True,
+                    "active_process_ids": sorted(self._active_process_ids),
+                    "process_control_tools": sorted(self.PROCESS_CONTROL_TOOLS),
+                },
+                summary=summary,
             )
 
         # Never repeat the exact failed action unchanged at the same revision.
@@ -1254,8 +1279,14 @@ class Loop:
         process_id = self._tool_result_process_id(result)
 
         if status == "running" and process_id:
-            self._active_process_ids.add(process_id)
-            self._recovery_mode = True
+            # Background commands are intentionally detached from the current
+            # execution boundary (for example a web server). Foreground
+            # commands must be observed to completion before unrelated work.
+            content = result.content if isinstance(result.content, dict) else {}
+            is_background = bool(content.get("background", False))
+            if not is_background:
+                self._active_process_ids.add(process_id)
+                self._recovery_mode = True
         elif process_id and status in {"exited", "terminated", "unknown"}:
             self._active_process_ids.discard(process_id)
 
@@ -1371,6 +1402,17 @@ class Loop:
                 error_type = str(error.get("type", "")).strip().lower()
             elif error:
                 error_type = str(error).strip().lower()
+
+        if (
+            isinstance(result.metadata, dict)
+            and result.metadata.get("runtime_gate")
+            and error_type == "active_process_requires_observation"
+        ):
+            self._store_nudge(
+                "A foreground managed process is still running. "
+                "Do not perform unrelated work yet. Poll the process, provide "
+                "required stdin with process_write, or stop it with process_stop."
+            )
 
         if (
             not result.success
