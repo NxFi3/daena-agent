@@ -501,7 +501,7 @@ class Loop:
         text = re.sub(r"\d+", "N", text)
 
         match = re.search(
-            r"missing required argument(?:\\(s\\))?:\\s*([^.;]+)",
+            r"missing required argument(?:\(s\))?:\s*([^.;]+)",
             text,
         )
         if match:
@@ -514,7 +514,7 @@ class Loop:
             return "missing_required:" + match.group(1)
 
         match = re.search(
-            r"unknown argument(?:\\(s\\))?:\\s*([^.;]+)",
+            r"unknown argument(?:\(s\))?:\s*([^.;]+)",
             text,
         )
         if match:
