@@ -115,6 +115,9 @@ class Loop:
         self._tool_loop_guard = ToolLoopGuard()
 
         self._recent_failure_signatures: list[str] = []
+        # Per-tool semantic failure evidence. Unrelated successful tools must
+        # not erase a different tool's recovery history.
+        self._semantic_failure_counts: dict[str, int] = {}
         # Runtime-enforced recovery state. The model is not allowed to repeat
         # the exact failed action at the same workspace revision without
         # producing new evidence first.
@@ -492,58 +495,95 @@ class Loop:
         )
 
     @staticmethod
+    def _canonical_failure_message(message: str) -> str:
+        """Normalize equivalent validation errors to one semantic cause."""
+        text = re.sub(r"\\s+", " ", str(message or "")).strip().lower()
+        text = re.sub(r"0x[0-9a-f]+", "0xaddr", text)
+        text = re.sub(r"\\d+", "N", text)
+
+        match = re.search(
+            r"missing required argument(?:\\(s\\))?:\\s*([^.;]+)",
+            text,
+        )
+        if match:
+            names = [item.strip() for item in match.group(1).split(",") if item.strip()]
+            if names:
+                return "missing_required:" + ",".join(sorted(set(names)))
+
+        match = re.search(r"\\b([a-z_][a-z0-9_]*)\\s+is required\\b", text)
+        if match:
+            return "missing_required:" + match.group(1)
+
+        match = re.search(
+            r"unknown argument(?:\\(s\\))?:\\s*([^.;]+)",
+            text,
+        )
+        if match:
+            names = [item.strip() for item in match.group(1).split(",") if item.strip()]
+            if names:
+                return "unknown_argument:" + ",".join(sorted(set(names)))
+
+        return text[:180]
+
+    def _predict_failure_signature(self, call) -> str | None:
+        """Predict deterministic argument/schema failures before execution."""
+        name = str(getattr(call, "name", "")).strip().lower()
+        if not name:
+            return None
+
+        validation_error = str(getattr(call, "validation_error", "") or "").strip()
+        if validation_error:
+            return f"{name}::{self._canonical_failure_message(validation_error)}"
+
+        arguments = getattr(call, "args", {}) or {}
+        if not isinstance(arguments, dict):
+            return None
+
+        try:
+            tool = self.tool.get_tool(name)
+            schema = getattr(tool, "parameters", {}) or {}
+        except Exception:
+            return None
+
+        required = schema.get("required", []) if isinstance(schema, dict) else []
+        if not isinstance(required, list):
+            return None
+
+        missing = [str(key) for key in required if str(key) not in arguments]
+        empty = [
+            str(key)
+            for key in required
+            if str(key) in arguments
+            and isinstance(arguments.get(key), str)
+            and not arguments.get(key).strip()
+        ]
+        fields = sorted(set(missing + empty))
+        if fields:
+            return f"{name}::missing_required:{','.join(fields)}"
+
+        return None
+
+    @classmethod
     def _failure_signature(
+        cls,
         call,
         result: ToolResult,
     ) -> str:
-
         error_msg = ""
-
         content = result.content
 
-        if isinstance(
-            content,
-            dict,
-        ):
-
+        if isinstance(content, dict):
             error = content.get("error")
-
-            if isinstance(
-                error,
-                dict,
-            ):
-
-                error_msg = str(
-                    error.get(
-                        "message",
-                        "",
-                    )
-                )
-
-            elif isinstance(
-                error,
-                str,
-            ):
-
+            if isinstance(error, dict):
+                error_msg = str(error.get("message", "") or "")
+            elif isinstance(error, str):
                 error_msg = error
 
         if not error_msg:
-
             error_msg = result.summary or "unknown"
 
-        error_msg = re.sub(
-            r"0x[0-9a-fA-F]+",
-            "0xADDR",
-            error_msg,
-        )
-
-        error_msg = re.sub(
-            r"\d+",
-            "N",
-            error_msg,
-        )
-
-        return f"{getattr(call, 'name', 'unknown')}" f"::{error_msg[:150]}"
+        name = str(getattr(call, "name", "unknown")).strip().lower() or "unknown"
+        return f"{name}::{cls._canonical_failure_message(error_msg)}"
 
     @staticmethod
     def _duplicate_result(
@@ -1223,39 +1263,34 @@ class Loop:
                 summary=summary,
             )
 
-        # If the same tool has produced the same normalized failure repeatedly,
-        # stop spending iterations on argument variations that do not address it.
-        # The model may retry after producing new evidence or switching strategy.
-        recent_failures = self._recent_failure_signatures[-self.SEMANTIC_FAILURE_REPEAT_LIMIT:]
-        failure_prefix = f"{name}::"
-        if (
-            len(recent_failures) == self.SEMANTIC_FAILURE_REPEAT_LIMIT
-            and all(signature.startswith(failure_prefix) for signature in recent_failures)
-            and len(set(recent_failures)) == 1
-        ):
-            message = (
-                f"'{name}' has produced the same failure {self.SEMANTIC_FAILURE_REPEAT_LIMIT} "
-                "times in a row. Do not retry the same failing strategy. Inspect the "
-                "concrete error, correct the arguments, or choose a different tool."
-            )
-            return ToolResult(
-                success=False,
-                name=name,
-                content={
-                    "success": False,
-                    "error": {
-                        "type": "semantic_failure_repeat",
-                        "message": message,
+        predicted_signature = self._predict_failure_signature(call)
+        if predicted_signature:
+            repeat_count = self._semantic_failure_counts.get(predicted_signature, 0)
+            if repeat_count >= self.SEMANTIC_FAILURE_REPEAT_LIMIT:
+                message = (
+                    f"'{name}' has already produced the same failure "
+                    f"{repeat_count} times in this run. Do not retry the same failing "
+                    "strategy. Inspect the concrete error, correct the arguments, "
+                    "or choose a different tool."
+                )
+                return ToolResult(
+                    success=False,
+                    name=name,
+                    content={
+                        "success": False,
+                        "error": {
+                            "type": "semantic_failure_repeat",
+                            "message": message,
+                        },
                     },
-                },
-                metadata={
-                    "runtime_gate": True,
-                    "recovery_required": True,
-                    "failure_signature": recent_failures[-1],
-                    "repeat_count": self.SEMANTIC_FAILURE_REPEAT_LIMIT,
-                },
-                summary=f"RECOVERY BLOCKED: {message}",
-            )
+                    metadata={
+                        "runtime_gate": True,
+                        "recovery_required": True,
+                        "failure_signature": predicted_signature,
+                        "repeat_count": repeat_count,
+                    },
+                    summary=f"RECOVERY BLOCKED: {message}",
+                )
 
         # Never repeat the exact failed action unchanged at the same revision.
         key = self._tool_call_key(call)
@@ -1380,6 +1415,14 @@ class Loop:
             self._store_nudge(guard_decision.message)
 
         if result.success:
+            tool_name = str(getattr(call, "name", result.name)).strip().lower()
+            if tool_name:
+                prefix = f"{tool_name}::"
+                self._semantic_failure_counts = {
+                    failure_key: count
+                    for failure_key, count in self._semantic_failure_counts.items()
+                    if not failure_key.startswith(prefix)
+                }
 
             key = self._tool_call_key(call)
 
@@ -1407,6 +1450,11 @@ class Loop:
                 )
 
         if not result.success and status not in {"running"}:
+            failure_signature = self._failure_signature(call, result)
+            self._semantic_failure_counts[failure_signature] = (
+                self._semantic_failure_counts.get(failure_signature, 0) + 1
+            )
+
             key = self._tool_call_key(call)
             previous_revision, previous_count = self._failed_call_keys.get(
                 key,
@@ -1505,62 +1553,28 @@ class Loop:
         call,
         result: ToolResult,
     ) -> str | None:
-
         is_duplicate = bool(
-            isinstance(
-                result.metadata,
-                dict,
-            )
-            and result.metadata.get(
-                "duplicate_action",
-                False,
-            )
+            isinstance(result.metadata, dict)
+            and result.metadata.get("duplicate_action", False)
         )
 
         status = self._tool_result_status(result)
-
         if status == "running":
-            # A managed process is a state transition, not a command failure.
             return None
 
         if isinstance(result.metadata, dict) and result.metadata.get("runtime_gate"):
             return None
 
-        if result.success:
-
-            self._recent_failure_signatures.clear()
-
-            return None
-
-        if is_duplicate:
-
+        if result.success or is_duplicate:
             return None
 
         if isinstance(result.metadata, dict) and result.metadata.get("loop_guard_block"):
             return None
 
-        signature = self._failure_signature(
-            call,
-            result,
-        )
-
-        self._recent_failure_signatures.append(signature)
-
-        if len(self._recent_failure_signatures) > self.FAILURE_STUCK_THRESHOLD:
-
-            self._recent_failure_signatures.pop(0)
-
-        if (
-            len(self._recent_failure_signatures) >= self.FAILURE_STUCK_THRESHOLD
-            and len(set(self._recent_failure_signatures)) == 1
-        ):
-
-            return (
-                f"STUCK: "
-                f"'{call.name}' failed "
-                f"{self.FAILURE_STUCK_THRESHOLD} "
-                "times in a row."
-            )
+        signature = self._failure_signature(call, result)
+        count = self._semantic_failure_counts.get(signature, 0)
+        if count >= self.FAILURE_STUCK_THRESHOLD:
+            return f"STUCK: '{call.name}' produced the same semantic failure {count} times in this run."
 
         return None
 
@@ -2084,6 +2098,7 @@ class Loop:
         self._duplicate_block_streak = 0
 
         self._recent_failure_signatures.clear()
+        self._semantic_failure_counts.clear()
         self._failed_call_keys.clear()
         self._active_process_ids.clear()
         self._recovery_mode = False
