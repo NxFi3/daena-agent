@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -14,9 +15,19 @@ DEFAULT_INSTRUCTION = (
     "You are Daena, an autonomous assistant and software engineering agent."
 )
 
-SYSTEM_INSTRUCTION_PATH = Path("AgentInstruction/systeminstruction.md")
-EXPERIENCE_PATH = Path("AgentInstruction/experience.md")
+# Anchor instruction files to the repository root instead of the process CWD.
+# With CWD-relative paths, launching the agent from any other directory
+# silently fell back to the one-line DEFAULT_INSTRUCTION.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+SYSTEM_INSTRUCTION_PATH = _REPO_ROOT / "AgentInstruction" / "systeminstruction.md"
+EXPERIENCE_PATH = _REPO_ROOT / "AgentInstruction" / "experience.md"
 PLANS_PATH = Path(".daena") / "plan.md"
+
+# Header fields of a rendered read_file tool message (see _tool_payload).
+_READ_PATH_RE = re.compile(r'"path":\s*"((?:[^"\\]|\\.)*)"')
+_READ_START_RE = re.compile(r'"start_line":\s*(\d+|null)')
+_READ_END_RE = re.compile(r'"end_line":\s*(\d+|null)')
 
 
 def PlanReader(workspace: str | Path | None = None) -> str:
@@ -52,10 +63,35 @@ class ContextBuilder:
     MAX_TOOL_CHARS = 8000
     OLD_TOOL_CHARS = 300
     FULL_TOOL_RESULTS = 6
+
+    # The most recent distinct read_file results that fall outside the
+    # FULL_TOOL_RESULTS window stay (almost) intact. Cutting every old read
+    # to OLD_TOOL_CHARS made the model forget file contents and re-read the
+    # same files dozens of times.
+    PINNED_READ_RESULTS = 3
+    PINNED_READ_CHARS = 6000
+
+    OLD_RESULT_MARKER = (
+        " ...[old result truncated to save context; "
+        "re-run the tool only if you still need it]"
+    )
+
     MAX_EXPERIENCE_CHARS = 4000
     MAX_LEARNED_EXPERIENCE_CHARS = 3000
     MAX_EXECUTION_STATE_CHARS = 7000
     MAX_WORKSPACE_ENTRIES_FOR_CONTEXT = 80
+
+    # When the execution state is too large, drop sections in this order
+    # (least decision-critical first) instead of cutting the JSON mid-string.
+    _EXECUTION_STATE_DROP_ORDER = (
+        "workspace",
+        "artifacts",
+        "observations",
+        "facts",
+        "progress",
+        "recent_actions",
+        "processes",
+    )
 
     def __init__(self, config: dict[str, Any], llm_provider: LlmProvider) -> None:
         self.config = config
@@ -116,6 +152,32 @@ class ContextBuilder:
             value[: limit - 64].rstrip()
             + "\n\n"
             + f"... {omitted} characters omitted ..."
+        )
+
+    @staticmethod
+    def _head_tail(value: str, limit: int, head_ratio: float = 0.65) -> str:
+        """Truncate keeping BOTH the start and the end of the text.
+
+        Tracebacks, test summaries and exit information live at the end of
+        tool output, so a head-only cut hides the most useful part.
+        """
+        value = str(value or "")
+        if len(value) <= limit:
+            return value
+
+        marker_room = 96
+        if limit <= marker_room * 2:
+            return value[:limit]
+
+        budget = limit - marker_room
+        head = int(budget * head_ratio)
+        tail = budget - head
+        omitted = len(value) - head - tail
+
+        return (
+            value[:head].rstrip()
+            + f"\n\n... {omitted} characters omitted ...\n\n"
+            + value[-tail:].lstrip()
         )
 
     def _build_conversation(
@@ -245,7 +307,7 @@ class ContextBuilder:
         if blocks:
             text += "\n\n" + "\n\n".join(blocks)
         if len(text) > self.MAX_TOOL_CHARS:
-            text = text[: self.MAX_TOOL_CHARS] + "\n...[truncated]"
+            text = self._head_tail(text, self.MAX_TOOL_CHARS)
         return text
 
     def _sanitize_tool_protocol(
@@ -307,6 +369,30 @@ class ContextBuilder:
 
         return sanitized
 
+    @staticmethod
+    def _read_signature(message: dict[str, Any]) -> tuple[str, str, str] | None:
+        """Identify a successful read_file result as (path, start, end)."""
+        if message.get("tool_name") != "read_file":
+            return None
+
+        content = message.get("content")
+        if not isinstance(content, str):
+            return None
+
+        header = content[:1200]
+        path_match = _READ_PATH_RE.search(header)
+        if path_match is None:
+            return None
+
+        start_match = _READ_START_RE.search(header)
+        end_match = _READ_END_RE.search(header)
+
+        return (
+            path_match.group(1),
+            start_match.group(1) if start_match else "",
+            end_match.group(1) if end_match else "",
+        )
+
     def _shrink_old_tool_results(self, messages: list[dict[str, Any]]) -> None:
         tool_positions = [
             index
@@ -315,11 +401,44 @@ class ContextBuilder:
         ]
         if len(tool_positions) <= self.FULL_TOOL_RESULTS:
             return
-        for index in tool_positions[: -self.FULL_TOOL_RESULTS]:
+
+        recent_positions = tool_positions[-self.FULL_TOOL_RESULTS :]
+        old_positions = tool_positions[: -self.FULL_TOOL_RESULTS]
+
+        # Pin the newest distinct file reads that are about to age out, unless
+        # the same range is still present in the recent window.
+        seen: set[tuple[str, str, str]] = set()
+        for index in recent_positions:
+            signature = self._read_signature(messages[index])
+            if signature is not None:
+                seen.add(signature)
+
+        pinned: set[int] = set()
+        for index in reversed(old_positions):
+            if len(pinned) >= self.PINNED_READ_RESULTS:
+                break
+            signature = self._read_signature(messages[index])
+            if signature is None or signature in seen:
+                continue
+            seen.add(signature)
+            pinned.add(index)
+
+        for index in old_positions:
             content = messages[index].get("content", "")
-            if isinstance(content, str) and len(content) > self.OLD_TOOL_CHARS:
+            if not isinstance(content, str):
+                continue
+
+            if index in pinned:
+                if len(content) > self.PINNED_READ_CHARS:
+                    messages[index]["content"] = self._head_tail(
+                        content,
+                        self.PINNED_READ_CHARS,
+                    )
+                continue
+
+            if len(content) > self.OLD_TOOL_CHARS:
                 messages[index]["content"] = (
-                    content[: self.OLD_TOOL_CHARS] + " ...[old result truncated]"
+                    content[: self.OLD_TOOL_CHARS] + self.OLD_RESULT_MARKER
                 )
 
     def _compact_execution_state(
@@ -515,6 +634,22 @@ class ContextBuilder:
             return ""
 
         rendered = json.dumps(state, ensure_ascii=False, default=str)
+        if len(rendered) <= self.MAX_EXECUTION_STATE_CHARS:
+            return rendered
+
+        # Too large: drop whole low-priority sections (keeping the JSON valid)
+        # rather than cutting the string in the middle of a value.
+        dropped: list[str] = []
+        for key in self._EXECUTION_STATE_DROP_ORDER:
+            if key not in state:
+                continue
+            state.pop(key)
+            dropped.append(key)
+            state["omitted_for_space"] = list(dropped)
+            rendered = json.dumps(state, ensure_ascii=False, default=str)
+            if len(rendered) <= self.MAX_EXECUTION_STATE_CHARS:
+                return rendered
+
         return self._truncate(rendered, self.MAX_EXECUTION_STATE_CHARS)
 
     def _populate_window(

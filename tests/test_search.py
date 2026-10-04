@@ -40,6 +40,24 @@ def test_search_accepts_invalid_regex_as_literal_text(tmp_path):
     assert result.content["result_count"] == 1
 
 
+def test_search_invalid_regex_with_use_regex_falls_back_to_literal(tmp_path):
+    (tmp_path / "app.py").write_text(
+        "result = call_handler(payload\n",
+        encoding="utf-8",
+    )
+
+    result = Search().execute(
+        query="call_handler(",
+        path=str(tmp_path),
+        max_results=10,
+        use_regex=True,
+    )
+
+    assert result.success is True
+    assert result.content["result_count"] == 1
+    assert "literal" in result.content["note"]
+
+
 def test_search_skips_common_generated_directories(tmp_path):
     generated = tmp_path / "node_modules"
     generated.mkdir()

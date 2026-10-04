@@ -122,13 +122,23 @@ class Search(Tool):
 
         patterns = self._patterns(file_pattern)
 
+        regex_note: str | None = None
+
         if isinstance(use_regex, bool) and use_regex:
             try:
                 matcher = re.compile(query, re.IGNORECASE | re.MULTILINE)
             except re.error as exc:
-                return self._error(
-                    "invalid_regex",
-                    f"Invalid regular expression: {exc}",
+                # A malformed pattern (for example an unbalanced '(') used to
+                # fail the call and the model tended to retry it unchanged.
+                # Fall back to a literal search and tell the model so.
+                matcher = re.compile(
+                    re.escape(query),
+                    re.IGNORECASE | re.MULTILINE,
+                )
+                regex_note = (
+                    f"Invalid regular expression ({exc}); searched for the "
+                    "query as literal text instead. Escape special characters "
+                    "or set use_regex=false for literal search."
                 )
         else:
             matcher = re.compile(re.escape(query), re.IGNORECASE | re.MULTILINE)
@@ -201,18 +211,23 @@ class Search(Tool):
         if len(rendered) > self.MAX_OUTPUT_CHARS:
             rendered = rendered[: self.MAX_OUTPUT_CHARS] + "\n...[output truncated]"
 
+        content: dict[str, Any] = {
+            "success": True,
+            "query": query,
+            "path": str(root),
+            "result_count": len(matches),
+            "truncated": truncated,
+            "content": rendered
+            or f'No matches for "{query}" under {root}.',
+        }
+
+        if regex_note:
+            content["note"] = regex_note
+
         return ToolResult(
             success=True,
             name=self.name,
-            content={
-                "success": True,
-                "query": query,
-                "path": str(root),
-                "result_count": len(matches),
-                "truncated": truncated,
-                "content": rendered
-                or f'No matches for "{query}" under {root}.',
-            },
+            content=content,
             metadata={
                 "match_count": len(matches),
             },

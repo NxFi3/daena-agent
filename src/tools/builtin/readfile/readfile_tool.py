@@ -149,6 +149,25 @@ class ReadFile(Tool):
             tool.execute(**toolcall.args)
         """
 
+        # Models frequently send a reversed range (end_line < start_line).
+        # Failing here used to trap the agent in an identical-retry loop that
+        # the runtime then blocked. Recover instead: read from start_line to
+        # the end of the file (still bounded by max_output_chars) and say so.
+        range_note: str | None = None
+        if (
+            type(start_line) is int
+            and type(end_line) is int
+            and start_line >= 1
+            and end_line >= 1
+            and start_line > end_line
+        ):
+            range_note = (
+                f"end_line ({end_line}) was before start_line ({start_line}); "
+                f"returned lines from {start_line} to the end of the file "
+                "instead. Use end_line >= start_line to limit the range."
+            )
+            end_line = None
+
         validation_error = self._validate_arguments(
             file_path=file_path,
             start_line=start_line,
@@ -202,12 +221,21 @@ class ReadFile(Tool):
                 },
             )
 
-        return self._read_file(
+        result = self._read_file(
             path=path,
             start_line=start_line,
             end_line=end_line,
             max_output_chars=max_output_chars,
         )
+
+        if (
+            range_note
+            and result.success
+            and isinstance(result.content, dict)
+        ):
+            result.content["note"] = range_note
+
+        return result
 
     def _validate_arguments(
         self,
