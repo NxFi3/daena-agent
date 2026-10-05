@@ -46,25 +46,25 @@ STYLE = Style.from_dict(
 )
 
 COMMANDS = {
-    "help": None,
-    "status": None,
-    "sessions": None,
-    "session": {"new": None},
-    "new": None,
-    "reasoning": {"low": None, "medium": None, "high": None, "off": None, "auto": None},
-    "think": {"low": None, "medium": None, "high": None, "off": None, "auto": None},
-    "busy": {"steer": None, "interrupt": None, "queue": None, "status": None},
-    "provider": None,
-    "model": None,
-    "set": {
+    "/help": None,
+    "/status": None,
+    "/sessions": None,
+    "/session": {"new": None},
+    "/new": None,
+    "/reasoning": {"low": None, "medium": None, "high": None, "off": None, "auto": None},
+    "/think": {"low": None, "medium": None, "high": None, "off": None, "auto": None},
+    "/busy": {"steer": None, "interrupt": None, "queue": None, "status": None},
+    "/provider": None,
+    "/model": None,
+    "/set": {
         "temperature": None,
         "num_thread": None,
         "max_iterations": None,
         "think": None,
     },
-    "interrupt": None,
-    "clear": None,
-    "exit": None,
+    "/interrupt": None,
+    "/clear": None,
+    "/exit": None,
 }
 
 HELP_LINES = (
