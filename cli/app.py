@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from datetime import datetime
 from uuid import UUID, uuid4
 
 from rich.console import Console
@@ -94,24 +95,92 @@ def _session_file(agent: Agent) -> Path:
 def _save_session(agent: Agent) -> Path:
     path = _session_file(agent)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"session_id": str(agent.session_id)}, indent=2), encoding="utf-8")
+    path.write_text(
+        json.dumps({"session_id": str(agent.session_id)}, indent=2),
+        encoding="utf-8",
+    )
     return path
 
 
 def _load_session(agent: Agent, value: str) -> None:
     session_id = UUID(value.strip())
+    if agent.loop.stm.count(session_id) == 0:
+        raise ValueError(f"No saved conversation found for session {session_id}.")
     agent.session_id = session_id
     agent.loop.session_id = session_id
 
 
-def _show_session(console: Console, agent: Agent) -> None:
-    path = _session_file(agent)
-    console.print(Panel(
-        f"[bold cyan]session[/bold cyan]  {agent.session_id}\n"
-        f"[bold cyan]saved file[/bold cyan]  {path if path.exists() else '(not saved yet)'}",
-        title="[bold magenta]Daena session[/bold magenta]",
-        border_style="magenta",
-    ))
+def _new_session(agent: Agent) -> None:
+    session_id = uuid4()
+    agent.session_id = session_id
+    agent.loop.session_id = session_id
+
+
+def _format_age(value: object) -> str:
+    try:
+        when = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return "unknown time"
+
+    seconds = max(0, int((datetime.now() - when).total_seconds()))
+    if seconds < 60:
+        return "just now"
+    if seconds < 3600:
+        return f"{seconds // 60} min ago"
+    if seconds < 86400:
+        return f"{seconds // 3600} hr ago"
+    if seconds < 604800:
+        return f"{seconds // 86400} day{'s' if seconds // 86400 != 1 else ''} ago"
+    return when.strftime("%Y-%m-%d")
+
+
+def _session_title(value: object) -> str:
+    text = " ".join(str(value or "").split())
+    if not text:
+        return "Untitled conversation"
+    if text.startswith("["):
+        text = text.lstrip("[")
+    if len(text) > 72:
+        return text[:69].rstrip() + "..."
+    return text
+
+
+def _session_rows(agent: Agent, limit: int = 30) -> list[dict]:
+    return agent.loop.stm.list_sessions(limit=limit)
+
+
+def _show_sessions(console: Console, agent: Agent) -> list[dict]:
+    sessions = _session_rows(agent)
+    if not sessions:
+        console.print(
+            Panel(
+                "No conversations yet. Send a message to create your first one.",
+                title="[bold cyan]Daena history[/bold cyan]",
+                border_style="cyan",
+            )
+        )
+        return []
+
+    table = Table(title="Recent conversations", expand=True, box=None)
+    table.add_column("#", style="bold cyan", width=4)
+    table.add_column("Conversation", style="white")
+    table.add_column("Updated", style="dim", width=14)
+    table.add_column("Events", justify="right", style="dim", width=8)
+
+    for index, session in enumerate(sessions, start=1):
+        session_id = str(session.get("session_id") or "")
+        current = session_id == str(agent.session_id)
+        prefix = "● " if current else "  "
+        table.add_row(
+            str(index),
+            prefix + _session_title(session.get("title")),
+            _format_age(session.get("last_activity")),
+            str(session.get("event_count", 0)),
+        )
+
+    console.print(Panel(table, title="[bold cyan]Daena history[/bold cyan]", border_style="cyan"))
+    return sessions
+
 
 
 def _show_help(console: Console) -> None:
@@ -125,9 +194,10 @@ def _show_help(console: Console) -> None:
     table.add_row("/set key value", "change runtime settings (temperature, threads, iterations, think)")
     table.add_row("/tools", "show tools currently exposed to the Agent")
     table.add_row("/stats", "show metrics from the last completed turn")
-    table.add_row("/session", "show session id")
-    table.add_row("/session save", "save the current session id in the workspace")
-    table.add_row("/session load UUID", "resume an existing STM session")
+    table.add_row("/session", "show recent conversations")
+    table.add_row("/session N", "open conversation N from the history")
+    table.add_row("/session new", "start a fresh conversation")
+    table.add_row("/session save", "save the current session id for compatibility")
     table.add_row("/steer text", "send guidance to the running Agent without ending the task")
     table.add_row("/clear", "clear the terminal")
     table.add_row("/exit", "close Daena")
@@ -213,7 +283,7 @@ def _run_turn(console: Console, agent: Agent, user_text: str) -> None:
         content=user_text,
         priority=ContextPriority.NORMAL,
         step=0,
-        metadata={"source": "cli"},
+        metadata={"source": "cli", "workspace": agent.workingdirectory},
     )
 
     def emit(event: dict) -> None:
@@ -421,22 +491,29 @@ def main() -> None:
                     _show_stats(console, agent)
                     continue
                 if command == "/session":
-                    bits = argument.split(maxsplit=1)
-                    action = bits[0].lower() if bits else ""
-                    value = bits[1].strip() if len(bits) > 1 else ""
-                    if not action:
-                        _show_session(console, agent)
-                    elif action == "save":
+                    if not argument:
+                        _show_sessions(console, agent)
+                    elif argument.lower() == "new":
+                        _new_session(agent)
+                        console.print(f"[green]new conversation started[/green]")
+                    elif argument.lower() == "save":
                         path = _save_session(agent)
                         console.print(f"[green]session saved → {path}[/green]")
-                    elif action == "load":
-                        try:
-                            _load_session(agent, value)
-                            console.print(f"[green]session loaded → {agent.session_id}[/green]")
-                        except Exception as exc:
-                            console.print(f"[red]{type(exc).__name__}: {exc}[/red]")
+                    elif argument.isdigit():
+                        sessions = _session_rows(agent)
+                        index = int(argument)
+                        if index < 1 or index > len(sessions):
+                            console.print(f"[yellow]No conversation #{index}.[/yellow]")
+                        else:
+                            selected = str(sessions[index - 1]["session_id"])
+                            try:
+                                _load_session(agent, selected)
+                                title = _session_title(sessions[index - 1].get("title"))
+                                console.print(f"[green]opened #{index} · {title}[/green]")
+                            except Exception as exc:
+                                console.print(f"[red]{type(exc).__name__}: {exc}[/red]")
                     else:
-                        console.print("[yellow]Usage: /session | /session save | /session load UUID[/yellow]")
+                        console.print("[yellow]Usage: /session | /session N | /session new[/yellow]")
                     continue
                 if command == "/think":
                     value = argument.lower() or str(_think_value(agent)).lower()
