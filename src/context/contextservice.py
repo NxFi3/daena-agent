@@ -76,6 +76,7 @@ class ContextService:
         workspace_directory: str | None = None,
         recent_limit: int | None = None,
         search_top_k: int | None = None,
+        available_tool_names: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         recent_events = self.stm.get_recent(
             session_id=session_id,
@@ -104,6 +105,7 @@ class ContextService:
             observation=observation or {},
             recent_actions=recent_actions or {},
             workspace=workspace_directory,
+            available_tool_names=available_tool_names,
         )
         return self.context
 
