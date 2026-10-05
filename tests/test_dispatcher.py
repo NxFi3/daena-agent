@@ -299,3 +299,19 @@ def test_dispatcher_drops_read_file_result_fields_from_input():
         "start_line": 1,
     }
     assert any("lines_requested" in note for note in call.normalization_notes)
+
+
+def test_dispatcher_normalizes_wait_ms_alias():
+    dispatcher = ToolDispatcher(CommandRegistry())
+    calls = dispatcher.dispatch({
+        "name": "command_exec",
+        "arguments": {
+            "command": ["pytest", "-q"],
+            "wait_ms": 5000,
+        },
+    })
+
+    call = calls[0]
+    assert call.valid is True
+    assert call.args["yield_time_ms"] == 5000
+    assert "wait_ms" not in call.args
