@@ -490,17 +490,21 @@ class ContextBuilder:
                 workspace_state = {
                     "file_count": working_set.get("workspace_file_count", 0),
                     "directory_count": working_set.get("workspace_directory_count", 0),
-                    "truncated": bool(working_set.get("workspace_inventory_truncated", False)),
+                    "truncated": bool(
+                        working_set.get("workspace_inventory_truncated", False)
+                    ),
                     "entries": [],
                 }
                 for item in inventory[: self.MAX_WORKSPACE_ENTRIES_FOR_CONTEXT]:
                     if not isinstance(item, dict):
                         continue
-                    workspace_state["entries"].append({
-                        key: item.get(key)
-                        for key in ("path", "type", "size")
-                        if item.get(key) not in (None, "")
-                    })
+                    workspace_state["entries"].append(
+                        {
+                            key: item.get(key)
+                            for key in ("path", "type", "size")
+                            if item.get(key) not in (None, "")
+                        }
+                    )
                 state["workspace"] = workspace_state
 
             plan_progress = working_set.get("plan_progress")
@@ -593,7 +597,12 @@ class ContextBuilder:
                         continue
                     compact = {
                         key: item.get(key)
-                        for key in ("status", "known", "last_operation", "last_iteration")
+                        for key in (
+                            "status",
+                            "known",
+                            "last_operation",
+                            "last_iteration",
+                        )
                         if key in item
                     }
                     preview = item.get("preview")
@@ -643,7 +652,12 @@ class ContextBuilder:
                     evidence = item.get("evidence")
                     if isinstance(evidence, dict):
                         evidence_copy = dict(evidence)
-                        for key in ("content", "stdout", "stderr", "diagnostic_excerpt"):
+                        for key in (
+                            "content",
+                            "stdout",
+                            "stderr",
+                            "diagnostic_excerpt",
+                        ):
                             if isinstance(evidence_copy.get(key), str):
                                 evidence_copy[key] = self._truncate(
                                     evidence_copy[key],
@@ -794,10 +808,7 @@ class ContextBuilder:
         latest_user_estimate = self.tokenbudget.estimate_messages_tokens([latest_user])
         available_tokens = max(
             128,
-            self.tokenbudget.budget
-            - system_estimate
-            - latest_user_estimate
-            - 128,
+            self.tokenbudget.budget - system_estimate - latest_user_estimate - 128,
         )
         summary_limit = max(
             512,
@@ -845,17 +856,14 @@ class ContextBuilder:
                 "content": "",
             },
         )
-        rest = [
-            message for message in messages
-            if message.get("role") != "system"
-        ]
+        rest = [message for message in messages if message.get("role") != "system"]
 
         latest_user_index = self._last_index(rest, "user")
         if latest_user_index < 0:
             return None
 
         latest_user = dict(rest[latest_user_index])
-        history = rest[:latest_user_index] + rest[latest_user_index + 1:]
+        history = rest[:latest_user_index] + rest[latest_user_index + 1 :]
 
         recent = history[-8:]
         lines: list[str] = [
@@ -882,8 +890,7 @@ class ContextBuilder:
                 lines.append(self._truncate(self._safe_json(tool_calls), 1200))
 
         lines.append("</deterministic_context>")
-        fallback_text = "
-".join(lines)
+        fallback_text = "".join(lines)
 
         system_estimate = self.tokenbudget.estimate_messages_tokens([system])
         latest_estimate = self.tokenbudget.estimate_messages_tokens([latest_user])
