@@ -2325,11 +2325,22 @@ class Loop:
 
         try:
 
-            result = self.llm.generate(
-                context,
-                tools=self.tool_definitions,
-                on_event=self._emit_event,
-            )
+            # Keep the event stream optional so small/test LLM adapters that
+            # implement the older generate(messages, tools=...) contract keep
+            # working. The UI-enabled LlmProvider accepts on_event.
+            try:
+                result = self.llm.generate(
+                    context,
+                    tools=self.tool_definitions,
+                    on_event=self._emit_event,
+                )
+            except TypeError as type_error:
+                if "unexpected keyword argument 'on_event'" not in str(type_error):
+                    raise
+                result = self.llm.generate(
+                    context,
+                    tools=self.tool_definitions,
+                )
 
         except Exception as exc:
 
