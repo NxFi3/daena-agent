@@ -59,6 +59,7 @@ class StreamRenderer:
     _thinking_seen: bool = False
     _thinking_chars: int = 0
     _last_reasoning_notice: float = 0.0
+    _reasoning_phase: str = "analyzing context"
     _finished_rendered: bool = False
 
     def show_user_context(self, workspace: str) -> None:
@@ -97,6 +98,7 @@ class StreamRenderer:
             self._thinking_seen = False
             self._thinking_chars = 0
             self._last_reasoning_notice = 0.0
+            self._reasoning_phase = "analyzing context"
 
         elif event_type == "context":
             self.context_tokens = int(event.get("estimated_tokens") or 0)
@@ -112,15 +114,18 @@ class StreamRenderer:
             if not self._thinking_seen:
                 self._thinking_seen = True
                 self._last_reasoning_notice = now
-                self._print("\x1b[90mDAENA · reasoning…\x1b[0m")
+                self._print(
+                    f"\x1b[90mDAENA · reasoning · {self._reasoning_phase}…\x1b[0m"
+                )
             elif now - self._last_reasoning_notice >= 0.75:
                 self._last_reasoning_notice = now
                 self._print(
-                    f"\x1b[90mDAENA · reasoning… "
+                    f"\x1b[90mDAENA · reasoning · {self._reasoning_phase}… "
                     f"{self._thinking_chars:,} chars processed\x1b[0m"
                 )
 
         elif event_type == "content_delta":
+            self._reasoning_phase = "forming response"
             if self.status != "responding":
                 self._print("\x1b[90m   · responding…\x1b[0m")
                 self._print(f"\x1b[36mDAENA {self.model} ›\x1b[0m")
@@ -136,6 +141,7 @@ class StreamRenderer:
 
         elif event_type == "tool_call":
             self._flush_content(force=True)
+            self._reasoning_phase = f"choosing {str(event.get("name") or "tool")}"
             self.tool_count += 1
             self.status = f"tool:{_short(event.get('name') or 'unknown', 70)}"
             name = _short(event.get("name") or "unknown", 70)
@@ -147,6 +153,7 @@ class StreamRenderer:
 
         elif event_type == "tool_result":
             self._flush_content(force=True)
+            self._reasoning_phase = "evaluating tool result"
             name = _short(event.get("name") or "unknown", 70)
             success = bool(event.get("success"))
             if success:
