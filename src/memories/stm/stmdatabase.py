@@ -359,10 +359,7 @@ class STMDatabase:
         if not safe_terms:
             return []
 
-        fts_query = " AND ".join(safe_terms)
-
-        rows = self.connection.execute(
-            """
+        select_sql = """
             SELECT
                 e.id,
                 e.session_id,
@@ -387,13 +384,33 @@ class STMDatabase:
                 bm25(context_events_fts)
 
             LIMIT ?
-            """,
+        """
+
+        # Prefer a precise AND match. Long natural-language tasks often contain
+        # terms that never co-occur in one historical event, though, which made
+        # STM return nothing and forced the agent to rediscover the same evidence.
+        fts_query = " AND ".join(safe_terms)
+
+        rows = self.connection.execute(
+            select_sql,
             (
                 str(session_id),
                 fts_query,
                 top_k,
             ),
         ).fetchall()
+
+        if not rows and len(safe_terms) > 1:
+            fts_query = " OR ".join(safe_terms)
+
+            rows = self.connection.execute(
+                select_sql,
+                (
+                    str(session_id),
+                    fts_query,
+                    top_k,
+                ),
+            ).fetchall()
 
         return [self._row_to_event(row) for row in rows]
 
