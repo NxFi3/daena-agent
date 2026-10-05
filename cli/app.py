@@ -246,8 +246,12 @@ def _run_turn(console: Console, agent: Agent, user_text: str) -> None:
 
     interrupt_requested = False
     try:
-        live_context = Live(renderer.render(), console=console, refresh_per_second=10, transient=False)
-        with live_context as live:
+        with Live(
+            renderer.render(),
+            console=console,
+            refresh_per_second=10,
+            transient=False,
+        ) as live:
             while thread.is_alive() or not events.empty():
                 try:
                     while True:
@@ -261,22 +265,32 @@ def _run_turn(console: Console, agent: Agent, user_text: str) -> None:
                 if stop_event.is_set():
                     renderer.status = "interrupt requested..."
 
-                # Allow operator guidance while the Agent is working. The input
-            # reader only feeds a thread-safe queue; Loop consumes it at its
-            # own safe iteration boundary, so SQLite/context state stays in
-            # the Agent thread.
+                # Allow operator guidance while the Agent is working.
+                # The input reader only feeds the Agent's thread-safe queue;
+                # Loop consumes it at its own safe iteration boundary.
                 try:
                     ready, _, _ = select.select([sys.stdin], [], [], 0)
-                if ready:
-                    incoming = sys.stdin.readline().strip()
-                    if incoming:
-                        if incoming.lower() in {"/interrupt", "/stop", "/cancel"}:
-                            stop_event.set()
-                            console.print("[bold yellow]↯ Interrupt requested.[/bold yellow]")
-                        else:
-                            steering = incoming[7:].strip() if incoming.lower().startswith("/steer ") else incoming
-                            agent.steer(steering)
-                            console.print(f"[bold magenta]➜ steering:[/bold magenta] {steering}")
+                    if ready:
+                        incoming = sys.stdin.readline().strip()
+                        if incoming:
+                            lowered = incoming.lower()
+                            if lowered in {"/interrupt", "/stop", "/cancel"}:
+                                stop_event.set()
+                                interrupt_requested = True
+                                console.print(
+                                    "[bold yellow]↯ Interrupt requested. "
+                                    "Waiting for the current operation to return...[/bold yellow]"
+                                )
+                            else:
+                                steering = (
+                                    incoming[7:].strip()
+                                    if lowered.startswith("/steer ")
+                                    else incoming
+                                )
+                                agent.steer(steering)
+                                console.print(
+                                    f"[bold magenta]➜ steering:[/bold magenta] {steering}"
+                                )
                 except (OSError, ValueError):
                     pass
 
@@ -287,21 +301,41 @@ def _run_turn(console: Console, agent: Agent, user_text: str) -> None:
                         stop_event.set()
                         interrupt_requested = True
                         renderer.status = "interrupt requested..."
-                        console.print("[bold yellow]↯ Interrupt requested. Daena will stop at the next safe loop boundary.[/bold yellow]")
+                        console.print(
+                            "[bold yellow]↯ Interrupt requested. "
+                            "Waiting for the current operation to return...[/bold yellow]"
+                        )
     except KeyboardInterrupt:
-        if not interrupt_requested:
+        # KeyboardInterrupt can arrive from Rich's render/update path rather
+        # than the sleep call. Never let it escape into the top-level CLI.
+        stop_event.set()
+        interrupt_requested = True
+        console.print(
+            "[bold yellow]↯ Interrupt requested. "
+            "Waiting for the current operation to return...[/bold yellow]"
+        )
+
+    # Do not reuse the Agent concurrently while its current turn is alive.
+    while thread.is_alive():
+        try:
+            time.sleep(0.05)
+        except KeyboardInterrupt:
             stop_event.set()
             interrupt_requested = True
-            renderer.status = "interrupt requested..."
-            console.print("[bold yellow]↯ Interrupt requested. Daena will stop at the next safe loop boundary.[/bold yellow]")
 
-        while not events.empty():
-            renderer.handle(events.get_nowait())
-        live.update(renderer.render())
+    while not events.empty():
+        renderer.handle(events.get_nowait())
+
+    if interrupt_requested and not holder.get("result"):
+        renderer.status = "interrupted"
 
     if "error" in holder:
         console.print(
-            Panel(str(holder["error"]), title="[bold red]turn error[/bold red]", border_style="red")
+            Panel(
+                str(holder["error"]),
+                title="[bold red]turn error[/bold red]",
+                border_style="red",
+            )
         )
         return
 
@@ -323,7 +357,6 @@ def _run_turn(console: Console, agent: Agent, user_text: str) -> None:
         f"[dim]turn complete · {metrics.get('iterations', 0)} iterations · "
         f"{tokens} tokens · {duration:.0f} ms[/dim]"
     )
-
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="daena", description="Daena interactive coding-agent CLI")
