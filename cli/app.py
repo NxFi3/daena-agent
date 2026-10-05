@@ -161,7 +161,7 @@ def _show_sessions(console: Console, agent: Agent) -> None:
         console.print("[dim]No conversations yet.[/dim]")
         return
 
-    console.print("\n[bold cyan]Conversations[/bold cyan]")
+    console.print("\n[bold cyan]Conversations[/bold cyan]\n")
     for index, session in enumerate(sessions, start=1):
         current = str(session.get("session_id")) == str(agent.session_id)
         marker = "●" if current else " "
@@ -226,8 +226,8 @@ def _show_help(console: Console) -> None:
                     "/help                 commands",
                     "/status               runtime status",
                     "/sessions             conversation history",
-                    "/session N             open conversation N",
-                    "/session new           new conversation",
+                    "/session N              open conversation N",
+                    "/session new            new conversation",
                     "/think low|medium|high|off|auto",
                     "/provider [name]      show/switch provider",
                     "/model [name]         show/set model",
@@ -235,7 +235,7 @@ def _show_help(console: Console) -> None:
                     "/tools                available tools",
                     "/stats                last run metrics",
                     "/cwd [path]           show/change workspace",
-                    "/interrupt            stop current task",
+                    "/interrupt              stop current task",
                     "/clear                clear terminal",
                     "/exit                 quit Daena",
                     "",
@@ -393,6 +393,7 @@ def _run_turn(console: Console, agent: Agent, text: str, state: dict) -> None:
             state["running"] = False
             state["stop_event"] = None
             state["toolbar"] = renderer.toolbar()
+            state["turn_finished"] = True
 
     state["running"] = True
     state["stop_event"] = stop_event
@@ -404,16 +405,22 @@ def _run_turn(console: Console, agent: Agent, text: str, state: dict) -> None:
 
 def _print_turn_result(console: Console, state: dict) -> None:
     result = state.get("result")
-    if result is not None:
-        response = getattr(result, "response", None)
-        if response:
-            console.print(Markdown(str(response)))
-    metrics = state.get("renderer")
-    if metrics:
+    renderer = state.get("renderer")
+
+    if "error" in state and state.get("error") is not None:
+        console.print(f"[red]turn error: {state['error']}[/red]")
+
+    response = getattr(result, "response", None) if result is not None else None
+    already_streamed = bool(getattr(renderer, "response_started", False))
+    if response and not already_streamed:
+        console.print(Markdown(str(response)))
+
+    if renderer:
         console.print(
-            f"[dim]done · iter {metrics.iteration} · "
-            f"tools {metrics.tool_count} · usage {metrics.usage}[/dim]"
+            f"[dim]done · iter {renderer.iteration} · "
+            f"tools {renderer.tool_count} · usage {renderer.usage}[/dim]"
         )
+
     state["result"] = None
     state["error"] = None
     state["renderer"] = None
@@ -445,6 +452,7 @@ def main() -> None:
         "result": None,
         "error": None,
         "toolbar": "ready",
+        "turn_finished": False,
     }
 
     completer = NestedCompleter.from_nested_dict(
@@ -479,6 +487,11 @@ def main() -> None:
     try:
         while True:
             running = bool(state["running"])
+
+            if state.get("turn_finished") and not running:
+                with patch_stdout(raw=True):
+                    _print_turn_result(console, state)
+                state["turn_finished"] = False
 
             try:
                 with patch_stdout(raw=True):
@@ -525,6 +538,7 @@ def main() -> None:
                     break
                 continue
 
+            state["turn_finished"] = False
             _run_turn(console, agent, user_text, state)
 
             # Worker is asynchronous so the input prompt remains available.
