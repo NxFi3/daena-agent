@@ -8,7 +8,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -87,6 +87,33 @@ def _set_setting(agent: Agent, key: str, value: str) -> object:
     return parsed
 
 
+def _session_file(agent: Agent) -> Path:
+    return Path(agent.workingdirectory) / ".daena" / "cli-session.json"
+
+
+def _save_session(agent: Agent) -> Path:
+    path = _session_file(agent)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"session_id": str(agent.session_id)}, indent=2), encoding="utf-8")
+    return path
+
+
+def _load_session(agent: Agent, value: str) -> None:
+    session_id = UUID(value.strip())
+    agent.session_id = session_id
+    agent.loop.session_id = session_id
+
+
+def _show_session(console: Console, agent: Agent) -> None:
+    path = _session_file(agent)
+    console.print(Panel(
+        f"[bold cyan]session[/bold cyan]  {agent.session_id}\n"
+        f"[bold cyan]saved file[/bold cyan]  {path if path.exists() else '(not saved yet)'}",
+        title="[bold magenta]Daena session[/bold magenta]",
+        border_style="magenta",
+    ))
+
+
 def _show_help(console: Console) -> None:
     table = Table.grid(padding=(0, 2))
     table.add_row("/help", "show commands")
@@ -98,6 +125,9 @@ def _show_help(console: Console) -> None:
     table.add_row("/set key value", "change runtime settings (temperature, threads, iterations, think)")
     table.add_row("/tools", "show tools currently exposed to the Agent")
     table.add_row("/stats", "show metrics from the last completed turn")
+    table.add_row("/session", "show session id")
+    table.add_row("/session save", "save the current session id in the workspace")
+    table.add_row("/session load UUID", "resume an existing STM session")
     table.add_row("/steer text", "send guidance to the running Agent without ending the task")
     table.add_row("/clear", "clear the terminal")
     table.add_row("/exit", "close Daena")
@@ -215,26 +245,28 @@ def _run_turn(console: Console, agent: Agent, user_text: str) -> None:
     thread.start()
 
     interrupt_requested = False
-    with Live(renderer.render(), console=console, refresh_per_second=10, transient=False) as live:
-        while thread.is_alive() or not events.empty():
-            try:
-                while True:
-                    event = events.get_nowait()
-                    renderer.handle(event)
-            except queue.Empty:
-                pass
+    try:
+        live_context = Live(renderer.render(), console=console, refresh_per_second=10, transient=False)
+        with live_context as live:
+            while thread.is_alive() or not events.empty():
+                try:
+                    while True:
+                        event = events.get_nowait()
+                        renderer.handle(event)
+                except queue.Empty:
+                    pass
 
-            live.update(renderer.render())
+                live.update(renderer.render())
 
-            if stop_event.is_set():
-                renderer.status = "interrupt requested..."
+                if stop_event.is_set():
+                    renderer.status = "interrupt requested..."
 
-            # Allow operator guidance while the Agent is working. The input
+                # Allow operator guidance while the Agent is working. The input
             # reader only feeds a thread-safe queue; Loop consumes it at its
             # own safe iteration boundary, so SQLite/context state stays in
             # the Agent thread.
-            try:
-                ready, _, _ = select.select([sys.stdin], [], [], 0)
+                try:
+                    ready, _, _ = select.select([sys.stdin], [], [], 0)
                 if ready:
                     incoming = sys.stdin.readline().strip()
                     if incoming:
@@ -245,17 +277,23 @@ def _run_turn(console: Console, agent: Agent, user_text: str) -> None:
                             steering = incoming[7:].strip() if incoming.lower().startswith("/steer ") else incoming
                             agent.steer(steering)
                             console.print(f"[bold magenta]➜ steering:[/bold magenta] {steering}")
-            except (OSError, ValueError):
-                pass
+                except (OSError, ValueError):
+                    pass
 
-            try:
-                time.sleep(0.05)
-            except KeyboardInterrupt:
-                if not interrupt_requested:
-                    stop_event.set()
-                    interrupt_requested = True
-                    renderer.status = "interrupt requested..."
-                    console.print("[bold yellow]↯ Interrupt requested. Daena will stop at the next safe loop boundary.[/bold yellow]")
+                try:
+                    time.sleep(0.05)
+                except KeyboardInterrupt:
+                    if not interrupt_requested:
+                        stop_event.set()
+                        interrupt_requested = True
+                        renderer.status = "interrupt requested..."
+                        console.print("[bold yellow]↯ Interrupt requested. Daena will stop at the next safe loop boundary.[/bold yellow]")
+    except KeyboardInterrupt:
+        if not interrupt_requested:
+            stop_event.set()
+            interrupt_requested = True
+            renderer.status = "interrupt requested..."
+            console.print("[bold yellow]↯ Interrupt requested. Daena will stop at the next safe loop boundary.[/bold yellow]")
 
         while not events.empty():
             renderer.handle(events.get_nowait())
@@ -291,6 +329,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="daena", description="Daena interactive coding-agent CLI")
     parser.add_argument("--cwd", dest="cwd", default=None, help="initial Agent workspace")
     parser.add_argument("--no-think", action="store_true", help="disable Ollama thinking for this session")
+    parser.add_argument("--session", dest="session", default=None, help="resume a previous session UUID")
     args = parser.parse_args()
 
     config = _load_config(CONFIG_PATH)
@@ -299,6 +338,8 @@ def main() -> None:
         agent.set_workingdirectory(args.cwd)
     if args.no_think:
         _set_think(agent, False)
+    if args.session:
+        _load_session(agent, args.session)
 
     console = Console()
     model_name = str(agent.llm.llm_config.get("model_name") or "default")
@@ -345,6 +386,24 @@ def main() -> None:
                     continue
                 if command == "/stats":
                     _show_stats(console, agent)
+                    continue
+                if command == "/session":
+                    bits = argument.split(maxsplit=1)
+                    action = bits[0].lower() if bits else ""
+                    value = bits[1].strip() if len(bits) > 1 else ""
+                    if not action:
+                        _show_session(console, agent)
+                    elif action == "save":
+                        path = _save_session(agent)
+                        console.print(f"[green]session saved → {path}[/green]")
+                    elif action == "load":
+                        try:
+                            _load_session(agent, value)
+                            console.print(f"[green]session loaded → {agent.session_id}[/green]")
+                        except Exception as exc:
+                            console.print(f"[red]{type(exc).__name__}: {exc}[/red]")
+                    else:
+                        console.print("[yellow]Usage: /session | /session save | /session load UUID[/yellow]")
                     continue
                 if command == "/think":
                     value = argument.lower() or str(_think_value(agent)).lower()
