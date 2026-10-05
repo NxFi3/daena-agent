@@ -13,11 +13,13 @@ class ReadFile(Tool):
 
     This tool is intentionally file-only.
 
-    Use command_exec for:
-        - listing directories
+    Use search for:
+        - locating symbols or references
         - searching files
-        - inspecting the workspace
+
+    Use command_exec for:
         - running commands
+        - direct workspace inspection not covered by search/read_file
 
     Output is structured through ToolResult.content and bounded to
     prevent unnecessarily large context payloads.
@@ -38,8 +40,8 @@ class ReadFile(Tool):
         "Read a UTF-8 text file. "
         "Optional start_line and end_line can limit the returned range. "
         "Output is bounded to protect agent context. "
-        "Use command_exec to inspect directories, search files, "
-        "or run shell commands."
+        "Use search to locate symbols or references across the workspace; "
+        "use command_exec for running commands."
     )
 
     parameters = {
