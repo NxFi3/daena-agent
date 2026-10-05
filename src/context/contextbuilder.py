@@ -452,12 +452,6 @@ class ContextBuilder:
             if not isinstance(content, str):
                 continue
 
-            if index in duplicate_read_positions:
-                messages[index]["content"] = (
-                    content[: self.OLD_TOOL_CHARS] + self.OLD_RESULT_MARKER
-                )
-                continue
-
             if index in pinned:
                 if len(content) > self.PINNED_READ_CHARS:
                     messages[index]["content"] = self._head_tail(
