@@ -14,7 +14,7 @@
     "recent_event_limit": 60,
     "compaction_enabled": true,
     "compaction_target_tokens": 4096,
-    "max_prompt_tokens": 8192
+    "max_prompt_tokens": 120000
   },
   "retrieval": {
     "top_k": 3
