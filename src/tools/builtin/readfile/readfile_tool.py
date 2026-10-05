@@ -106,6 +106,12 @@ class ReadFile(Tool):
             except (OSError, RuntimeError):
                 pass
 
+        # For a full-file read, max_output_chars changes only the transport
+        # envelope. Do not let a different output limit bypass the
+        # same-revision observation guard.
+        if "start_line" not in normalized and "end_line" not in normalized:
+            normalized.pop("max_output_chars", None)
+
         return normalized
 
     def normalize_arguments(
