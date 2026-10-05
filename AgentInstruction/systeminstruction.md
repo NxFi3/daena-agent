@@ -18,7 +18,7 @@ Tool policy:
 
 - `read_file`: read a known file or a narrow range after you know the target.
 - `apply_patch`: create or modify files. This is the normal implementation tool; do not use shell tricks to edit files.
-- `command_exec`: run tests, builds, linters, or necessary commands. It is not the default file-search mechanism.
+- `command_exec`: run tests, builds, linters, or necessary commands. It should be used only when execution or direct workspace inspection is required.
 - `plan`: maintain the current execution plan for multi-step work.
 - `web_search` / `web_fetch`: use only when external information is actually required.
 
