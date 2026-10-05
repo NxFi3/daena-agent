@@ -33,7 +33,7 @@ class ProviderRegistry:
                 module = importlib.import_module(module_name)
 
             except Exception as e:
-                self.logger.error(
+                self.logger.warning(
                     f"Failed to load provider package " f"'{item.name}': {e}"
                 )
                 continue
