@@ -2048,6 +2048,34 @@ class Loop:
             search_top_k=self.search_context_top_k,
         )
 
+        context_builder = self.context.contextbuilder
+        estimated_context_tokens = context_builder.tokenbudget.estimate_messages_tokens(
+            context
+        )
+        tool_message_count = sum(
+            1 for message in context if message.get("role") == "tool"
+        )
+        read_message_count = sum(
+            1
+            for message in context
+            if (
+                message.get("role") == "tool"
+                and message.get("tool_name") == "read_file"
+            )
+        )
+        self.metrics["context_estimated_tokens"] = estimated_context_tokens
+        self.metrics["context_messages"] = len(context)
+        self.metrics["context_tool_results"] = tool_message_count
+        self.metrics["context_read_results"] = read_message_count
+
+        self.logger.info(
+            "Context | "
+            f"estimated_tokens={estimated_context_tokens} | "
+            f"messages={len(context)} | "
+            f"tool_results={tool_message_count} | "
+            f"read_results={read_message_count}"
+        )
+
         self.metrics["llm_calls"] = self.metrics.get("llm_calls", 0) + 1
 
         try:
@@ -2136,6 +2164,10 @@ class Loop:
             "iterations": 0,
             "llm_calls": 0,
             "tokens": 0,
+            "context_estimated_tokens": 0,
+            "context_messages": 0,
+            "context_tool_results": 0,
+            "context_read_results": 0,
             "generation_failures": 0,
             "tool_call_attempts": 0,
             "tool_successes": 0,
