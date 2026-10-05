@@ -151,50 +151,6 @@ def test_loop_honors_configured_context_limits(tmp_path):
         loop.close()
 
 
-def test_runtime_blocks_read_exploration_after_limit(tmp_path):
-    config = {
-        "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
-        "context": {
-            "safe_margin": 0,
-            "recent_event_limit": 10,
-            "compaction_enabled": False,
-            "compaction_target_tokens": 256,
-        },
-        "retrieval": {"top_k": 3},
-        "security": {
-            "workspace_only": True,
-            "allow_background": True,
-            "allow_network_tools": True,
-            "force_approve": True,
-        },
-        "max_agent_iterations": 20,
-        "experience": {"enabled": False},
-    }
-
-    loop = Loop(config, FakeLLM())
-    loop.session_id = uuid4()
-    loop.set_workspace(str(tmp_path))
-
-    try:
-        loop._same_revision_read_count = loop.READ_EXPLORATION_LIMIT
-
-        read_call = ToolCall(
-            name="read_file",
-            id="read-limit",
-            valid=True,
-            args={"file_path": "hello.txt"},
-        )
-
-        blocked = loop._runtime_recovery_gate(read_call)
-
-        assert blocked is not None
-        assert blocked.metadata["runtime_gate"] is True
-        assert blocked.content["error"]["type"] == "read_exploration_limit"
-        assert blocked.metadata["read_count"] == loop.READ_EXPLORATION_LIMIT
-    finally:
-        loop.close()
-
-
 def test_duplicate_detector_canonicalizes_read_paths_and_allows_dynamic_polling(tmp_path):
     target = tmp_path / "hello.txt"
     target.write_text("hello", encoding="utf-8")
@@ -739,8 +695,7 @@ def test_runtime_blocks_plan_while_process_is_active_and_repeats_failed_action(t
     finally:
         loop.close()
 
-
-def test_observation_exhaustion_transitions_to_implementation(tmp_path):
+def test_runtime_does_not_exhaust_observation_from_counters(tmp_path):
     config = {
         "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
         "context": {
@@ -748,7 +703,6 @@ def test_observation_exhaustion_transitions_to_implementation(tmp_path):
             "recent_event_limit": 10,
             "compaction_enabled": False,
             "compaction_target_tokens": 256,
-            "observation_action_limit": 1,
         },
         "retrieval": {"top_k": 3},
         "security": {
@@ -757,111 +711,26 @@ def test_observation_exhaustion_transitions_to_implementation(tmp_path):
             "allow_network_tools": True,
             "force_approve": True,
         },
-        "max_agent_iterations": 3,
+        "max_agent_iterations": 20,
         "experience": {"enabled": False},
     }
+
     loop = Loop(config, FakeLLM())
     loop.session_id = uuid4()
     loop.set_workspace(str(tmp_path))
+    (tmp_path / "hello.txt").write_text("hello", encoding="utf-8")
+
     try:
-        call = ToolCall(
+        loop._same_revision_read_count = 100
+        loop._observation_action_count = 100
+
+        read_call = ToolCall(
             name="read_file",
-            id="exhaust-read",
+            id="read-after-former-limit",
             valid=True,
-            args={"file_path": "missing.txt"},
-        )
-        result = ToolResult(
-            success=False,
-            name="read_file",
-            content={
-                "success": False,
-                "error": {"type": "file_not_found", "message": "missing"},
-            },
-        )
-        loop._apply_result(call, result, 1)
-        assert loop._phase == "recover"
-
-        blocked = loop._runtime_recovery_gate(
-            ToolCall(
-                name="read_file",
-                id="exhaust-read-2",
-                valid=True,
-                args={"file_path": "missing-again.txt"},
-            )
-        )
-        assert blocked is not None
-        assert blocked.content["error"]["type"] == "observation_budget_exhausted"
-
-        loop._apply_result(
-            ToolCall(
-                name="read_file",
-                id="exhaust-read-3",
-                valid=True,
-                args={"file_path": "missing-third.txt"},
-            ),
-            blocked,
-            2,
-        )
-        assert loop._phase == "implement"
-        assert loop._recovery_mode is False
-    finally:
-        loop.close()
-
-
-def test_runtime_blocks_global_observation_exploration_budget(tmp_path):
-    config = {
-        "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
-        "context": {
-            "safe_margin": 0,
-            "recent_event_limit": 10,
-            "compaction_enabled": False,
-            "compaction_target_tokens": 256,
-            "observation_action_limit": 2,
-        },
-        "retrieval": {"top_k": 3},
-        "security": {
-            "workspace_only": True,
-            "allow_background": True,
-            "allow_network_tools": True,
-            "force_approve": True,
-        },
-        "max_agent_iterations": 10,
-        "experience": {"enabled": False},
-    }
-
-    loop = Loop(config, FakeLLM())
-    loop.session_id = uuid4()
-    loop.set_workspace(str(tmp_path))
-
-    try:
-        for index in range(2):
-            call = ToolCall(
-                name="read_file",
-                id=f"budget-read-{index}",
-                valid=True,
-                args={"file_path": f"file-{index}.txt"},
-            )
-            result = ToolResult(
-                success=False,
-                name="read_file",
-                content={
-                    "success": False,
-                    "error": {"type": "file_not_found", "message": "missing"},
-                },
-            )
-            loop._apply_result(call, result, index + 1)
-
-        blocked = loop._runtime_recovery_gate(
-            ToolCall(
-                name="read_file",
-                id="budget-read-3",
-                valid=True,
-                args={"file_path": "file-3.txt"},
-            )
+            args={"file_path": "hello.txt"},
         )
 
-        assert blocked is not None
-        assert blocked.content["error"]["type"] == "observation_budget_exhausted"
-        assert blocked.metadata["runtime_gate"] is True
+        assert loop._runtime_recovery_gate(read_call) is None
     finally:
         loop.close()
