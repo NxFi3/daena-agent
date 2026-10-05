@@ -249,7 +249,7 @@ class Loop:
     def _is_observation_call(cls, call) -> bool:
         name = str(getattr(call, "name", "")).strip().lower()
 
-        if name == "read_file":
+        if name in {"read_file", "search"}:
             return True
 
         if name == "command_exec":
@@ -2256,6 +2256,13 @@ class Loop:
         working_context = self.working_set.context()
         working_context["plan_progress"] = self._plan_progress.context()
         working_context["execution_phase"] = self._phase
+        working_context["available_tools"] = sorted(available_tool_names)
+        working_context["tool_choice"] = {
+            "search": "locate symbols, references, or files in the workspace",
+            "read_file": "read a known file or a narrow line range",
+            "apply_patch": "create or modify files",
+            "command_exec": "run tests, builds, or necessary commands",
+        }
 
         available_tool_names = {
             str(definition.get("function", {}).get("name", "")).strip().lower()
