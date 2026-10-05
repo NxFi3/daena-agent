@@ -414,7 +414,7 @@ def _handle_command(
             agent.set_workingdirectory(argument)
             console.print(f"[green]workspace → {agent.workingdirectory}[/green]")
     elif command == "/interrupt":
-        if running and agent_state := getattr(agent, "_cli_state", None):
+        if running and (agent_state := getattr(agent, "_cli_state", None)):
             stop_event = agent_state.get("stop_event")
             if stop_event is not None:
                 stop_event.set()
