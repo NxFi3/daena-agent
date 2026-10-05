@@ -13,7 +13,13 @@ class Agent:
 
     def __init__(self, config) -> None:
         self.config = config
-        self.workingdirectory = "DAENAEVAL"
+        workspace_config = config.get("workspace") or {}
+        configured_workspace = workspace_config.get("directory")
+        self.workingdirectory = str(
+            Path(configured_workspace).expanduser().resolve()
+            if configured_workspace
+            else Path.cwd().resolve()
+        )
         self.session_id = uuid4()
 
         Path(self.workingdirectory).mkdir(
