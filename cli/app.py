@@ -15,7 +15,7 @@ from rich.table import Table
 from rich.live import Live
 
 from src.agent.agent import Agent
-from src.models.ContextEvent import ContextEvent, ContextRole, ContextType
+from src.models.ContextEvent import ContextEvent, ContextPriority, ContextRole, ContextType
 
 from .render import StreamRenderer
 
@@ -112,7 +112,7 @@ def _run_turn(console: Console, agent: Agent, user_text: str) -> None:
         role=ContextRole.USER,
         type=ContextType.MESSAGE,
         content=user_text,
-        priority=1,
+        priority=ContextPriority.NORMAL,
         step=0,
         metadata={"source": "cli"},
     )
