@@ -378,6 +378,8 @@ class STMDatabase:
 
             WHERE
                 f.session_id = ?
+                AND e.type = 'message'
+                AND e.role IN ('user', 'assistant')
                 AND f.context_events_fts MATCH ?
 
             ORDER BY
