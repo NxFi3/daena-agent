@@ -52,9 +52,29 @@ class TokenBudget:
         if self.safe_margin < 0:
             self.safe_margin = int(self.context_length * 0.15)
 
-        self.budget = max(
+        model_budget = max(
             1,
             self.context_length - self.safe_margin,
+        )
+
+        # A provider may expose a very large native context window, but an
+        # agent working set should stay much smaller so tool-heavy runs do not
+        # accumulate thousands of stale observations before compaction starts.
+        configured_prompt_cap = self.config.get("max_prompt_tokens")
+        if configured_prompt_cap is None:
+            configured_prompt_cap = min(12000, model_budget)
+
+        try:
+            configured_prompt_cap = int(configured_prompt_cap)
+        except (TypeError, ValueError):
+            configured_prompt_cap = min(12000, model_budget)
+
+        configured_prompt_cap = max(256, configured_prompt_cap)
+
+        self.max_prompt_tokens = configured_prompt_cap
+        self.budget = max(
+            1,
+            min(model_budget, configured_prompt_cap),
         )
 
         self.compaction_target_tokens = min(
@@ -104,6 +124,7 @@ class TokenBudget:
         logger.info(
             f"Context length={self.context_length}, "
             f"budget={self.budget}, "
+            f"max_prompt_tokens={self.max_prompt_tokens}, "
             f"safe_margin={self.safe_margin}, "
             f"compaction_target={self.compaction_target_tokens}, "
             f"chars_per_token={self.chars_per_token}"
