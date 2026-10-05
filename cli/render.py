@@ -42,12 +42,10 @@ class StreamRenderer:
     _content_buffer: str = ""
     _thinking_seen: bool = False
 
-    def begin_user_message(self, text: str) -> None:
-        """Render one submitted user turn and its live status below it."""
+    def show_user_context(self, workspace: str) -> None:
         self._print(
-            f"\x1b[35m\x1b[1mYOU ›\x1b[0m \x1b[37m{_short(text, 4000)}\x1b[0m"
+            f"\x1b[90m   · workspace {workspace} · ctx 0\x1b[0m"
         )
-        self._print_status("submitted")
 
     def _print_status(self, state: str) -> None:
         if self.context_budget:
@@ -93,6 +91,7 @@ class StreamRenderer:
         elif event_type == "content_delta":
             if self.status != "responding":
                 self._print("\x1b[90m   · responding…\x1b[0m")
+                self._print("\x1b[36mDAENA ›\x1b[0m")
             self.status = "responding"
             delta = str(event.get("text") or "")
             if delta:
@@ -108,7 +107,7 @@ class StreamRenderer:
             self.tool_count += 1
             self.status = f"tool:{_short(event.get('name') or 'unknown', 70)}"
             self._print(
-                f"\x1b[34m↳ {_short(event.get('name') or 'unknown', 70)}\x1b[0m"
+                f"\x1b[34mDAENA ↳ {_short(event.get('name') or 'unknown', 70)}\x1b[0m"
                 f"  \x1b[90m{_short(event.get('arguments') or {}, 560)}\x1b[0m"
             )
 
@@ -127,7 +126,7 @@ class StreamRenderer:
                 event.get("summary") or event.get("content") or "",
                 600,
             )
-            line = f"{icon} {name}"
+            line = f"DAENA {icon} {name}"
             if summary:
                 line += f"  \x1b[90m— {summary}\x1b[0m"
             self._print(line)
@@ -136,7 +135,7 @@ class StreamRenderer:
             self._flush_content(force=True)
             self.status = "redirected"
             self._print(
-                f"\x1b[35m↪ redirect\x1b[0m  "
+                f"\x1b[35mYOU ↪ redirect\x1b[0m  "
                 f"\x1b[90m{_short(event.get('text') or '', 700)}\x1b[0m"
             )
 
@@ -149,7 +148,7 @@ class StreamRenderer:
             self._flush_content(force=True)
             self.status = "stopped"
             self._print(
-                f"\x1b[33m■ stopped\x1b[0m  "
+                f"\x1b[33mDAENA ■ stopped\x1b[0m  "
                 f"\x1b[90m{_short(event.get('reason') or '', 800)}\x1b[0m"
             )
 
@@ -165,7 +164,7 @@ class StreamRenderer:
             self._flush_content(force=True)
             self.status = "error"
             self._print(
-                f"\x1b[31m✗ error\x1b[0m  "
+                f"\x1b[31mDAENA ✗ error\x1b[0m  "
                 f"\x1b[90m{_short(event.get('message') or '', 900)}\x1b[0m"
             )
 
