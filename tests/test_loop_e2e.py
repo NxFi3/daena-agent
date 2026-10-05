@@ -151,6 +151,50 @@ def test_loop_honors_configured_context_limits(tmp_path):
         loop.close()
 
 
+def test_runtime_blocks_read_exploration_after_limit(tmp_path):
+    config = {
+        "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
+        "context": {
+            "safe_margin": 0,
+            "recent_event_limit": 10,
+            "compaction_enabled": False,
+            "compaction_target_tokens": 256,
+        },
+        "retrieval": {"top_k": 3},
+        "security": {
+            "workspace_only": True,
+            "allow_background": True,
+            "allow_network_tools": True,
+            "force_approve": True,
+        },
+        "max_agent_iterations": 20,
+        "experience": {"enabled": False},
+    }
+
+    loop = Loop(config, FakeLLM())
+    loop.session_id = uuid4()
+    loop.set_workspace(str(tmp_path))
+
+    try:
+        loop._same_revision_read_count = loop.READ_EXPLORATION_LIMIT
+
+        read_call = ToolCall(
+            name="read_file",
+            id="read-limit",
+            valid=True,
+            args={"file_path": "hello.txt"},
+        )
+
+        blocked = loop._runtime_recovery_gate(read_call)
+
+        assert blocked is not None
+        assert blocked.metadata["runtime_gate"] is True
+        assert blocked.content["error"]["type"] == "read_exploration_limit"
+        assert blocked.metadata["read_count"] == loop.READ_EXPLORATION_LIMIT
+    finally:
+        loop.close()
+
+
 def test_duplicate_detector_canonicalizes_read_paths_and_allows_dynamic_polling(tmp_path):
     target = tmp_path / "hello.txt"
     target.write_text("hello", encoding="utf-8")
