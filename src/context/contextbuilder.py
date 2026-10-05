@@ -224,7 +224,10 @@ class ContextBuilder:
             if (
                 is_historical
                 and role == "user"
-                and bool(metadata.get("runtime_nudge"))
+                and (
+                    bool(metadata.get("runtime_nudge"))
+                    or event.priority.value == "high"
+                )
             ):
                 continue
 
