@@ -397,8 +397,7 @@ def test_run_routes_around_no_unrelated_work_while_foreground_process_runs(tmp_p
                         "arguments": {
                             "command": [
                                 sys.executable,
-                                "-c",
-                                "import time; time.sleep(0.4)",
+                                str(tmp_path / "sleep_test.py"),
                             ],
                             "workdir": ".",
                             "yield_time_ms": 25,
@@ -478,6 +477,10 @@ def test_run_routes_around_no_unrelated_work_while_foreground_process_runs(tmp_p
     }
 
     (tmp_path / "hello.txt").write_text("hello", encoding="utf-8")
+    (tmp_path / "sleep_test.py").write_text(
+        "import time\ntime.sleep(0.4)\n",
+        encoding="utf-8",
+    )
     llm = ProcessGateLLM()
     loop = Loop(config, llm)
     loop.session_id = uuid4()
