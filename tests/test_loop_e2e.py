@@ -353,7 +353,7 @@ def test_runtime_blocks_repeated_semantic_tool_failure_across_unrelated_success(
                 "success": False,
                 "error": {
                     "type": "invalid_argument",
-                    "message": "file_path is required.",
+                    "message": "Missing required argument(s): file_path. Provide every required parameter.",
                 },
             },
         )
@@ -366,7 +366,7 @@ def test_runtime_blocks_repeated_semantic_tool_failure_across_unrelated_success(
             name="read_file",
             id="read-bad-3",
             valid=False,
-            validation_error="Missing required argument(s): query. Provide every required parameter.",
+            validation_error="Missing required argument(s): file_path. Provide every required parameter.",
         )
         blocked = loop._runtime_recovery_gate(retry_call)
 
