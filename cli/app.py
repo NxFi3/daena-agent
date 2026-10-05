@@ -9,12 +9,11 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.completion import NestedCompleter
+from prompt_toolkit.completion import FuzzyCompleter, NestedCompleter
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 from rich.console import Console
 from rich.markdown import Markdown
-from rich.panel import Panel
 
 from src.agent.agent import Agent
 from src.models.ContextEvent import (
@@ -33,11 +32,60 @@ CONFIG_PATH = ROOT / "config.json"
 STYLE = Style.from_dict(
     {
         "prompt": "ansicyan bold",
-        "bottom-toolbar": "ansiwhite bg:ansiblack",
+        "bottom-toolbar": "ansibrightblack bg:ansiblack",
         "completion-menu.completion": "bg:ansiblack fg:ansiwhite",
-        "completion-menu.completion.current": "bg:ansiblue fg:ansiwhite",
+        "completion-menu.completion.current": "bg:ansi36 fg:ansiwhite",
+        "scrollbar.background": "bg:ansiblack",
+        "scrollbar.button": "bg:ansi36",
     }
 )
+
+COMMANDS = {
+    "help": None,
+    "status": None,
+    "sessions": None,
+    "session": {"new": None},
+    "new": None,
+    "reasoning": {"low": None, "medium": None, "high": None, "off": None, "auto": None},
+    "think": {"low": None, "medium": None, "high": None, "off": None, "auto": None},
+    "busy": {"steer": None, "interrupt": None, "queue": None, "status": None},
+    "provider": None,
+    "model": None,
+    "set": {
+        "temperature": None,
+        "num_thread": None,
+        "max_iterations": None,
+        "think": None,
+    },
+    "tools": None,
+    "stats": None,
+    "cwd": None,
+    "interrupt": None,
+    "clear": None,
+    "exit": None,
+}
+
+HELP_LINES = (
+    "/help                     commands",
+    "/sessions                 conversation history",
+    "/session N                open conversation N",
+    "/session new              start a new conversation",
+    "/reasoning low|medium|high|off",
+    "/busy steer|interrupt|queue",
+    "/provider [name]          show/switch provider",
+    "/model [name]             show/set model",
+    "/set key value            runtime setting",
+    "/cwd [path]               show/change workspace",
+    "/tools                    available tools",
+    "/stats                    last run metrics",
+    "/interrupt                stop current task",
+    "/clear                    clear terminal",
+    "/exit                     quit Daena",
+    "",
+    "While Daena is working, type normal text to redirect it.",
+)
+
+BUSY_MODES = {"steer", "interrupt", "queue"}
 
 
 def _load_config(path: Path) -> dict:
@@ -72,6 +120,7 @@ def _set_setting(agent: Agent, key: str, value: str) -> object:
         raise RuntimeError("The active provider does not expose generation configuration.")
 
     normalized = key.strip().lower().replace("-", "_")
+
     if normalized == "temperature":
         parsed: object = float(value)
         if not 0 <= float(parsed) <= 2:
@@ -96,7 +145,8 @@ def _set_setting(agent: Agent, key: str, value: str) -> object:
         elif raw in {"low", "medium", "high"}:
             parsed = raw
         else:
-            raise ValueError("think must be auto, off, low, medium, or high")
+            raise ValueError("think must be auto, off, low, medium, high, or auto")
+
     else:
         raise ValueError(
             "Supported settings: temperature, num_thread, max_iterations, think"
@@ -109,6 +159,12 @@ def _set_setting(agent: Agent, key: str, value: str) -> object:
     return parsed
 
 
+def _new_session(agent: Agent) -> None:
+    session_id = uuid4()
+    agent.session_id = session_id
+    agent.loop.session_id = session_id
+
+
 def _session_rows(agent: Agent, limit: int = 30) -> list[dict]:
     return agent.loop.stm.list_sessions(limit=limit)
 
@@ -117,8 +173,8 @@ def _session_title(value: object) -> str:
     text = " ".join(str(value or "").split())
     if not text:
         return "Untitled conversation"
-    if len(text) > 78:
-        return text[:75].rstrip() + "..."
+    if len(text) > 82:
+        return text[:79].rstrip() + "..."
     return text
 
 
@@ -127,6 +183,7 @@ def _format_age(value: object) -> str:
         when = datetime.fromisoformat(str(value))
     except (TypeError, ValueError):
         return "unknown"
+
     seconds = max(0, int((datetime.now() - when).total_seconds()))
     if seconds < 60:
         return "now"
@@ -139,20 +196,15 @@ def _format_age(value: object) -> str:
     return when.strftime("%Y-%m-%d")
 
 
-def _new_session(agent: Agent) -> None:
-    session_id = uuid4()
-    agent.session_id = session_id
-    agent.loop.session_id = session_id
-
-
 def _open_session(agent: Agent, index: int) -> str:
     sessions = _session_rows(agent)
     if index < 1 or index > len(sessions):
         raise ValueError(f"No conversation #{index}.")
-    session_id = str(sessions[index - 1]["session_id"])
-    agent.session_id = UUID(session_id)
-    agent.loop.session_id = agent.session_id
-    return _session_title(sessions[index - 1].get("title"))
+    selected = sessions[index - 1]
+    session_id = UUID(str(selected["session_id"]))
+    agent.session_id = session_id
+    agent.loop.session_id = session_id
+    return _session_title(selected.get("title"))
 
 
 def _show_sessions(console: Console, agent: Agent) -> None:
@@ -161,35 +213,38 @@ def _show_sessions(console: Console, agent: Agent) -> None:
         console.print("[dim]No conversations yet.[/dim]")
         return
 
-    console.print("\n[bold cyan]Conversations[/bold cyan]\n")
+    console.print("\n[bold cyan]Conversations[/bold cyan]")
     for index, session in enumerate(sessions, start=1):
         current = str(session.get("session_id")) == str(agent.session_id)
         marker = "●" if current else " "
+        title = _session_title(session.get("title"))
+        workspace = Path(str(session.get("workspace") or "")).name
+        details = f"{_format_age(session.get('last_activity'))} · {session.get('event_count', 0)} events"
+        if workspace:
+            details += f" · {workspace}"
         console.print(
-            f" {index:>2} {marker}  {_session_title(session.get('title')):<78} "
-            f"[dim]{_format_age(session.get('last_activity'))} · "
-            f"{session.get('event_count', 0)} events[/dim]"
+            f" {index:>2} {marker}  {title:<82} [dim]{details}[/dim]"
         )
-    console.print("[dim]open: /session N · new: /session new[/dim]\n")
+    console.print("[dim]Enter /session N to open one, or /session new for a fresh chat.[/dim]\n")
 
 
-def _show_status(console: Console, agent: Agent) -> None:
+def _show_status(console: Console, agent: Agent, busy_mode: str) -> None:
     config = getattr(agent.llm, "generation_config", {}) or {}
+    model = str(agent.llm.llm_config.get("model_name") or "default")
     console.print(
-        f"[cyan]Daena[/cyan]  model=[bold]{agent.llm.llm_config.get('model_name') or 'default'}[/bold] "
-        f"provider=[bold]{agent.llm.provider_name}[/bold] "
-        f"think=[bold]{_think_value(agent)}[/bold]\n"
+        f"[cyan]Daena[/cyan]  [bold]{model}[/bold] · "
+        f"{agent.llm.provider_name} · think={_think_value(agent)} · busy={busy_mode}\n"
         f"[dim]workspace[/dim] {agent.workingdirectory}\n"
-        f"[dim]session[/dim] {agent.session_id}\n"
+        f"[dim]session[/dim] {str(agent.session_id)}\n"
         f"[dim]temperature[/dim] {config.get('temperature', 'default')} · "
-        f"iterations {agent.loop.max_iterations}"
+        f"max_iterations={agent.loop.max_iterations}"
     )
 
 
 def _show_tools(console: Console, agent: Agent) -> None:
-    names: list[str] = []
-    for item in agent.loop.tool_definitions:
-        function = item.get("function", {}) if isinstance(item, dict) else {}
+    names = []
+    for definition in agent.loop.tool_definitions:
+        function = definition.get("function", {}) if isinstance(definition, dict) else {}
         name = str(function.get("name", "")).strip()
         if name:
             names.append(name)
@@ -214,38 +269,16 @@ def _show_stats(console: Console, agent: Agent) -> None:
         "duration_ms",
         "stop_reason",
     )
-    lines = [f"{key}: {metrics.get(key)}" for key in keys if key in metrics]
-    console.print(Panel("\n".join(lines), title="stats", border_style="green"))
+    console.print("[cyan]last run[/cyan]")
+    for key in keys:
+        if key in metrics:
+            console.print(f"  {key:<24} {metrics[key]}")
 
 
 def _show_help(console: Console) -> None:
-    console.print(
-        Panel(
-            "\n".join(
-                [
-                    "/help                 commands",
-                    "/status               runtime status",
-                    "/sessions             conversation history",
-                    "/session N              open conversation N",
-                    "/session new            new conversation",
-                    "/think low|medium|high|off|auto",
-                    "/provider [name]      show/switch provider",
-                    "/model [name]         show/set model",
-                    "/set key value         change runtime setting",
-                    "/tools                available tools",
-                    "/stats                last run metrics",
-                    "/cwd [path]           show/change workspace",
-                    "/interrupt              stop current task",
-                    "/clear                clear terminal",
-                    "/exit                 quit Daena",
-                    "",
-                    "While Agent is working: type normal text to redirect it.",
-                ]
-            ),
-            title="Daena",
-            border_style="cyan",
-        )
-    )
+    console.print("[bold cyan]Daena commands[/bold cyan]")
+    for line in HELP_LINES:
+        console.print(f"  {line}")
 
 
 def _provider_switch(agent: Agent, name: str) -> None:
@@ -265,21 +298,33 @@ def _provider_switch(agent: Agent, name: str) -> None:
     )
 
 
-def _handle_command(console: Console, agent: Agent, text: str, running: bool) -> str:
+def _handle_command(
+    console: Console,
+    agent: Agent,
+    text: str,
+    busy_mode: str,
+    running: bool,
+) -> tuple[str, str | None]:
     parts = text.split(maxsplit=1)
     command = parts[0].lower()
     argument = parts[1].strip() if len(parts) > 1 else ""
 
-    if running and command in {"/provider", "/model", "/session", "/sessions", "/cwd"}:
-        console.print("[yellow]Wait for the current task or use /interrupt first.[/yellow]")
-        return "continue"
-
     if command in {"/exit", "/quit", "/q"}:
-        return "exit"
+        return "exit", None
+
+    if running and command in {
+        "/provider",
+        "/model",
+        "/session",
+        "/sessions",
+        "/cwd",
+        "/new",
+    }:
+        console.print("[yellow]Daena is busy. Use /interrupt first for this command.[/yellow]")
+        return "continue", busy_mode
+
     if command == "/help":
-        _show_help(console, agent)
-    elif command == "/clear":
-        console.clear()
+        _show_help(console)
     elif command in {"/sessions", "/history"}:
         _show_sessions(console, agent)
     elif command == "/session":
@@ -296,14 +341,17 @@ def _handle_command(console: Console, agent: Agent, text: str, running: bool) ->
                 console.print(f"[red]{exc}[/red]")
         else:
             console.print("[yellow]Usage: /session | /session N | /session new[/yellow]")
+    elif command == "/new":
+        _new_session(agent)
+        console.print("[green]new conversation[/green]")
     elif command == "/status":
-        _show_status(console, agent)
+        _show_status(console, agent, busy_mode)
     elif command == "/tools":
         _show_tools(console, agent)
     elif command == "/stats":
         _show_stats(console, agent)
-    elif command == "/think":
-        value = argument.lower()
+    elif command in {"/reasoning", "/think"}:
+        value = argument.lower() or str(_think_value(agent)).lower()
         if value == "on":
             value = "medium"
         if value == "auto":
@@ -313,9 +361,17 @@ def _handle_command(console: Console, agent: Agent, text: str, running: bool) ->
         elif value in {"low", "medium", "high"}:
             _set_think(agent, value)
         else:
-            console.print("[yellow]Usage: /think low|medium|high|off|auto[/yellow]")
-            return "continue"
-        console.print(f"[green]think = {_think_value(agent)}[/green]")
+            console.print("[yellow]Usage: /reasoning low|medium|high|off|auto[/yellow]")
+            return "continue", busy_mode
+        console.print(f"[green]reasoning = {_think_value(agent)}[/green]")
+    elif command == "/busy":
+        if not argument or argument == "status":
+            console.print(f"[cyan]busy input mode = {busy_mode}[/cyan]")
+        elif argument in BUSY_MODES:
+            busy_mode = argument
+            console.print(f"[green]busy input mode = {busy_mode}[/green]")
+        else:
+            console.print("[yellow]Usage: /busy steer|interrupt|queue|status[/yellow]")
     elif command == "/provider":
         if not argument:
             providers = sorted(getattr(agent.llm.registry, "providers", {}).keys())
@@ -331,7 +387,12 @@ def _handle_command(console: Console, agent: Agent, text: str, running: bool) ->
                 console.print(f"[red]{exc}[/red]")
     elif command == "/model":
         if not argument:
-            console.print(str(agent.llm.llm_config.get("model_name") or agent.llm.model.defaultModel))
+            console.print(
+                str(
+                    agent.llm.llm_config.get("model_name")
+                    or agent.llm.model.defaultModel
+                )
+            )
         else:
             agent.llm.llm_config["model_name"] = argument
             console.print(f"[green]model → {argument}[/green]")
@@ -351,12 +412,23 @@ def _handle_command(console: Console, agent: Agent, text: str, running: bool) ->
         else:
             agent.set_workingdirectory(argument)
             console.print(f"[green]workspace → {agent.workingdirectory}[/green]")
+    elif command == "/interrupt":
+        if running and agent_state := getattr(agent, "_cli_state", None):
+            stop_event = agent_state.get("stop_event")
+            if stop_event is not None:
+                stop_event.set()
+                console.print("[yellow]↯ interrupt requested[/yellow]")
+        else:
+            console.print("[dim]No active task.[/dim]")
+    elif command == "/clear":
+        console.clear()
     else:
         console.print(f"[yellow]Unknown command: {command}[/yellow]")
-    return "continue"
+
+    return "continue", busy_mode
 
 
-def _run_turn(console: Console, agent: Agent, text: str, state: dict) -> None:
+def _start_turn(agent: Agent, text: str, state: dict) -> None:
     stop_event = threading.Event()
     renderer = StreamRenderer(
         model=str(agent.llm.llm_config.get("model_name") or "default"),
@@ -364,11 +436,6 @@ def _run_turn(console: Console, agent: Agent, text: str, state: dict) -> None:
         session_id=str(agent.session_id),
         think_enabled=_think_value(agent),
     )
-
-    def emit(event: dict) -> None:
-        state["renderer"] = renderer
-        renderer.handle(event)
-        state["toolbar"] = renderer.toolbar()
 
     task = ContextEvent(
         role=ContextRole.USER,
@@ -379,6 +446,12 @@ def _run_turn(console: Console, agent: Agent, text: str, state: dict) -> None:
         metadata={"source": "cli", "workspace": agent.workingdirectory},
     )
 
+    def emit(event: dict) -> None:
+        state["renderer"] = renderer
+        state["toolbar"] = renderer.toolbar()
+        renderer.handle(event)
+        state["toolbar"] = renderer.toolbar()
+
     def worker() -> None:
         try:
             state["result"] = agent.act(
@@ -388,34 +461,48 @@ def _run_turn(console: Console, agent: Agent, text: str, state: dict) -> None:
             )
         except Exception as exc:
             state["error"] = exc
-            renderer.handle({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
+            renderer.handle(
+                {
+                    "type": "error",
+                    "message": f"{type(exc).__name__}: {exc}",
+                }
+            )
         finally:
             state["running"] = False
             state["stop_event"] = None
-            state["toolbar"] = renderer.toolbar()
             state["turn_finished"] = True
+            state["toolbar"] = renderer.toolbar()
 
     state["running"] = True
     state["stop_event"] = stop_event
     state["renderer"] = renderer
-    thread = threading.Thread(target=worker, name="daena-agent", daemon=True)
+    state["result"] = None
+    state["error"] = None
+    state["turn_finished"] = False
+    agent._cli_state = state
+
+    thread = threading.Thread(
+        target=worker,
+        name="daena-agent",
+        daemon=True,
+    )
     state["thread"] = thread
     thread.start()
 
 
-def _print_turn_result(console: Console, state: dict) -> None:
-    result = state.get("result")
+def _print_finished_turn(console: Console, state: dict) -> None:
     renderer = state.get("renderer")
+    result = state.get("result")
+    error = state.get("error")
 
-    if "error" in state and state.get("error") is not None:
-        console.print(f"[red]turn error: {state['error']}[/red]")
+    if error is not None:
+        console.print(f"[red]turn error: {error}[/red]")
 
     response = getattr(result, "response", None) if result is not None else None
-    already_streamed = bool(getattr(renderer, "response_started", False))
-    if response and not already_streamed:
+    if response and not bool(getattr(renderer, "response_streamed", False)):
         console.print(Markdown(str(response)))
 
-    if renderer:
+    if renderer is not None:
         console.print(
             f"[dim]done · iter {renderer.iteration} · "
             f"tools {renderer.tool_count} · usage {renderer.usage}[/dim]"
@@ -424,12 +511,14 @@ def _print_turn_result(console: Console, state: dict) -> None:
     state["result"] = None
     state["error"] = None
     state["renderer"] = None
+    state["thread"] = None
+    state["turn_finished"] = False
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="daena",
-        description="Daena interactive coding-agent CLI",
+        description="Daena terminal agent",
     )
     parser.add_argument("--cwd", dest="cwd", default=None)
     parser.add_argument("--no-think", action="store_true")
@@ -437,6 +526,7 @@ def main() -> None:
 
     config = _load_config(CONFIG_PATH)
     agent = Agent(config)
+
     if args.cwd:
         agent.set_workingdirectory(args.cwd)
     if args.no_think:
@@ -444,10 +534,12 @@ def main() -> None:
 
     console = Console()
     session = PromptSession(style=STYLE)
+    completer = FuzzyCompleter(NestedCompleter.from_nested_dict(COMMANDS))
+
     state: dict = {
         "running": False,
-        "thread": None,
         "stop_event": None,
+        "thread": None,
         "renderer": None,
         "result": None,
         "error": None,
@@ -455,43 +547,21 @@ def main() -> None:
         "turn_finished": False,
     }
 
-    completer = NestedCompleter.from_nested_dict(
-        {
-            "help": None,
-            "status": None,
-            "sessions": None,
-            "session": {"new": None},
-            "think": {"low": None, "medium": None, "high": None, "off": None, "auto": None},
-            "provider": None,
-            "model": None,
-            "set": {"temperature": None, "num_thread": None, "max_iterations": None, "think": None},
-            "tools": None,
-            "stats": None,
-            "cwd": None,
-            "interrupt": None,
-            "clear": None,
-            "exit": None,
-        }
+    model = str(agent.llm.llm_config.get("model_name") or "default")
+    console.print(
+        f"[bold cyan]◈ DAENA[/bold cyan]  [white]terminal agent[/white]\n"
+        f"[dim]{model} · {agent.workingdirectory}\n"
+        "Tab: autocomplete · /sessions: history · type while working to redirect · /exit: quit[/dim]"
     )
 
-    console.print(
-        Panel.fit(
-            "[bold cyan]◈ DAENA[/bold cyan]  [white]terminal agent[/white]\n"
-            f"[dim]{agent.llm.llm_config.get('model_name') or 'default'} · "
-            f"{agent.workingdirectory}\n"
-            "Tab: autocomplete · /sessions: history · Ctrl+C: interrupt · /exit: quit[/dim]",
-            border_style="cyan",
-        )
-    )
+    busy_mode = "steer"
 
     try:
         while True:
-            running = bool(state["running"])
+            if state.get("turn_finished") and not state.get("running"):
+                _print_finished_turn(console, state)
 
-            if state.get("turn_finished") and not running:
-                with patch_stdout(raw=True):
-                    _print_turn_result(console, state)
-                state["turn_finished"] = False
+            running = bool(state["running"])
 
             try:
                 with patch_stdout(raw=True):
@@ -501,60 +571,85 @@ def main() -> None:
                         bottom_toolbar=lambda: state.get("toolbar", "ready"),
                     ).strip()
             except KeyboardInterrupt:
-                if running and state.get("stop_event") is not None:
+                if state.get("running") and state.get("stop_event") is not None:
                     state["stop_event"].set()
                     console.print("[yellow]↯ interrupt requested[/yellow]")
                     continue
-                console.print("[yellow]Press /exit to leave Daena.[/yellow]")
+                console.print("[yellow]Use /exit to leave Daena.[/yellow]")
                 continue
             except EOFError:
-                if running and state.get("stop_event") is not None:
+                if state.get("stop_event") is not None:
                     state["stop_event"].set()
-                    thread = state.get("thread")
-                    if thread is not None:
-                        thread.join()
                 break
-
-            if state["running"] and user_text:
-                if user_text.startswith("/"):
-                    action = _handle_command(console, agent, user_text, running=True)
-                    if action == "exit":
-                        state["stop_event"].set()
-                        thread = state.get("thread")
-                        if thread is not None:
-                            thread.join()
-                        break
-                    continue
-
-                agent.steer(user_text)
-                continue
 
             if not user_text:
                 continue
 
+            running = bool(state["running"])
+
+            if running:
+                if user_text.startswith("/"):
+                    action, busy_mode = _handle_command(
+                        console, agent, user_text, busy_mode, True
+                    )
+                    if action == "exit":
+                        if state.get("stop_event") is not None:
+                            state["stop_event"].set()
+                        break
+                    continue
+
+                if busy_mode == "interrupt":
+                    if state.get("stop_event") is not None:
+                        state["stop_event"].set()
+                    console.print("[yellow]↯ interrupting current task; message will be sent after it stops.[/yellow]")
+                    state["pending_followup"] = user_text
+                elif busy_mode == "queue":
+                    pending = state.setdefault("pending_followups", [])
+                    pending.append(user_text)
+                    console.print(f"[cyan]queued follow-up #{len(pending)}[/cyan]")
+                else:
+                    agent.steer(user_text)
+                continue
+
             if user_text.startswith("/"):
-                action = _handle_command(console, agent, user_text, running=False)
+                action, busy_mode = _handle_command(
+                    console, agent, user_text, busy_mode, False
+                )
                 if action == "exit":
                     break
                 continue
 
-            state["turn_finished"] = False
-            _run_turn(console, agent, user_text, state)
+            _start_turn(agent, user_text, state)
 
-            # Worker is asynchronous so the input prompt remains available.
-            # When it finishes, render the final reply before accepting the
-            # next normal turn.
-            thread = state.get("thread")
-            if thread is not None and not thread.is_alive() and state["running"] is False:
-                _print_turn_result(console, state)
+            # Busy mode remains active until the worker finishes.
+            # The next prompt is immediately available for steering.
+            time.sleep(0.01)
+
+            if state.get("pending_followup") and not state.get("running"):
+                pending_text = state.pop("pending_followup")
+                _start_turn(agent, pending_text, state)
+
+            elif state.get("pending_followups") and not state.get("running"):
+                pending = state.pop("pending_followups")
+                pending_text = pending.pop(0)
+                if pending:
+                    state["pending_followups"] = pending
+                _start_turn(agent, pending_text, state)
     finally:
         stop_event = state.get("stop_event")
         if stop_event is not None:
             stop_event.set()
+
         thread = state.get("thread")
         if thread is not None:
             thread.join()
-        _print_turn_result(console, state)
+
+        if state.get("turn_finished"):
+            _print_finished_turn(console, state)
+
+        if hasattr(agent, "_cli_state"):
+            delattr(agent, "_cli_state")
+
         agent.close()
 
     console.print("[bold cyan]◈ session closed[/bold cyan]")
