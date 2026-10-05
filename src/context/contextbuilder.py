@@ -921,6 +921,88 @@ class ContextBuilder:
         # returning an oversized prompt or dropping the run entirely.
         return self._minimal_messages()
 
+    def _hard_fit_messages(
+        self,
+        messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Guarantee the rendered prompt does not exceed the working budget."""
+        if self.tokenbudget.fits(messages):
+            return messages
+
+        system = next(
+            (message for message in messages if message.get("role") == "system"),
+            {"role": "system", "content": ""},
+        )
+        rest = [
+            message for message in messages
+            if message.get("role") != "system"
+        ]
+
+        latest_user_index = self._last_index(rest, "user")
+        latest_user = (
+            dict(rest[latest_user_index])
+            if latest_user_index >= 0
+            else None
+        )
+
+        system_message = dict(system)
+        latest_messages = [latest_user] if latest_user is not None else []
+
+        base = [system_message, *latest_messages]
+        available = self.tokenbudget.budget - self.tokenbudget.estimate_messages_tokens(
+            latest_messages
+        )
+        available = max(128, available)
+
+        system_text = str(system_message.get("content", ""))
+        system_limit = max(
+            256,
+            int(available * self.tokenbudget.chars_per_token * 0.85),
+        )
+        if len(system_text) > system_limit:
+            system_message["content"] = self._head_tail(system_text, system_limit)
+
+        fitted = [system_message, *latest_messages]
+        if self.tokenbudget.fits(fitted):
+            return fitted
+
+        # Last-resort task preservation. Keep only a bounded prefix of the
+        # system instruction so malformed configuration/calibration can never
+        # cause an oversized provider request.
+        latest_text = (
+            str(latest_user.get("content", ""))
+            if latest_user is not None
+            else ""
+        )
+        latest_budget = max(64, self.tokenbudget.budget - 128)
+        latest_limit = max(
+            64,
+            int(latest_budget * self.tokenbudget.chars_per_token),
+        )
+        latest_text = self._truncate(latest_text, latest_limit)
+
+        system_budget = max(
+            64,
+            self.tokenbudget.budget
+            - self.tokenbudget.estimate_messages_tokens(
+                [{"role": "user", "content": latest_text}]
+            )
+            - 64,
+        )
+        system_limit = max(
+            64,
+            int(system_budget * self.tokenbudget.chars_per_token),
+        )
+        system_message["content"] = self._head_tail(
+            system_text,
+            system_limit,
+        )
+
+        final = [system_message]
+        if latest_user is not None:
+            final.append({"role": "user", "content": latest_text})
+        return final
+
     def _minimal_messages(self) -> list[dict[str, Any]]:
         system = {
             "role": "system",
@@ -975,6 +1057,6 @@ class ContextBuilder:
         # deterministic factual slice before falling back to system + task.
         deterministic = self._deterministic_compaction(messages)
         if deterministic is not None:
-            return deterministic
+            return self._hard_fit_messages(deterministic)
 
-        return self._minimal_messages()
+        return self._hard_fit_messages(self._minimal_messages())
