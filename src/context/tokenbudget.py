@@ -62,12 +62,12 @@ class TokenBudget:
         # accumulate thousands of stale observations before compaction starts.
         configured_prompt_cap = self.config.get("max_prompt_tokens")
         if configured_prompt_cap is None:
-            configured_prompt_cap = min(12000, model_budget)
+            configured_prompt_cap = min(8192, model_budget)
 
         try:
             configured_prompt_cap = int(configured_prompt_cap)
         except (TypeError, ValueError):
-            configured_prompt_cap = min(12000, model_budget)
+            configured_prompt_cap = min(8192, model_budget)
 
         configured_prompt_cap = max(256, configured_prompt_cap)
 
