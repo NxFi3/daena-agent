@@ -39,6 +39,7 @@ class Loop:
     # be repeated while the workspace revision is unchanged, but an identical
     # observation should not become an infinite loop.
     OBSERVATION_REPEAT_LIMIT = 3
+    READ_EXPLORATION_LIMIT = 10
 
     # After repeated failures with the same tool and normalized error, block
     # the next matching failure pattern so the model must change strategy.
@@ -111,6 +112,7 @@ class Loop:
 
         # key -> (workspace_revision, successful_repeat_count)
         self._same_revision_call_counts: dict[str, tuple[int, int]] = {}
+        self._same_revision_read_count = 0
 
         self._tool_loop_guard = ToolLoopGuard()
 
@@ -1291,6 +1293,39 @@ class Loop:
                 summary=summary,
             )
 
+        # Bound pure file exploration at one workspace revision. This
+        # prevents a coding task from spending the whole run rereading files
+        # without producing a mutation or using the collected evidence.
+        if (
+            name == "read_file"
+            and self._same_revision_read_count >= self.READ_EXPLORATION_LIMIT
+        ):
+            message = (
+                f"The runtime already allowed {self.READ_EXPLORATION_LIMIT} "
+                "file reads without a workspace change at this revision. "
+                "Reuse the evidence already collected and choose a non-read action: "
+                "edit, create, run a command, verify, or finish the current step."
+            )
+            return ToolResult(
+                success=False,
+                name=name,
+                content={
+                    "success": False,
+                    "error": {
+                        "type": "read_exploration_limit",
+                        "message": message,
+                    },
+                },
+                metadata={
+                    "runtime_gate": True,
+                    "recovery_required": True,
+                    "workspace_revision": self.workspace_revision,
+                    "read_count": self._same_revision_read_count,
+                    "read_limit": self.READ_EXPLORATION_LIMIT,
+                },
+                summary="RUNTIME BLOCKED: read exploration limit reached.",
+            )
+
         predicted_signature = self._predict_failure_signature(call)
         if predicted_signature:
             repeat_count = self._semantic_failure_counts.get(predicted_signature, 0)
@@ -1406,6 +1441,7 @@ class Loop:
         if result.success and changed:
 
             self.workspace_revision += 1
+            self._same_revision_read_count = 0
             # Workspace progress invalidates the exact-failure recovery gate.
             self._failed_call_keys.clear()
             self._recovery_mode = False
@@ -1444,6 +1480,8 @@ class Loop:
 
         if result.success:
             tool_name = str(getattr(call, "name", result.name)).strip().lower()
+            if tool_name == "read_file" and not changed:
+                self._same_revision_read_count += 1
             if tool_name:
                 prefix = f"{tool_name}::"
                 self._semantic_failure_counts = {
@@ -2067,13 +2105,16 @@ class Loop:
         self.metrics["context_messages"] = len(context)
         self.metrics["context_tool_results"] = tool_message_count
         self.metrics["context_read_results"] = read_message_count
+        self.metrics["same_revision_read_count"] = self._same_revision_read_count
 
         self.logger.info(
             "Context | "
             f"estimated_tokens={estimated_context_tokens} | "
             f"messages={len(context)} | "
             f"tool_results={tool_message_count} | "
-            f"read_results={read_message_count}"
+            f"read_results={read_message_count} | "
+            f"budget={context_builder.tokenbudget.budget} | "
+            f"same_revision_reads={self._same_revision_read_count}"
         )
 
         self.metrics["llm_calls"] = self.metrics.get("llm_calls", 0) + 1
@@ -2144,6 +2185,7 @@ class Loop:
 
         self._successful_tool_calls.clear()
         self._same_revision_call_counts.clear()
+        self._same_revision_read_count = 0
 
         self._tool_loop_guard.reset()
 
@@ -2169,6 +2211,7 @@ class Loop:
             "context_tool_results": 0,
             "context_read_results": 0,
             "generation_failures": 0,
+            "same_revision_read_count": 0,
             "tool_call_attempts": 0,
             "tool_successes": 0,
             "tool_failures": 0,
