@@ -1344,7 +1344,13 @@ class Loop:
         process_id = content.get("process_id")
         return str(process_id).strip() if process_id else None
 
-    def _runtime_recovery_gate(self, call) -> ToolResult | None:
+    def _runtime_recovery_gate(
+        self,
+        call,
+        *,
+        projected_read_count: int | None = None,
+        projected_observation_count: int | None = None,
+    ) -> ToolResult | None:
         name = str(getattr(call, "name", "")).strip().lower()
 
         # A foreground managed process owns the execution boundary until it
@@ -1389,9 +1395,14 @@ class Loop:
         # Bound pure file exploration at one workspace revision. This
         # prevents a coding task from spending the whole run rereading files
         # without producing a mutation or using the collected evidence.
+        read_count = (
+            self._same_revision_read_count
+            if projected_read_count is None
+            else projected_read_count
+        )
         if (
             name == "read_file"
-            and self._same_revision_read_count >= self.READ_EXPLORATION_LIMIT
+            and read_count >= self.READ_EXPLORATION_LIMIT
         ):
             message = (
                 f"The runtime already allowed {self.READ_EXPLORATION_LIMIT} "
@@ -1414,7 +1425,7 @@ class Loop:
                     "recovery_required": True,
                     "workspace_revision": self.workspace_revision,
                     "read_count": self._same_revision_read_count,
-                    "read_limit": self.READ_EXPLORATION_LIMIT,
+                            "read_limit": self.READ_EXPLORATION_LIMIT,
                 },
                 summary="RUNTIME BLOCKED: read exploration limit reached.",
             )
@@ -1422,7 +1433,11 @@ class Loop:
         if (
             self._is_observation_call(call)
             and str(getattr(call, "name", "")).strip().lower() != "process_poll"
-            and self._observation_action_count >= self.observation_action_limit
+            and (
+                self._observation_action_count
+                if projected_observation_count is None
+                else projected_observation_count
+            ) >= self.observation_action_limit
         ):
             return ToolResult(
                 success=False,
@@ -1805,22 +1820,28 @@ class Loop:
         )
 
         runtime_blocked: dict[int, ToolResult] = {}
-        runtime_allowed: list = []
+
+        projected_read_count = self._same_revision_read_count
+        projected_observation_count = self._observation_action_count
 
         for index, call in enumerate(parsed_calls):
-            gated = self._runtime_recovery_gate(call)
+            gated = self._runtime_recovery_gate(
+                call,
+                projected_read_count=projected_read_count,
+                projected_observation_count=projected_observation_count,
+            )
             if gated is not None:
                 runtime_blocked[index] = gated
-            else:
-                runtime_allowed.append(call)
+                continue
 
-        runtime_index_map = {
-            new_index: original_index
-            for new_index, original_index in enumerate(
-                index for index in range(len(parsed_calls))
-                if index not in runtime_blocked
-            )
-        }
+            name = str(getattr(call, "name", "")).strip().lower()
+            if name == "read_file":
+                projected_read_count += 1
+            if (
+                self._is_observation_call(call)
+                and name != "process_poll"
+            ):
+                projected_observation_count += 1
 
         (
             allowed_indices,
