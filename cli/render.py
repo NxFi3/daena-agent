@@ -44,7 +44,7 @@ class StreamRenderer:
 
     def show_user_context(self, workspace: str) -> None:
         self._print(
-            f"\x1b[90m   · workspace {workspace} · ctx 0\x1b[0m"
+            f"\x1b[90m   · workspace {workspace}\x1b[0m"
         )
 
     def _print_status(self, state: str) -> None:
