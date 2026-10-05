@@ -28,6 +28,7 @@ class StreamRenderer:
     success_count: int = 0
     failure_count: int = 0
     usage: int = 0
+    response_started: bool = False
 
     def handle(self, event: dict[str, Any]) -> None:
         event_type = str(event.get("type") or "")
@@ -50,6 +51,12 @@ class StreamRenderer:
             self.status = "thinking"
         elif event_type == "content_delta":
             self.status = "responding"
+            text = str(event.get("text") or "")
+            if text:
+                if not self.response_started:
+                    self.response_started = True
+                    self._print("\n\x1b[32mDaena ›\x1b[0m ")
+                self._print(text)
         elif event_type == "generation_done":
             self.usage = int(event.get("usage") or self.usage or 0)
         elif event_type == "tool_call":
@@ -75,6 +82,8 @@ class StreamRenderer:
         elif event_type == "final_response":
             self.usage = int(event.get("usage") or self.usage or 0)
             self.status = "completed"
+            if self.response_started:
+                self._print("\n")
         elif event_type == "run_stopped":
             self.status = "stopped"
             self._print(f"\x1b[33m■ stopped\x1b[0m  {_short(event.get('reason') or '', 700)}")
