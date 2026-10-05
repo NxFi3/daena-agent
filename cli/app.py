@@ -561,6 +561,24 @@ def main() -> None:
             if state.get("turn_finished") and not state.get("running"):
                 _print_finished_turn(console, state)
 
+            # Follow-ups queued while the previous run was busy are started
+            # only after the Agent becomes idle, never concurrently.
+            if not state.get("running"):
+                pending_interrupt = state.pop("pending_followup", None)
+                if pending_interrupt:
+                    _start_turn(agent, pending_interrupt, state)
+                    continue
+
+                pending_queue = state.get("pending_followups") or []
+                if pending_queue:
+                    next_text = pending_queue.pop(0)
+                    if pending_queue:
+                        state["pending_followups"] = pending_queue
+                    else:
+                        state.pop("pending_followups", None)
+                    _start_turn(agent, next_text, state)
+                    continue
+
             running = bool(state["running"])
 
             try:
@@ -622,19 +640,8 @@ def main() -> None:
             _start_turn(agent, user_text, state)
 
             # Busy mode remains active until the worker finishes.
-            # The next prompt is immediately available for steering.
+            # The next prompt remains immediately available for steering.
             time.sleep(0.01)
-
-            if state.get("pending_followup") and not state.get("running"):
-                pending_text = state.pop("pending_followup")
-                _start_turn(agent, pending_text, state)
-
-            elif state.get("pending_followups") and not state.get("running"):
-                pending = state.pop("pending_followups")
-                pending_text = pending.pop(0)
-                if pending:
-                    state["pending_followups"] = pending
-                _start_turn(agent, pending_text, state)
     finally:
         stop_event = state.get("stop_event")
         if stop_event is not None:
