@@ -2301,6 +2301,10 @@ class Loop:
         self._emit_event(
             "context",
             estimated_tokens=estimated_context_tokens,
+            budget=int(getattr(context_builder.tokenbudget, "budget", 0) or 0),
+            max_prompt_tokens=int(
+                (self.config.get("context") or {}).get("max_prompt_tokens", 0) or 0
+            ),
             messages=len(context),
             tool_results=tool_message_count,
             read_results=read_message_count,
