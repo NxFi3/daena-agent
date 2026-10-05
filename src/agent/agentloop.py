@@ -35,7 +35,7 @@ class Loop:
     SAME_FAILURE_REPEAT_LIMIT = 1
     EMPTY_RESPONSE_THRESHOLD = 3
 
-    # Read/search are observations rather than mutations. They may legitimately
+    # File reads are observations rather than mutations. They may legitimately
     # be repeated while the workspace revision is unchanged, but an identical
     # observation should not become an infinite loop.
     OBSERVATION_REPEAT_LIMIT = 3
@@ -46,7 +46,7 @@ class Loop:
 
     # Once a foreground managed process is running, the runtime owns the
     # execution boundary until that process is observed, fed, or stopped.
-    # Read/search/edit/other work must not run around a still-live command.
+    # Read/edit/other work must not run around a still-live command.
     PROCESS_CONTROL_TOOLS = frozenset({"process_poll", "process_write", "process_stop"})
 
     # How many times a single iteration may be retried in place after a
@@ -929,7 +929,7 @@ class Loop:
 
     def _is_plan_file_observation(self, call) -> bool:
         name = str(getattr(call, "name", "")).strip().lower()
-        if name not in {"read_file", "search"}:
+        if name != "read_file":
             return False
 
         arguments = getattr(call, "args", {}) or {}
@@ -2160,7 +2160,6 @@ class Loop:
         working_context["execution_phase"] = self._phase
         working_context["available_tools"] = sorted(available_tool_names)
         working_context["tool_choice"] = {
-            "search": "locate symbols, references, or files in the workspace",
             "read_file": "read a known file or a narrow line range",
             "apply_patch": "create or modify files",
             "command_exec": "run tests, builds, or necessary commands",
