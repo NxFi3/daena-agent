@@ -98,6 +98,11 @@ class ToolRegistry:
         return discovered_tools
 
     def discover(self):
+        # Rebuild the registry from the current filesystem. This prevents a
+        # tool removed or disabled during development from surviving in a
+        # long-lived registry instance.
+        self.tools.clear()
+
         discovered_tools = self._discover_tools()
 
         for tool in discovered_tools:
