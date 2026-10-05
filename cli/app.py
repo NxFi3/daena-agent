@@ -432,6 +432,7 @@ def _start_turn(agent: Agent, text: str, state: dict) -> None:
             session_id=str(agent.session_id),
             think_enabled=_think_value(agent),
         )
+        renderer.begin_user_message(text)
 
     task = ContextEvent(
         role=ContextRole.USER,
