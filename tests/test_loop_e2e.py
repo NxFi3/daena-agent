@@ -119,6 +119,38 @@ def test_loop_executes_tool_through_security_and_context(tmp_path, monkeypatch):
     finally:
         loop.close()
 
+def test_loop_honors_configured_context_limits(tmp_path):
+    config = {
+        "llm": {"provider_config": {"generation_config": {"num_ctx": 120000}}},
+        "context": {
+            "safe_margin": 0,
+            "recent_event_limit": 17,
+            "max_prompt_tokens": 9000,
+            "compaction_enabled": True,
+            "compaction_target_tokens": 4096,
+        },
+        "retrieval": {"top_k": 2},
+        "security": {
+            "workspace_only": True,
+            "allow_background": True,
+            "allow_network_tools": True,
+            "force_approve": True,
+        },
+        "max_agent_iterations": 5,
+        "experience": {"enabled": False},
+    }
+
+    loop = Loop(config, FakeLLM())
+    loop.session_id = uuid4()
+
+    try:
+        assert loop.recent_context_limit == 17
+        assert loop.search_context_top_k == 2
+        assert loop.context.contextbuilder.tokenbudget.budget == 9000
+    finally:
+        loop.close()
+
+
 def test_duplicate_detector_canonicalizes_read_paths_and_allows_dynamic_polling(tmp_path):
     target = tmp_path / "hello.txt"
     target.write_text("hello", encoding="utf-8")
