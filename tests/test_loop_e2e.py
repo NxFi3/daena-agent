@@ -302,14 +302,14 @@ def test_runtime_blocks_repeated_semantic_tool_failure_across_unrelated_success(
 
     try:
         first_bad_call = ToolCall(
-            name="search",
-            id="search-bad-1",
+            name="read_file",
+            id="read-bad-1",
             valid=False,
             validation_error="Missing required argument(s): query. Provide every required parameter.",
         )
         first_bad_result = ToolResult(
             success=False,
-            name="search",
+            name="read_file",
             content={
                 "success": False,
                 "error": {
@@ -334,14 +334,14 @@ def test_runtime_blocks_repeated_semantic_tool_failure_across_unrelated_success(
         loop._apply_result(read_call, read_result, 2)
 
         second_bad_call = ToolCall(
-            name="search",
-            id="search-bad-2",
+            name="read_file",
+            id="read-bad-2",
             valid=True,
-            args={"query": "", "path": "."},
+            args={"file_path": ""},
         )
         second_bad_result = ToolResult(
             success=False,
-            name="search",
+            name="read_file",
             content={
                 "success": False,
                 "error": {
@@ -352,12 +352,12 @@ def test_runtime_blocks_repeated_semantic_tool_failure_across_unrelated_success(
         )
         loop._apply_result(second_bad_call, second_bad_result, 3)
 
-        matching_key = "search::missing_required:query"
+        matching_key = "read_file::missing_required:file_path"
         assert loop._semantic_failure_counts[matching_key] == 2
 
         retry_call = ToolCall(
-            name="search",
-            id="search-bad-3",
+            name="read_file",
+            id="read-bad-3",
             valid=False,
             validation_error="Missing required argument(s): query. Provide every required parameter.",
         )
@@ -606,13 +606,13 @@ def test_runtime_requires_process_observation_while_foreground_process_is_active
         assert blocked.metadata["runtime_gate"] is True
         assert blocked.content["error"]["type"] == "active_process_requires_observation"
 
-        search_call = ToolCall(
-            name="search",
-            id="search-live",
+        web_call = ToolCall(
+            name="web_search",
+            id="web-live",
             valid=True,
-            args={"query": "hello", "path": "."},
+            args={"query": "hello"},
         )
-        assert loop._runtime_recovery_gate(search_call) is not None
+        assert loop._runtime_recovery_gate(web_call) is not None
 
         command_call = ToolCall(
             name="command_exec",
@@ -726,5 +726,64 @@ def test_runtime_blocks_plan_while_process_is_active_and_repeats_failed_action(t
         assert blocked_retry is not None
         assert blocked_retry.metadata["runtime_gate"] is True
         assert "exact failed action" in blocked_retry.summary
+    finally:
+        loop.close()
+
+
+def test_runtime_blocks_global_observation_exploration_budget(tmp_path):
+    config = {
+        "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
+        "context": {
+            "safe_margin": 0,
+            "recent_event_limit": 10,
+            "compaction_enabled": False,
+            "compaction_target_tokens": 256,
+            "observation_action_limit": 2,
+        },
+        "retrieval": {"top_k": 3},
+        "security": {
+            "workspace_only": True,
+            "allow_background": True,
+            "allow_network_tools": True,
+            "force_approve": True,
+        },
+        "max_agent_iterations": 10,
+        "experience": {"enabled": False},
+    }
+
+    loop = Loop(config, FakeLLM())
+    loop.session_id = uuid4()
+    loop.set_workspace(str(tmp_path))
+
+    try:
+        for index in range(2):
+            call = ToolCall(
+                name="read_file",
+                id=f"budget-read-{index}",
+                valid=True,
+                args={"file_path": f"file-{index}.txt"},
+            )
+            result = ToolResult(
+                success=False,
+                name="read_file",
+                content={
+                    "success": False,
+                    "error": {"type": "file_not_found", "message": "missing"},
+                },
+            )
+            loop._apply_result(call, result, index + 1)
+
+        blocked = loop._runtime_recovery_gate(
+            ToolCall(
+                name="read_file",
+                id="budget-read-3",
+                valid=True,
+                args={"file_path": "file-3.txt"},
+            )
+        )
+
+        assert blocked is not None
+        assert blocked.content["error"]["type"] == "observation_budget_exhausted"
+        assert blocked.metadata["runtime_gate"] is True
     finally:
         loop.close()
