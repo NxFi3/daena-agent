@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import threading
 import time
 from datetime import datetime
@@ -15,6 +16,9 @@ from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 from rich.console import Console
 from rich.markdown import Markdown
+
+# Keep framework INFO logs in the file; the interactive terminal only shows warnings/errors.
+os.environ.setdefault("DAENA_CLI", "1")
 
 from src.agent.agent import Agent
 from src.models.ContextEvent import (
