@@ -63,12 +63,9 @@ class SecurityService:
             toolcall.security_rule = "invalid_call"
             return toolcall
 
-        if self.force_approve:
-            toolcall.approved = True
-            toolcall.security_reason = "Explicit force_approve override."
-            toolcall.security_rule = "force_approve"
-            return toolcall
-
+        # force_approve may bypass an interactive approval step, but it must
+        # never bypass the actual security policy (workspace boundaries,
+        # blocked executables, inline evaluation, network policy, etc.).
         decision = self.policy.evaluate(toolcall, self.sandbox)
 
         if (
@@ -85,6 +82,13 @@ class SecurityService:
         toolcall.approved = decision.allowed
         toolcall.security_reason = decision.reason
         toolcall.security_rule = decision.rule
+
+        if toolcall.approved and self.force_approve:
+            toolcall.security_reason = (
+                "Allowed by security policy; force_approve skipped interactive approval."
+            )
+            toolcall.security_rule = "force_approve"
+
         return toolcall
 
     def _is_approved_background_command(
