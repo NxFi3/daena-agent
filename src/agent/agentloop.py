@@ -1707,11 +1707,21 @@ class Loop:
             hint = ""
             if isinstance(result.metadata, dict):
                 hint = str(result.metadata.get("recovery_hint") or "").strip()
-            self._store_nudge(
-                f"Tool '{result.name}' rejected the last call. "
-                f"{result.summary or 'Use valid arguments.'} "
-                f"{hint}".strip()
-            )
+
+            if (
+                error_type == "invalid_tool_call"
+                and self.tool.get_tool(str(result.name)) is None
+            ):
+                self._store_nudge(
+                    "The requested tool is not available in this runtime. "
+                    "Use one of the available tools."
+                )
+            else:
+                self._store_nudge(
+                    f"Tool '{result.name}' rejected the last call. "
+                    f"{result.summary or 'Use valid arguments.'} "
+                    f"{hint}".strip()
+                )
 
         # Refresh real filesystem state before the next model turn so a file
         # that was created earlier cannot disappear from model-visible state
