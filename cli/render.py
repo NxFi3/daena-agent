@@ -119,10 +119,10 @@ class StreamRenderer:
         return Panel(table, border_style="cyan", padding=(0, 1))
 
     def _thinking_panel(self) -> Panel:
-        text = self.thinking[-12000:] if self.thinking else "Waiting for model reasoning..."
+        text = self.thinking[-12000:] if self.thinking else "Waiting for reasoning stream..."
         return Panel(
             Text(text, style="bright_black" if self.thinking else "dim"),
-            title="[bold yellow]thinking[/bold yellow]",
+            title="[bold yellow]◆ reasoning stream[/bold yellow]",
             border_style="yellow",
             padding=(0, 1),
         )
