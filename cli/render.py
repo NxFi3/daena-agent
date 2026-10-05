@@ -15,6 +15,21 @@ def _short(value: Any, limit: int = 500) -> str:
     return text
 
 
+def _tool_args(value: Any, limit: int = 260) -> str:
+    if not isinstance(value, dict) or not value:
+        return ""
+    parts = []
+    for key, item in value.items():
+        if isinstance(item, str):
+            shown = repr(item)
+        elif isinstance(item, (int, float, bool)) or item is None:
+            shown = str(item)
+        else:
+            shown = repr(item)
+        parts.append(f"{key}={shown}")
+    return _short(" · ".join(parts), limit)
+
+
 @dataclass
 class StreamRenderer:
     """Compact terminal renderer for one live Agent run.
@@ -106,10 +121,12 @@ class StreamRenderer:
             self._flush_content(force=True)
             self.tool_count += 1
             self.status = f"tool:{_short(event.get('name') or 'unknown', 70)}"
-            self._print(
-                f"\x1b[34mDAENA ↳ {_short(event.get('name') or 'unknown', 70)}\x1b[0m"
-                f"  \x1b[90m{_short(event.get('arguments') or {}, 560)}\x1b[0m"
-            )
+            name = _short(event.get("name") or "unknown", 70)
+            args = _tool_args(event.get("arguments") or {})
+            line = f"\x1b[34mDAENA ↳ {name}\x1b[0m"
+            if args:
+                line += f"  \x1b[90m{args}\x1b[0m"
+            self._print(line)
 
         elif event_type == "tool_result":
             self._flush_content(force=True)
