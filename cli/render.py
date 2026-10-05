@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from prompt_toolkit import print_formatted_text
-from prompt_toolkit.formatted_text import ANSI
+from prompt_toolkit.formatted_text import ANSI, HTML
 
 
 def _short(value: Any, limit: int = 500) -> str:
@@ -210,14 +210,16 @@ class StreamRenderer:
         )
         progress = self._progress(self.context_tokens, self.context_budget)
 
-        return (
-            f" \x1b[90m· {state}  "
-            f"\x1b[35m{progress}\x1b[90m  "
-            f"ctx {ctx} · iter {iteration} · "
-            f"tools {self.tool_count} "
-            f"\x1b[36m✓{self.success_count}\x1b[90m "
-            f"\x1b[31m✗{self.failure_count}\x1b[90m · "
-            f"{self.model} · think={str(self.think_enabled).lower()}\x1b[0m "
+        return HTML(
+            f"<ansimagenta>  ◆</ansimagenta> "
+            f"<ansiwhite><b>{state}</b></ansiwhite>  "
+            f"<ansiblue>{progress}</ansiblue>  "
+            f"<ansiwhite>ctx {ctx}</ansiwhite> · "
+            f"<ansiwhite>iter {iteration}</ansiwhite> · "
+            f"<ansiwhite>tools {self.tool_count}</ansiwhite> "
+            f"<ansicyan>✓{self.success_count}</ansicyan> "
+            f"<ansired>✗{self.failure_count}</ansired> · "
+            f"<ansigray>{self.model} · think={str(self.think_enabled).lower()}</ansigray>  "
         )
 
     @staticmethod
