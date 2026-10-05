@@ -1717,14 +1717,11 @@ class Loop:
                 "required stdin with process_write, or stop it with process_stop."
             )
 
-        if (
+        observation_exhausted_gate = (
             isinstance(result.metadata, dict)
             and result.metadata.get("runtime_gate")
             and error_type in {"read_exploration_limit", "observation_budget_exhausted"}
-        ):
-            # The runtime has already exhausted safe observation budget. Do not
-            # leave the model in "recover", which invites more diagnostics.
-            self._phase = "implement"
+        )
 
         if (
             not result.success
@@ -1752,6 +1749,13 @@ class Loop:
                     f"{result.summary or 'Use valid arguments.'} "
                     f"{hint}".strip()
                 )
+
+        if observation_exhausted_gate:
+            # This is not an ordinary recoverable tool failure: safe exploration
+            # is exhausted, so the next model turn must choose implementation,
+            # verification, or completion rather than more diagnostics.
+            self._phase = "implement"
+            self._recovery_mode = False
 
         # Refresh real filesystem state before the next model turn so a file
         # that was created earlier cannot disappear from model-visible state
