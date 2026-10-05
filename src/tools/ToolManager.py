@@ -33,6 +33,11 @@ class ToolManager:
 
         # Plan state is task-scoped workspace state. Keep the plan tool on the
         # same filesystem coordinate system as the other workspace tools.
+        search_tool = self.get_tool("search")
+        set_workspace = getattr(search_tool, "set_workspace", None)
+        if callable(set_workspace):
+            set_workspace(directory)
+
         plan_tool = self.get_tool("plan")
         set_workspace = getattr(plan_tool, "set_workspace", None)
         if callable(set_workspace):
@@ -110,6 +115,9 @@ class ToolManager:
 
         if name == "read_file":
             args["file_path"] = str(self.security.sandbox.resolve(args["file_path"]))
+
+        elif name == "search":
+            args["path"] = str(self.security.sandbox.resolve(args.get("path") or "."))
 
         elif name == "command_exec":
             args["workdir"] = str(
