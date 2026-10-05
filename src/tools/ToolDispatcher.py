@@ -89,7 +89,10 @@ class ToolDispatcher:
                     id=call_id,
                     args=arguments,
                     valid=False,
-                    validation_error=f"Tool '{name}' is not available.",
+                    validation_error=(
+                        "Requested tool is not available in this runtime. "
+                        "Use one of the available tools."
+                    ),
                 )
 
             normalize = getattr(tool, "normalize_arguments", None)
