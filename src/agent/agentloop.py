@@ -2262,6 +2262,14 @@ class Loop:
             workspace_revision=self.workspace_revision,
         )
 
+        available_tool_names = {
+            str(definition.get("function", {}).get("name", "")).strip().lower()
+            for definition in self.tool_definitions
+            if isinstance(definition, dict)
+            and isinstance(definition.get("function"), dict)
+            and str(definition.get("function", {}).get("name", "")).strip()
+        }
+
         working_context = self.working_set.context()
         working_context["plan_progress"] = self._plan_progress.context()
         working_context["execution_phase"] = self._phase
@@ -2271,14 +2279,6 @@ class Loop:
             "read_file": "read a known file or a narrow line range",
             "apply_patch": "create or modify files",
             "command_exec": "run tests, builds, or necessary commands",
-        }
-
-        available_tool_names = {
-            str(definition.get("function", {}).get("name", "")).strip().lower()
-            for definition in self.tool_definitions
-            if isinstance(definition, dict)
-            and isinstance(definition.get("function"), dict)
-            and str(definition.get("function", {}).get("name", "")).strip()
         }
 
         context = self.context.get_context(
