@@ -21,7 +21,7 @@ def get_logger(name="RAG Memory"):
     #  console handler
     console_handler = logging.StreamHandler()
     console_handler.setLevel(
-        logging.WARNING if os.getenv("DAENA_CLI") == "1" else logging.DEBUG
+        logging.ERROR if os.getenv("DAENA_CLI") == "1" else logging.DEBUG
     )
     #  format
     formatter = logging.Formatter(
