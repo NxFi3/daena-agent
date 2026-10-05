@@ -34,7 +34,7 @@ def _load_config(path: Path) -> dict:
 
 def _think_value(agent: Agent) -> object:
     config = getattr(agent.llm, "generation_config", {}) or {}
-    return config.get("think", True)
+    return config.get("think", getattr(agent.llm.model, "defaultConfig", {}).get("think", "medium") if agent.llm.model else "medium")
 
 
 def _set_think(agent: Agent, value: object) -> object:
@@ -45,12 +45,55 @@ def _set_think(agent: Agent, value: object) -> object:
     return value
 
 
+def _set_setting(agent: Agent, key: str, value: str) -> object:
+    generation_config = getattr(agent.llm, "generation_config", None)
+    if generation_config is None:
+        raise RuntimeError("The active provider does not expose generation configuration.")
+
+    normalized = key.strip().lower().replace("-", "_")
+    if normalized == "temperature":
+        parsed: object = float(value)
+        if not 0 <= float(parsed) <= 2:
+            raise ValueError("temperature must be between 0 and 2")
+    elif normalized in {"num_thread", "num_threads"}:
+        parsed = int(value)
+        if parsed < 1:
+            raise ValueError("num_thread must be >= 1")
+    elif normalized == "max_iterations":
+        parsed = int(value)
+        if parsed < 1:
+            raise ValueError("max_iterations must be >= 1")
+        agent.loop.max_iterations = parsed
+        return parsed
+    elif normalized == "think":
+        value_lower = value.strip().lower()
+        if value_lower == "auto":
+            parsed = None
+        elif value_lower in {"off", "false"}:
+            parsed = False
+        elif value_lower in {"low", "medium", "high"}:
+            parsed = value_lower
+        else:
+            raise ValueError("think must be auto, off, low, medium, or high")
+    else:
+        raise ValueError("Supported settings: temperature, num_thread, max_iterations, think")
+
+    if parsed is None:
+        generation_config.pop(normalized, None)
+    else:
+        generation_config[normalized] = parsed
+    return parsed
+
+
 def _show_help(console: Console) -> None:
     table = Table.grid(padding=(0, 2))
     table.add_row("/help", "show commands")
     table.add_row("/status", "show session, model, workspace and runtime state")
     table.add_row("/cwd [path]", "show or change the Agent workspace")
-    table.add_row("/think on|off", "toggle Ollama thinking for the next turns")
+    table.add_row("/think low|medium|high|off|auto", "set reasoning effort for the next turns")
+    table.add_row("/provider [name]", "show or switch the active provider")
+    table.add_row("/model [name]", "show or switch the model on the active provider")
+    table.add_row("/set key value", "change runtime settings (temperature, threads, iterations, think)")
     table.add_row("/tools", "show tools currently exposed to the Agent")
     table.add_row("/stats", "show metrics from the last completed turn")
     table.add_row("/clear", "clear the terminal")
@@ -65,8 +108,31 @@ def _show_status(console: Console, agent: Agent) -> None:
     table.add_row("workspace", agent.workingdirectory)
     table.add_row("session", str(agent.session_id))
     table.add_row("think", str(_think_value(agent)).lower())
+    table.add_row("temperature", str((getattr(agent.llm, "generation_config", {}) or {}).get("temperature", "default")))
     table.add_row("max iterations", str(agent.loop.max_iterations))
     console.print(Panel(table, title="[bold cyan]Daena status[/bold cyan]", border_style="cyan"))
+
+
+def _show_provider(console: Console, agent: Agent) -> None:
+    providers = sorted(getattr(agent.llm.registry, "providers", {}).keys())
+    active = str(agent.llm.provider_name)
+    console.print(Panel(
+        f"[bold cyan]active[/bold cyan]  {active}\n"
+        f"[bold cyan]available[/bold cyan]  {', '.join(providers) or 'none'}",
+        title="[bold magenta]provider[/bold magenta]",
+        border_style="magenta",
+    ))
+
+
+def _switch_provider(agent: Agent, provider_name: str) -> None:
+    name = provider_name.strip().lower()
+    providers = getattr(agent.llm.registry, "providers", {})
+    if name not in providers:
+        raise ValueError(f"Unknown provider '{name}'. Available: {', '.join(sorted(providers))}")
+    agent.llm._loadModel(name)
+    agent.llm.provider_name = name
+    provider_cfg = (agent.config.get("llm") or {}).get("provider_config") or {}
+    agent.llm.generation_config = dict(provider_cfg.get("generation_config") or {})
 
 
 def _show_tools(console: Console, agent: Agent) -> None:
@@ -259,12 +325,49 @@ def main() -> None:
                     _show_stats(console, agent)
                     continue
                 if command == "/think":
-                    value = argument.lower()
-                    if value not in {"on", "off"}:
-                        console.print("[yellow]Usage: /think on|off[/yellow]")
+                    value = argument.lower() or str(_think_value(agent)).lower()
+                    if value == "on":
+                        value = "medium"
+                    elif value == "auto":
+                        _set_think(agent, None)
+                        console.print("[green]thinking = auto[/green]")
+                        continue
+                    if value == "off":
+                        _set_think(agent, False)
+                    elif value in {"low", "medium", "high"}:
+                        _set_think(agent, value)
                     else:
-                        _set_think(agent, value == "on")
-                        console.print(f"[green]thinking = {value}[/green]")
+                        console.print("[yellow]Usage: /think low|medium|high|off|auto[/yellow]")
+                        continue
+                    console.print(f"[green]thinking = {value}[/green]")
+                    continue
+                if command == "/provider":
+                    if not argument:
+                        _show_provider(console, agent)
+                    else:
+                        try:
+                            _switch_provider(agent, argument)
+                            console.print(f"[green]provider → {agent.llm.provider_name}[/green]")
+                        except Exception as exc:
+                            console.print(f"[red]{type(exc).__name__}: {exc}[/red]")
+                    continue
+                if command == "/model":
+                    if not argument:
+                        console.print(str(agent.llm.llm_config.get("model_name") or agent.llm.model.defaultModel))
+                    else:
+                        agent.llm.llm_config["model_name"] = argument
+                        console.print(f"[green]model → {argument}[/green]")
+                    continue
+                if command == "/set":
+                    bits = argument.split(maxsplit=1)
+                    if len(bits) != 2:
+                        console.print("[yellow]Usage: /set key value[/yellow]")
+                    else:
+                        try:
+                            parsed = _set_setting(agent, bits[0], bits[1])
+                            console.print(f"[green]{bits[0]} = {parsed}[/green]")
+                        except Exception as exc:
+                            console.print(f"[red]{type(exc).__name__}: {exc}[/red]")
                     continue
                 if command == "/cwd":
                     if not argument:
