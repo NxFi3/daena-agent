@@ -237,6 +237,39 @@ def test_compaction_is_used_when_latest_task_history_does_not_fit():
     assert messages[-1] == {"role": "user", "content": "finish the task"}
 
 
+def test_hard_fit_keeps_prompt_under_budget_without_compaction():
+    llm = FakeLLM()
+    config = base_config()
+    config["context"]["compaction_enabled"] = False
+    config["context"]["max_prompt_tokens"] = 512
+
+    builder = ContextBuilder(config, llm)
+    task = event(
+        ContextRole.USER,
+        ContextType.MESSAGE,
+        "finish the task",
+        1,
+    )
+    events = [task]
+    for i in range(2, 30):
+        events.append(
+            event(
+                ContextRole.ASSISTANT,
+                ContextType.MESSAGE,
+                "x" * 2000,
+                i,
+            )
+        )
+
+    messages = builder.build_context(
+        events=events,
+        task={"id": str(task.id), "content": task.content},
+    )
+
+    assert builder.tokenbudget.estimate_messages_tokens(messages) <= 512
+    assert messages[-1]["role"] == "user"
+
+
 def test_token_budget_uses_configured_num_ctx():
     llm = FakeLLM()
     config = base_config()
