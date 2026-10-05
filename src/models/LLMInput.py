@@ -1,7 +1,7 @@
 #src/Engine/llmManagment/ProvidersInput.py 
 
 from dataclasses import dataclass, field
-from typing import Dict , Any
+from typing import Any, Callable, Dict
 import numpy as np
 
 
