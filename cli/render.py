@@ -36,6 +36,8 @@ class StreamRenderer:
     failure_count: int = 0
     usage: int = 0
     response_streamed: bool = False
+    context_tokens: int = 0
+    context_budget: int = 0
 
     _content_buffer: str = ""
     _thinking_seen: bool = False
@@ -57,6 +59,10 @@ class StreamRenderer:
             )
             self.status = "thinking"
             self._thinking_seen = False
+
+        elif event_type == "context":
+            self.context_tokens = int(event.get("estimated_tokens") or 0)
+            self.context_budget = int(event.get("budget") or 0)
 
         elif event_type == "thinking_delta":
             self.status = "thinking"
@@ -89,7 +95,7 @@ class StreamRenderer:
             success = bool(event.get("success"))
             if success:
                 self.success_count += 1
-                icon = "\x1b[32m✓\x1b[0m"
+                icon = "\x1b[36m✓\x1b[0m"
             else:
                 self.failure_count += 1
                 icon = "\x1b[31m✗\x1b[0m"
@@ -159,17 +165,59 @@ class StreamRenderer:
         self._content_buffer = ""
         self._print(f"\x1b[32m{text}\x1b[0m")
 
+    @staticmethod
+    def _fmt_tokens(value: int) -> str:
+        if value >= 1_000_000:
+            return f"{value / 1_000_000:.1f}M"
+        if value >= 1_000:
+            return f"{value / 1_000:.1f}k"
+        return str(value)
+
+    @staticmethod
+    def _progress(current: int, maximum: int, width: int = 10) -> str:
+        if maximum <= 0:
+            return "──────────"
+        ratio = max(0.0, min(1.0, current / maximum))
+        filled = int(round(ratio * width))
+        return "━" * filled + "─" * (width - filled)
+
     def toolbar(self) -> str:
+        if self.status == "thinking":
+            state = "thinking…"
+        elif self.status == "responding":
+            state = "responding…"
+        elif self.status.startswith("tool:"):
+            state = self.status[5:]
+        elif self.status.startswith("result:"):
+            state = self.status[7:]
+        elif self.status == "redirected":
+            state = "redirected"
+        elif self.status == "completed":
+            state = "ready"
+        else:
+            state = self.status
+
         iteration = (
             f"{self.iteration}/{self.max_iterations}"
             if self.max_iterations
             else str(self.iteration)
         )
+        ctx = (
+            f"{self._fmt_tokens(self.context_tokens)}/"
+            f"{self._fmt_tokens(self.context_budget)}"
+            if self.context_budget
+            else self._fmt_tokens(self.context_tokens)
+        )
+        progress = self._progress(self.context_tokens, self.context_budget)
+
         return (
-            f" {self.status} · iter {iteration} · "
+            f" \x1b[90m· {state}  "
+            f"\x1b[35m{progress}\x1b[90m  "
+            f"ctx {ctx} · iter {iteration} · "
             f"tools {self.tool_count} "
-            f"(✓{self.success_count} ✗{self.failure_count}) · "
-            f"think {str(self.think_enabled).lower()} · {self.model} "
+            f"\x1b[36m✓{self.success_count}\x1b[90m "
+            f"\x1b[31m✗{self.failure_count}\x1b[90m · "
+            f"{self.model} · think={str(self.think_enabled).lower()}\x1b[0m "
         )
 
     @staticmethod
