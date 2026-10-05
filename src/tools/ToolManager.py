@@ -116,11 +116,6 @@ class ToolManager:
                 self.security.sandbox.resolve(args.get("workdir") or ".")
             )
 
-        elif name == "search":
-            args["path"] = str(
-                self.security.sandbox.resolve(args.get("path") or ".")
-            )
-
         elif name == "apply_patch":
             patch = args["patch"]
             lines = patch.replace("\r\n", "\n").replace("\r", "\n").split("\n")
