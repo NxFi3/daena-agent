@@ -38,7 +38,7 @@ class OllamaProvider(ProviderBase):
     # message.content / message.tool_calls as the model's actual answer.
     # Override per model via generation_config: {"think": false} (or
     # "low"/"medium"/"high" for models with graded effort) in config.json.
-    DEFAULT_THINK: ClassVar[bool] = True
+    DEFAULT_THINK: ClassVar[Any] = "medium"
 
     @staticmethod
     def _prepare_messages(
