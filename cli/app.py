@@ -37,7 +37,6 @@ CONFIG_PATH = ROOT / "config.json"
 STYLE = Style.from_dict(
     {
         "prompt": "ansimagenta bold",
-        "bottom-toolbar": "ansiwhite bg:ansiblack",
         "completion-menu.completion": "bg:ansiblack fg:ansiwhite",
         "completion-menu.completion.current": "bg:ansiblue fg:ansiwhite",
         "scrollbar.background": "bg:ansiblack",
@@ -425,12 +424,14 @@ def _handle_command(
 
 def _start_turn(agent: Agent, text: str, state: dict) -> None:
     stop_event = threading.Event()
-    renderer = StreamRenderer(
-        model=str(agent.llm.llm_config.get("model_name") or "default"),
-        workspace=agent.workingdirectory,
-        session_id=str(agent.session_id),
-        think_enabled=_think_value(agent),
-    )
+    renderer = state.get("renderer")
+    if renderer is None:
+        renderer = StreamRenderer(
+            model=str(agent.llm.llm_config.get("model_name") or "default"),
+            workspace=agent.workingdirectory,
+            session_id=str(agent.session_id),
+            think_enabled=_think_value(agent),
+        )
 
     task = ContextEvent(
         role=ContextRole.USER,
@@ -538,7 +539,6 @@ def main() -> None:
         "renderer": None,
         "result": None,
         "error": None,
-        "toolbar": "ready",
         "turn_finished": False,
     }
 
@@ -576,11 +576,10 @@ def main() -> None:
             running = bool(state["running"])
 
             try:
-                with patch_stdout(raw=True):
+                with patch_stdout(raw=False):
                     user_text = session.prompt(
                         HTML(f"<ansimagenta><b>YOU</b></ansimagenta> <ansicyan><b>{'↪' if running else '›'}</b></ansicyan> "),
                         completer=completer,
-                        bottom_toolbar=lambda: state.get("toolbar", "ready"),
                     ).strip()
             except KeyboardInterrupt:
                 if state.get("running") and state.get("stop_event") is not None:
@@ -631,6 +630,14 @@ def main() -> None:
                     break
                 continue
 
+            renderer = StreamRenderer(
+                model=str(agent.llm.llm_config.get("model_name") or "default"),
+                workspace=agent.workingdirectory,
+                session_id=str(agent.session_id),
+                think_enabled=_think_value(agent),
+            )
+            renderer.begin_user_message(user_text)
+            state["renderer"] = renderer
             _start_turn(agent, user_text, state)
 
             # Busy mode remains active until the worker finishes.
