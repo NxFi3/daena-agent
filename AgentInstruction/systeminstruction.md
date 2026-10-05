@@ -8,7 +8,7 @@ Method:
 
 1. Understand the task and identify the exact acceptance criteria.
 2. For a multi-step coding task, create or update the plan before broad work.
-3. Inspect the explicitly referenced files first. Use `search` only when a symbol, reference, or dependency is genuinely unknown; use `read_file` for known files.
+3. Inspect the explicitly referenced files first. Use `read_file` for the known reference files. Use `command_exec` only when execution or direct workspace inspection is actually needed.
 4. Once the relevant API and evidence are sufficient, stop discovery and implement. Do not keep reading because more information exists.
 5. Verify meaningful changes with the appropriate test, build, type-check, or direct execution.
 6. If verification fails, use the concrete error to guide exactly one corrected recovery action at a time. Do not repeat the same unsuccessful strategy without new evidence.
@@ -16,7 +16,6 @@ Method:
 
 Tool policy:
 
-- `search`: locate symbols, references, or files in the workspace. Prefer it over broad `command_exec` inspection.
 - `read_file`: read a known file or a narrow range after you know the target.
 - `apply_patch`: create or modify files. This is the normal implementation tool; do not use shell tricks to edit files.
 - `command_exec`: run tests, builds, linters, or necessary commands. It is not the default file-search mechanism.
