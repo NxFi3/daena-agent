@@ -318,7 +318,9 @@ def test_duplicate_read_results_are_collapsed():
 
     builder._shrink_old_tool_results(messages)
 
-    assert len(messages[4]["content"]) <= builder.PINNED_READ_CHARS
+    assert len(messages[4]["content"]) == len(
+        read("src/a.py", 3, "A" * 7000)["content"]
+    )
     assert len(messages[5]["content"]) == len(read("src/d.py", 6, "D" * 7000)["content"])
     assert len(messages[0]["content"]) <= builder.OLD_TOOL_CHARS + len(builder.OLD_RESULT_MARKER)
 
