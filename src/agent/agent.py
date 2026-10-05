@@ -52,6 +52,10 @@ class Agent:
             stop_event=stop_event,
         )
 
+    def steer(self, text: str) -> None:
+        """Queue guidance for the currently running task."""
+        self.loop.steer(text)
+
     def approve_background_command(
         self,
         command: list[str],
