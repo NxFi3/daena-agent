@@ -1945,7 +1945,7 @@ class Loop:
     def run(
         self,
         user_task: ContextEvent,
-        workspace_directory: str = "EvanaEval",
+        workspace_directory: str | None = None,
     ) -> LLMResult | None:
 
         if not isinstance(
@@ -1958,6 +1958,9 @@ class Loop:
         # A new run starts a fresh runtime ownership boundary. Any process
         # left from a previous run is no longer needed by this task.
         self.tool.close()
+
+        if workspace_directory is None:
+            workspace_directory = str(Path.cwd().resolve())
 
         self._reset_run_state()
         self._run_started_at = time.perf_counter()
