@@ -534,9 +534,8 @@ def main() -> None:
 
     model = str(agent.llm.llm_config.get("model_name") or "default")
     console.print(
-        f"[bold magenta]◈ DAENA[/bold magenta]  [bold cyan]{model}[/bold cyan]  "
-        f"[dim]· {agent.llm.provider_name} · terminal agent[/dim]\n"
-        f"[dim]cwd[/dim] {agent.workingdirectory}\n"
+        f"[bold magenta]◈ DAENA[/bold magenta]  "
+        f"[dim]cwd {agent.workingdirectory}[/dim]\n"
         f"[dim]Tab commands · type while working to redirect · Ctrl+C interrupt[/dim]"
     )
 

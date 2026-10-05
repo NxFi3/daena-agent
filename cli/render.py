@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 from typing import Any
 
 from prompt_toolkit import print_formatted_text
@@ -56,6 +57,8 @@ class StreamRenderer:
 
     _content_buffer: str = ""
     _thinking_seen: bool = False
+    _thinking_chars: int = 0
+    _last_reasoning_notice: float = 0.0
     _finished_rendered: bool = False
 
     def show_user_context(self, workspace: str) -> None:
@@ -92,6 +95,8 @@ class StreamRenderer:
             )
             self.status = "thinking"
             self._thinking_seen = False
+            self._thinking_chars = 0
+            self._last_reasoning_notice = 0.0
 
         elif event_type == "context":
             self.context_tokens = int(event.get("estimated_tokens") or 0)
@@ -100,15 +105,25 @@ class StreamRenderer:
 
         elif event_type == "thinking_delta":
             self.status = "thinking"
+            delta = str(event.get("text") or "")
+            self._thinking_chars += len(delta)
+
+            now = time.monotonic()
             if not self._thinking_seen:
                 self._thinking_seen = True
-                # Never expose raw chain-of-thought. Show only a safe live state.
+                self._last_reasoning_notice = now
                 self._print("\x1b[90mDAENA · reasoning…\x1b[0m")
+            elif now - self._last_reasoning_notice >= 0.75:
+                self._last_reasoning_notice = now
+                self._print(
+                    f"\x1b[90mDAENA · reasoning… "
+                    f"{self._thinking_chars:,} chars processed\x1b[0m"
+                )
 
         elif event_type == "content_delta":
             if self.status != "responding":
                 self._print("\x1b[90m   · responding…\x1b[0m")
-                self._print("\x1b[36mDAENA ›\x1b[0m")
+                self._print(f"\x1b[36mDAENA {self.model} ›\x1b[0m")
             self.status = "responding"
             delta = str(event.get("text") or "")
             if delta:
@@ -163,7 +178,7 @@ class StreamRenderer:
             self.usage = int(event.get("usage") or self.usage or 0)
             response = str(event.get("text") or "")
             if response and not self.response_streamed:
-                self._print("\x1b[36mDAENA ›\x1b[0m")
+                self._print(f"\x1b[36mDAENA {self.model} ›\x1b[0m")
                 self._print(f"\x1b[37m{response}\x1b[0m")
                 self.response_streamed = True
             self.status = "completed"
