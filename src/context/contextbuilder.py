@@ -70,6 +70,7 @@ class ContextBuilder:
     # same files dozens of times.
     PINNED_READ_RESULTS = 2
     PINNED_READ_CHARS = 3500
+    MAX_HISTORICAL_MESSAGES = 6
 
     OLD_RESULT_MARKER = (
         " ...[old result truncated to save context; "
@@ -184,9 +185,26 @@ class ContextBuilder:
         self,
         events: list[ContextEvent],
         task: dict[str, Any] | None,
+        available_tool_names: set[str] | None = None,
     ) -> list[dict[str, Any]]:
-        messages: list[dict[str, Any]] = []
+        historical: list[dict[str, Any]] = []
+        current: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
+
+        current_task_step = 0
+        if isinstance(task, dict):
+            try:
+                current_task_step = int(task.get("step", 0) or 0)
+            except (TypeError, ValueError):
+                current_task_step = 0
+
+        available = None
+        if available_tool_names is not None:
+            available = {
+                str(name).strip().lower()
+                for name in available_tool_names
+                if str(name).strip()
+            }
 
         for event in events:
             if not isinstance(event, ContextEvent):
@@ -200,17 +218,49 @@ class ContextBuilder:
             role = event.role.value
             event_type = event.type.value
             metadata = event.metadata if isinstance(event.metadata, dict) else {}
+            is_historical = current_task_step > 0 and event.step < current_task_step
+            target = historical if is_historical else current
+
+            if (
+                is_historical
+                and role == "user"
+                and bool(metadata.get("runtime_nudge"))
+            ):
+                continue
 
             if role == "user" and event_type == "message":
                 text = str(event.content or "").strip()
                 if text:
-                    messages.append({"role": "user", "content": text})
+                    target.append({"role": "user", "content": text})
                 continue
 
             if role == "assistant" and event_type == "message":
                 message = self._assistant_message(event.content, metadata)
-                if message is not None:
-                    messages.append(message)
+                if message is None:
+                    continue
+
+                tool_calls = message.get("tool_calls")
+                if isinstance(tool_calls, list):
+                    filtered_calls = []
+                    for call in tool_calls:
+                        if not isinstance(call, dict):
+                            continue
+                        function = call.get("function")
+                        name = function.get("name") if isinstance(function, dict) else ""
+                        normalized_name = str(name or "").strip().lower()
+                        if available is None or normalized_name in available:
+                            filtered_calls.append(call)
+
+                    if filtered_calls:
+                        message["tool_calls"] = filtered_calls
+                    else:
+                        message.pop("tool_calls", None)
+
+                if is_historical and "tool_calls" in message:
+                    message.pop("tool_calls", None)
+
+                if message.get("content") or message.get("tool_calls"):
+                    target.append(message)
                 continue
 
             if role == "tool" and event_type == "tool_result":
@@ -218,27 +268,37 @@ class ContextBuilder:
                 if not isinstance(payload, dict):
                     payload = {"content": str(payload), "success": False}
 
+                tool_name = str(payload.get("name") or "").strip().lower()
+                if available is not None and tool_name not in available:
+                    continue
+
+                if is_historical:
+                    continue
+
                 tool_message: dict[str, Any] = {
                     "role": "tool",
                     "content": self._tool_payload(payload),
                 }
                 if payload.get("tool_call_id"):
                     tool_message["tool_call_id"] = str(payload["tool_call_id"])
-                if payload.get("name"):
-                    tool_message["tool_name"] = str(payload["name"])
-                messages.append(tool_message)
+                if tool_name:
+                    tool_message["tool_name"] = tool_name
+                target.append(tool_message)
                 continue
 
             if role == "system":
                 text = str(event.content or "").strip()
                 if text:
-                    messages.append({"role": "system", "content": text})
+                    target.append({"role": "system", "content": text})
 
         if isinstance(task, dict):
             task_id = task.get("id")
             task_text = str(task.get("content") or "").strip()
             if task_text and task_id is not None and str(task_id) not in seen_ids:
-                messages.append({"role": "user", "content": task_text})
+                current.append({"role": "user", "content": task_text})
+
+        historical = historical[-self.MAX_HISTORICAL_MESSAGES:]
+        messages = historical + current
 
         self._shrink_old_tool_results(messages)
         return self._sanitize_tool_protocol(messages)
@@ -273,6 +333,26 @@ class ContextBuilder:
         return message
 
     def _tool_payload(self, event_content: dict[str, Any]) -> str:
+        summary = str(event_content.get("summary") or "").strip()
+        evidence = event_content.get("evidence")
+        effects = event_content.get("effects")
+
+        if summary or isinstance(evidence, dict) or isinstance(effects, list):
+            compact: dict[str, Any] = {
+                "success": bool(event_content.get("success", False)),
+            }
+            if summary:
+                compact["summary"] = summary
+            if isinstance(effects, list) and effects:
+                compact["effects"] = effects
+            if isinstance(evidence, dict) and evidence:
+                compact["evidence"] = evidence
+
+            text = json.dumps(compact, ensure_ascii=False, default=str)
+            if len(text) > self.MAX_TOOL_CHARS:
+                text = self._head_tail(text, self.MAX_TOOL_CHARS)
+            return text
+
         inner = event_content.get("content")
         payload = (
             dict(inner) if isinstance(inner, dict) else {"message": str(inner or "")}
@@ -697,6 +777,7 @@ class ContextBuilder:
         workspace: str | None,
         learned_experience: str | None,
         execution_state: str | None,
+        available_tool_names: set[str] | None = None,
     ) -> None:
         self.window.set_system(self.system_instruction)
         experience = ExperienceReader() if self.experience_enabled else ""
@@ -712,7 +793,13 @@ class ContextBuilder:
         self.window.set_plan(PlanReader(workspace))
         self.window.set_execution_state(execution_state)
         self.window.set_runtime(workspace)
-        self.window.set_conversation(self._build_conversation(events, task))
+        self.window.set_conversation(
+            self._build_conversation(
+                events,
+                task,
+                available_tool_names=available_tool_names,
+            )
+        )
 
     def _fit_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         system = [message for message in messages if message.get("role") == "system"][
@@ -1024,6 +1111,7 @@ class ContextBuilder:
         recent_actions: dict[str, Any] | None = None,
         workspace: str | None = None,
         learned_experience: str | None = None,
+        available_tool_names: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         execution_state = self._compact_execution_state(
             agent_state=agent_state,
@@ -1039,6 +1127,7 @@ class ContextBuilder:
             workspace,
             learned_experience,
             execution_state,
+            available_tool_names=available_tool_names,
         )
         messages = self.window.get_prompt()
 
