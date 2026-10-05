@@ -13,9 +13,11 @@ class FakeLLM:
     def __init__(self):
         self.model = FakeModel()
         self.calls = 0
+        self.options = []
 
-    def generate(self, messages, tools=None):
+    def generate(self, messages, tools=None, options=None):
         self.calls += 1
+        self.options.append(dict(options or {}))
         return LLMResult(
             response="Compact state.",
             message={"role": "assistant", "content": "Compact state."},
@@ -114,6 +116,90 @@ def test_tool_call_and_id_are_preserved():
 
     assert assistant_messages[0]["tool_calls"][0]["id"] == "call_123"
     assert tool_messages[0]["tool_call_id"] == "call_123"
+
+
+def test_compactor_disables_reasoning():
+    llm = FakeLLM()
+    builder = ContextBuilder(base_config(), llm)
+    task = event(
+        ContextRole.USER,
+        ContextType.MESSAGE,
+        "finish the task",
+        1,
+    )
+
+    events = [task]
+    for i in range(2, 35):
+        events.append(
+            event(
+                ContextRole.ASSISTANT if i % 2 == 0 else ContextRole.TOOL,
+                ContextType.MESSAGE if i % 2 == 0 else ContextType.TOOL_RESULT,
+                "x" * 1000,
+                i,
+            )
+        )
+
+    messages = builder.build_context(
+        events=events,
+        task={"id": str(task.id), "content": task.content},
+    )
+
+    assert llm.calls == 1
+    assert llm.options[0]["think"] is False
+    assert any(
+        "<compacted_context>" in str(m.get("content", ""))
+        for m in messages
+        if m.get("role") == "user"
+    )
+
+
+class EmptyCompactorLLM(FakeLLM):
+    def generate(self, messages, tools=None, options=None):
+        self.calls += 1
+        self.options.append(dict(options or {}))
+        return LLMResult(
+            response="",
+            message={"role": "assistant", "content": ""},
+            tool_calls=[],
+            thinking="hidden reasoning",
+            usage=10,
+        )
+
+
+def test_compactor_failure_keeps_deterministic_recent_history():
+    llm = EmptyCompactorLLM()
+    builder = ContextBuilder(base_config(), llm)
+    task = event(
+        ContextRole.USER,
+        ContextType.MESSAGE,
+        "continue the implementation",
+        1,
+    )
+
+    events = [task]
+    for i in range(2, 35):
+        events.append(
+            event(
+                ContextRole.ASSISTANT if i % 2 == 0 else ContextRole.TOOL,
+                ContextType.MESSAGE if i % 2 == 0 else ContextType.TOOL_RESULT,
+                f"important state {i} " + ("x" * 1000),
+                i,
+            )
+        )
+
+    messages = builder.build_context(
+        events=events,
+        task={"id": str(task.id), "content": task.content},
+    )
+
+    assert llm.calls == 1
+    fallback = next(
+        m["content"]
+        for m in messages
+        if m.get("role") == "user" and "<deterministic_context>" in str(m.get("content", ""))
+    )
+    assert "important state 34" in fallback
+    assert messages[-1] == {"role": "user", "content": "continue the implementation"}
 
 
 def test_compaction_is_used_when_latest_task_history_does_not_fit():
