@@ -248,7 +248,7 @@ class Loop:
     def _is_observation_call(cls, call) -> bool:
         name = str(getattr(call, "name", "")).strip().lower()
 
-        if name in {"read_file", "search"}:
+        if name == "read_file":
             return True
 
         if name == "command_exec":
