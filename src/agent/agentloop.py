@@ -116,6 +116,7 @@ class Loop:
         self._same_revision_read_count = 0
         self._observation_action_count = 0
         self._phase = "explore"
+        self._verification_required = False
 
         context_config = self.config.get("context") or {}
         try:
@@ -1564,6 +1565,7 @@ class Loop:
             self._same_revision_read_count = 0
             self._observation_action_count = 0
             self._phase = "implement"
+            self._verification_required = True
             # Workspace progress invalidates the exact-failure recovery gate.
             self._failed_call_keys.clear()
             self._recovery_mode = False
@@ -1604,6 +1606,9 @@ class Loop:
             tool_name = str(getattr(call, "name", result.name)).strip().lower()
             if tool_name == "read_file" and not changed:
                 self._same_revision_read_count += 1
+                if self._verification_required:
+                    self._verification_required = False
+                    self._phase = "verify"
             if tool_name:
                 prefix = f"{tool_name}::"
                 self._semantic_failure_counts = {
@@ -1659,6 +1664,7 @@ class Loop:
         if self._is_verification_call(call, result) and result.success:
             self._phase = "verify"
             self._observation_action_count = 0
+            self._verification_required = False
 
         # Always append the tool result before any corrective USER nudge.
         # Inserting a user message between an assistant tool-call and its tool
@@ -2133,6 +2139,18 @@ class Loop:
 
             if isinstance(llmresult.response, str) and llmresult.response.strip():
 
+                if self._verification_required:
+                    self.metrics["verification_gate_blocks"] = (
+                        self.metrics.get("verification_gate_blocks", 0) + 1
+                    )
+                    self._store_nudge(
+                        "A successful workspace change has not been verified yet. "
+                        "Perform a relevant verification step (read the changed "
+                        "artifact or run the appropriate test/check) before reporting "
+                        "the task as complete."
+                    )
+                    continue
+
                 plan_gate = self._final_response_gate()
                 if plan_gate is not None:
                     self.metrics["plan_final_blocks"] = (
@@ -2265,6 +2283,7 @@ class Loop:
         self.metrics["observation_action_count"] = self._observation_action_count
         self.metrics["observation_action_limit"] = self.observation_action_limit
         self.metrics["execution_phase"] = self._phase
+        self.metrics["verification_required"] = self._verification_required
 
         self.logger.info(
             "Context | "
@@ -2347,6 +2366,7 @@ class Loop:
         self._same_revision_read_count = 0
         self._observation_action_count = 0
         self._phase = "explore"
+        self._verification_required = False
 
         self._tool_loop_guard.reset()
 
@@ -2376,6 +2396,8 @@ class Loop:
             "observation_action_count": 0,
             "observation_action_limit": self.observation_action_limit,
             "execution_phase": self._phase,
+            "verification_required": False,
+            "verification_gate_blocks": 0,
             "tool_call_attempts": 0,
             "tool_successes": 0,
             "tool_failures": 0,
