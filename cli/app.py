@@ -450,7 +450,7 @@ def main() -> None:
     console.print(Panel.fit(
         "[bold cyan]DAENA[/bold cyan]  [white]Autonomous Coding Agent[/white]\n"
         f"[dim]model: {model_name} · workspace: {agent.workingdirectory}\n"
-        "type /help for commands · /steer text while working · Ctrl+C interrupts · /exit quits[/dim]",
+        "type /help for commands · /session shows history · /steer while working · /exit quits[/dim]",
         border_style="cyan",
     ))
 
