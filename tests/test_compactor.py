@@ -6,7 +6,7 @@ class FakeLLM:
     def __init__(self):
         self.messages = None
 
-    def generate(self, messages, tools=None):
+    def generate(self, messages, tools=None, options=None):
         self.messages = messages
         return LLMResult(
             response="Task: fix\nCompleted: parser updated",
