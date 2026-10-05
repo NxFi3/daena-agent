@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from threading import Event
+from typing import Any, Callable
 from uuid import uuid4
 
 from src.agent.agentloop import Loop
@@ -40,10 +42,14 @@ class Agent:
     def act(
         self,
         event: ContextEvent,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
+        stop_event: Event | None = None,
     ):
         return self.loop.run(
             user_task=event,
             workspace_directory=self.workingdirectory,
+            event_sink=on_event,
+            stop_event=stop_event,
         )
 
     def approve_background_command(
