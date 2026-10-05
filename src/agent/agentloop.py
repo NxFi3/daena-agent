@@ -1718,6 +1718,15 @@ class Loop:
             )
 
         if (
+            isinstance(result.metadata, dict)
+            and result.metadata.get("runtime_gate")
+            and error_type in {"read_exploration_limit", "observation_budget_exhausted"}
+        ):
+            # The runtime has already exhausted safe observation budget. Do not
+            # leave the model in "recover", which invites more diagnostics.
+            self._phase = "implement"
+
+        if (
             not result.success
             and error_type in {
                 "invalid_tool_call",
