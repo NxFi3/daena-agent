@@ -89,7 +89,21 @@ class ToolManager:
             self._definitions = self.toolregistry.get_definitions()
         else:
             self._bind_runtime_services()
-        return self._definitions
+
+        allowed = set(self.security.policy.allowed_tools)
+        network_allowed = bool(self.security.policy.allow_network_tools)
+
+        visible: list[dict] = []
+        for definition in self._definitions:
+            function = definition.get("function", {}) if isinstance(definition, dict) else {}
+            name = str(function.get("name", "")).strip().lower()
+            if not name or name not in allowed:
+                continue
+            if name in {"web_search", "web_fetch"} and not network_allowed:
+                continue
+            visible.append(definition)
+
+        return visible
 
     def _find_tool(self, name: str):
         return self.toolregistry.get(str(name).strip().lower())
