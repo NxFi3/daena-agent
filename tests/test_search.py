@@ -55,3 +55,26 @@ def test_search_is_counted_as_observation():
         args={"query": "ToolCall"},
     )
     assert Loop._is_observation_call(call) is True
+
+
+def test_tool_manager_hides_policy_disallowed_tools():
+    from src.tools.ToolManager import ToolManager
+
+    manager = ToolManager(
+        {
+            "security": {
+                "allowed_tools": ["read_file"],
+                "workspace_only": True,
+            }
+        }
+    )
+    try:
+        definitions = manager.get_tools()
+        names = {
+            item["function"]["name"]
+            for item in definitions
+            if isinstance(item, dict)
+        }
+        assert names == {"read_file"}
+    finally:
+        manager.close()
