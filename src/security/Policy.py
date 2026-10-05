@@ -37,7 +37,6 @@ DEFAULT_ALLOWED_TOOLS = {
     "process_poll",
     "process_write",
     "process_stop",
-    "search",
     "web_search",
     "web_fetch",
 }
@@ -119,9 +118,6 @@ class SecurityPolicy:
         if name == "read_file":
             return self._check_read_file(args, sandbox)
 
-        if name == "search":
-            return self._check_search(args, sandbox)
-
         if name == "apply_patch":
             return self._check_apply_patch(args, sandbox)
 
@@ -150,19 +146,6 @@ class SecurityPolicy:
                 return SecurityDecision(False, str(exc), "workspace_boundary")
 
         return SecurityDecision(True, "Read target is inside the workspace.", "workspace_read")
-
-    def _check_search(self, args: dict[str, Any], sandbox) -> SecurityDecision:
-        path = args.get("path") or "."
-        if not isinstance(path, str) or not path.strip():
-            return SecurityDecision(False, "path must be a string.", "path_type")
-
-        if self.workspace_only:
-            try:
-                sandbox.resolve(path)
-            except (PermissionError, ValueError) as exc:
-                return SecurityDecision(False, str(exc), "workspace_boundary")
-
-        return SecurityDecision(True, "Search target is inside the workspace.", "workspace_search")
 
     def _check_apply_patch(self, args: dict[str, Any], sandbox) -> SecurityDecision:
         patch = args.get("patch")
