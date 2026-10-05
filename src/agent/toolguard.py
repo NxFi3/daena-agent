@@ -294,11 +294,6 @@ class ToolLoopGuard:
             for target in self._mutation_targets(call):
                 self._mutation_attempts[target] += 1
 
-        if name in {"process_poll", "read_file", "search"} and not result.success:
-            # Do not let an unrelated observation failure erase an active
-            # verification failure.
-            pass
-
         if (
             name not in self.REPEATABLE_TOOLS
             and signature == self._last_signature
