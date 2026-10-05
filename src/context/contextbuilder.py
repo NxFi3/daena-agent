@@ -61,15 +61,15 @@ class ContextBuilder:
     """Build and budget provider-visible messages without doing retrieval."""
 
     MAX_TOOL_CHARS = 8000
-    OLD_TOOL_CHARS = 300
-    FULL_TOOL_RESULTS = 6
+    OLD_TOOL_CHARS = 256
+    FULL_TOOL_RESULTS = 4
 
     # The most recent distinct read_file results that fall outside the
     # FULL_TOOL_RESULTS window stay (almost) intact. Cutting every old read
     # to OLD_TOOL_CHARS made the model forget file contents and re-read the
     # same files dozens of times.
-    PINNED_READ_RESULTS = 3
-    PINNED_READ_CHARS = 6000
+    PINNED_READ_RESULTS = 2
+    PINNED_READ_CHARS = 3500
 
     OLD_RESULT_MARKER = (
         " ...[old result truncated to save context; "
@@ -405,6 +405,21 @@ class ContextBuilder:
         recent_positions = tool_positions[-self.FULL_TOOL_RESULTS :]
         old_positions = tool_positions[: -self.FULL_TOOL_RESULTS]
 
+        # Keep only the newest occurrence of an identical read observation
+        # at full size. Re-reading the same range produces the same evidence;
+        # replaying every copy only consumes context.
+        seen_reads: set[tuple[str, str, str]] = set()
+        duplicate_read_positions: set[int] = set()
+
+        for index in reversed(tool_positions):
+            signature = self._read_signature(messages[index])
+            if signature is None:
+                continue
+            if signature in seen_reads:
+                duplicate_read_positions.add(index)
+            else:
+                seen_reads.add(signature)
+
         # Pin the newest distinct file reads that are about to age out, unless
         # the same range is still present in the recent window.
         seen: set[tuple[str, str, str]] = set()
@@ -426,6 +441,12 @@ class ContextBuilder:
         for index in old_positions:
             content = messages[index].get("content", "")
             if not isinstance(content, str):
+                continue
+
+            if index in duplicate_read_positions:
+                messages[index]["content"] = (
+                    content[: self.OLD_TOOL_CHARS] + self.OLD_RESULT_MARKER
+                )
                 continue
 
             if index in pinned:
