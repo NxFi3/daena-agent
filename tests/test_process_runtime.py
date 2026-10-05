@@ -51,3 +51,28 @@ def test_tool_manager_owns_a_session_scoped_process_manager():
     finally:
         first.close()
         second.close()
+
+
+def test_process_poll_wraps_process_manager_dict_as_tool_result(monkeypatch):
+    from src.tools.builtin.process_poll.tool import ProcessPoll
+
+    class FakeProcessManager:
+        def poll(self, **kwargs):
+            assert kwargs["process_id"] == "proc-test"
+            return {
+                "status": "exited",
+                "process_id": "proc-test",
+                "exit_code": 0,
+                "stdout": "ok",
+                "stderr": "",
+            }
+
+    tool = ProcessPoll()
+    tool.process_manager = FakeProcessManager()
+
+    result = tool.execute("proc-test", wait_ms=10, max_output_chars=512)
+
+    assert isinstance(result.content, dict)
+    assert result.success is True
+    assert result.content["status"] == "exited"
+    assert result.content["stdout"] == "ok"
