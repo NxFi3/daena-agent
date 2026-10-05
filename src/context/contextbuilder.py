@@ -420,6 +420,15 @@ class ContextBuilder:
             else:
                 seen_reads.add(signature)
 
+        # Collapse older duplicate reads even when they are still inside the
+        # recent tool window. Only the newest occurrence remains at full size.
+        for index in duplicate_read_positions:
+            content = messages[index].get("content", "")
+            if isinstance(content, str):
+                messages[index]["content"] = (
+                    content[: self.OLD_TOOL_CHARS] + self.OLD_RESULT_MARKER
+                )
+
         # Pin the newest distinct file reads that are about to age out, unless
         # the same range is still present in the recent window.
         seen: set[tuple[str, str, str]] = set()
