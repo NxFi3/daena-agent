@@ -1424,8 +1424,8 @@ class Loop:
                     "runtime_gate": True,
                     "recovery_required": True,
                     "workspace_revision": self.workspace_revision,
-                    "read_count": self._same_revision_read_count,
-                            "read_limit": self.READ_EXPLORATION_LIMIT,
+                    "read_count": read_count,
+                    "read_limit": self.READ_EXPLORATION_LIMIT,
                 },
                 summary="RUNTIME BLOCKED: read exploration limit reached.",
             )
@@ -2298,9 +2298,6 @@ class Loop:
         self.metrics["context_tool_results"] = tool_message_count
         self.metrics["context_read_results"] = read_message_count
         self.metrics["same_revision_read_count"] = self._same_revision_read_count
-        self.metrics["observation_action_count"] = self._observation_action_count
-        self.metrics["observation_action_limit"] = self.observation_action_limit
-        self.metrics["execution_phase"] = self._phase
         self.metrics["observation_action_count"] = self._observation_action_count
         self.metrics["observation_action_limit"] = self.observation_action_limit
         self.metrics["execution_phase"] = self._phase
