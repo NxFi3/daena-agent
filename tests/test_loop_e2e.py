@@ -740,6 +740,74 @@ def test_runtime_blocks_plan_while_process_is_active_and_repeats_failed_action(t
         loop.close()
 
 
+def test_observation_exhaustion_transitions_to_implementation(tmp_path):
+    config = {
+        "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
+        "context": {
+            "safe_margin": 0,
+            "recent_event_limit": 10,
+            "compaction_enabled": False,
+            "compaction_target_tokens": 256,
+            "observation_action_limit": 1,
+        },
+        "retrieval": {"top_k": 3},
+        "security": {
+            "workspace_only": True,
+            "allow_background": True,
+            "allow_network_tools": True,
+            "force_approve": True,
+        },
+        "max_agent_iterations": 3,
+        "experience": {"enabled": False},
+    }
+    loop = Loop(config, FakeLLM())
+    loop.session_id = uuid4()
+    loop.set_workspace(str(tmp_path))
+    try:
+        call = ToolCall(
+            name="read_file",
+            id="exhaust-read",
+            valid=True,
+            args={"file_path": "missing.txt"},
+        )
+        result = ToolResult(
+            success=False,
+            name="read_file",
+            content={
+                "success": False,
+                "error": {"type": "file_not_found", "message": "missing"},
+            },
+        )
+        loop._apply_result(call, result, 1)
+        assert loop._phase == "recover"
+
+        blocked = loop._runtime_recovery_gate(
+            ToolCall(
+                name="read_file",
+                id="exhaust-read-2",
+                valid=True,
+                args={"file_path": "missing-again.txt"},
+            )
+        )
+        assert blocked is not None
+        assert blocked.content["error"]["type"] == "observation_budget_exhausted"
+
+        loop._apply_result(
+            ToolCall(
+                name="read_file",
+                id="exhaust-read-3",
+                valid=True,
+                args={"file_path": "missing-third.txt"},
+            ),
+            blocked,
+            2,
+        )
+        assert loop._phase == "implement"
+        assert loop._recovery_mode is False
+    finally:
+        loop.close()
+
+
 def test_runtime_blocks_global_observation_exploration_budget(tmp_path):
     config = {
         "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
