@@ -39,8 +39,6 @@ class Loop:
     # be repeated while the workspace revision is unchanged, but an identical
     # observation should not become an infinite loop.
     OBSERVATION_REPEAT_LIMIT = 3
-    READ_EXPLORATION_LIMIT = 10
-    DEFAULT_OBSERVATION_ACTION_LIMIT = 12
 
     # After repeated failures with the same tool and normalized error, block
     # the next matching failure pattern so the model must change strategy.
@@ -117,20 +115,6 @@ class Loop:
         self._observation_action_count = 0
         self._phase = "explore"
         self._verification_required = False
-
-        context_config = self.config.get("context") or {}
-        try:
-            self.observation_action_limit = max(
-                1,
-                int(
-                    context_config.get(
-                        "observation_action_limit",
-                        self.DEFAULT_OBSERVATION_ACTION_LIMIT,
-                    )
-                ),
-            )
-        except (TypeError, ValueError):
-            self.observation_action_limit = self.DEFAULT_OBSERVATION_ACTION_LIMIT
 
         self._tool_loop_guard = ToolLoopGuard()
 
@@ -1347,9 +1331,6 @@ class Loop:
     def _runtime_recovery_gate(
         self,
         call,
-        *,
-        projected_read_count: int | None = None,
-        projected_observation_count: int | None = None,
     ) -> ToolResult | None:
         name = str(getattr(call, "name", "")).strip().lower()
 
@@ -1390,76 +1371,6 @@ class Loop:
                     "process_control_tools": sorted(self.PROCESS_CONTROL_TOOLS),
                 },
                 summary=summary,
-            )
-
-        # Bound pure file exploration at one workspace revision. This
-        # prevents a coding task from spending the whole run rereading files
-        # without producing a mutation or using the collected evidence.
-        read_count = (
-            self._same_revision_read_count
-            if projected_read_count is None
-            else projected_read_count
-        )
-        if (
-            name == "read_file"
-            and read_count >= self.READ_EXPLORATION_LIMIT
-        ):
-            message = (
-                f"The runtime already allowed {self.READ_EXPLORATION_LIMIT} "
-                "file reads without a workspace change at this revision. "
-                "Reuse the evidence already collected and choose a non-read action: "
-                "edit, create, run a command, verify, or finish the current step."
-            )
-            return ToolResult(
-                success=False,
-                name=name,
-                content={
-                    "success": False,
-                    "error": {
-                        "type": "read_exploration_limit",
-                        "message": message,
-                    },
-                },
-                metadata={
-                    "runtime_gate": True,
-                    "recovery_required": True,
-                    "workspace_revision": self.workspace_revision,
-                    "read_count": read_count,
-                    "read_limit": self.READ_EXPLORATION_LIMIT,
-                },
-                summary="RUNTIME BLOCKED: read exploration limit reached.",
-            )
-
-        if (
-            self._is_observation_call(call)
-            and str(getattr(call, "name", "")).strip().lower() != "process_poll"
-            and (
-                self._observation_action_count
-                if projected_observation_count is None
-                else projected_observation_count
-            ) >= self.observation_action_limit
-        ):
-            return ToolResult(
-                success=False,
-                name=str(getattr(call, "name", "unknown")),
-                content={
-                    "success": False,
-                    "error": {
-                        "type": "observation_budget_exhausted",
-                        "message": (
-                            f"Observation budget exhausted after "
-                            f"{self._observation_action_count} actions. "
-                            "Use the evidence already collected and move to "
-                            "implementation, verification, or completion."
-                        ),
-                    },
-                },
-                metadata={
-                    "runtime_gate": True,
-                    "recovery_required": True,
-                    "phase": self._phase,
-                },
-                summary="RUNTIME BLOCKED: observation budget exhausted.",
             )
 
         predicted_signature = self._predict_failure_signature(call)
@@ -1717,12 +1628,6 @@ class Loop:
                 "required stdin with process_write, or stop it with process_stop."
             )
 
-        observation_exhausted_gate = (
-            isinstance(result.metadata, dict)
-            and result.metadata.get("runtime_gate")
-            and error_type in {"read_exploration_limit", "observation_budget_exhausted"}
-        )
-
         if (
             not result.success
             and error_type in {
@@ -1749,13 +1654,6 @@ class Loop:
                     f"{result.summary or 'Use valid arguments.'} "
                     f"{hint}".strip()
                 )
-
-        if observation_exhausted_gate:
-            # This is not an ordinary recoverable tool failure: safe exploration
-            # is exhausted, so the next model turn must choose implementation,
-            # verification, or completion rather than more diagnostics.
-            self._phase = "implement"
-            self._recovery_mode = False
 
         # Refresh real filesystem state before the next model turn so a file
         # that was created earlier cannot disappear from model-visible state
@@ -1834,27 +1732,10 @@ class Loop:
 
         runtime_blocked: dict[int, ToolResult] = {}
 
-        projected_read_count = self._same_revision_read_count
-        projected_observation_count = self._observation_action_count
-
         for index, call in enumerate(parsed_calls):
-            gated = self._runtime_recovery_gate(
-                call,
-                projected_read_count=projected_read_count,
-                projected_observation_count=projected_observation_count,
-            )
+            gated = self._runtime_recovery_gate(call)
             if gated is not None:
                 runtime_blocked[index] = gated
-                continue
-
-            name = str(getattr(call, "name", "")).strip().lower()
-            if name == "read_file":
-                projected_read_count += 1
-            if (
-                self._is_observation_call(call)
-                and name != "process_poll"
-            ):
-                projected_observation_count += 1
 
         (
             allowed_indices,
@@ -2319,7 +2200,6 @@ class Loop:
         self.metrics["context_read_results"] = read_message_count
         self.metrics["same_revision_read_count"] = self._same_revision_read_count
         self.metrics["observation_action_count"] = self._observation_action_count
-        self.metrics["observation_action_limit"] = self.observation_action_limit
         self.metrics["execution_phase"] = self._phase
         self.metrics["verification_required"] = self._verification_required
 
@@ -2432,7 +2312,6 @@ class Loop:
             "generation_failures": 0,
             "same_revision_read_count": 0,
             "observation_action_count": 0,
-            "observation_action_limit": self.observation_action_limit,
             "execution_phase": self._phase,
             "verification_required": False,
             "verification_gate_blocks": 0,
