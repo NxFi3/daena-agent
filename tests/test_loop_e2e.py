@@ -305,7 +305,7 @@ def test_runtime_blocks_repeated_semantic_tool_failure_across_unrelated_success(
             name="read_file",
             id="read-bad-1",
             valid=False,
-            validation_error="Missing required argument(s): query. Provide every required parameter.",
+            validation_error="Missing required argument(s): file_path. Provide every required parameter.",
         )
         first_bad_result = ToolResult(
             success=False,
@@ -346,7 +346,7 @@ def test_runtime_blocks_repeated_semantic_tool_failure_across_unrelated_success(
                 "success": False,
                 "error": {
                     "type": "invalid_argument",
-                    "message": "query is required.",
+                    "message": "file_path is required.",
                 },
             },
         )
