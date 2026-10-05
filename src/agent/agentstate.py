@@ -24,7 +24,6 @@ class AgentState:
         "inspect": "Inspected",
         "read": "Read",
         "run": "Ran",
-        "search": "Searched",
         "verify": "Verified",
         "execute": "Executed",
     }
@@ -39,7 +38,6 @@ class AgentState:
         "inspect": "inspect",
         "run": "run",
         "execute": "execute",
-        "search": "search",
         "verify": "verify",
     }
 
