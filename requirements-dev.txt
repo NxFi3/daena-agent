@@ -4,3 +4,4 @@ ollama
 openrouter
 ddgs
 pypdf
+rich>=13.7,<15
