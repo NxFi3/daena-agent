@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import FuzzyCompleter, NestedCompleter
+from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 from rich.console import Console
@@ -584,7 +585,7 @@ def main() -> None:
             try:
                 with patch_stdout(raw=True):
                     user_text = session.prompt(
-                        f"[cyan]you {'↪' if running else '›'} [/cyan]",
+                        HTML(f"<ansicyan><b>you {'↪' if running else '›'} </b></ansicyan>"),
                         completer=completer,
                         bottom_toolbar=lambda: state.get("toolbar", "ready"),
                     ).strip()
