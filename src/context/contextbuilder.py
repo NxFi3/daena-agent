@@ -887,6 +887,8 @@ class ContextBuilder:
         if not summary.strip():
             return None
 
+        latest_user = dict(rest[latest_user_index])
+
         base_system = (
             dict(system)
             if system
@@ -906,8 +908,6 @@ class ContextBuilder:
             int(available_tokens * self.tokenbudget.chars_per_token * 0.8),
         )
         summary = self._head_tail(summary, summary_limit)
-
-        latest_user = dict(rest[latest_user_index])
 
         compacted_context = {
             "role": "user",
