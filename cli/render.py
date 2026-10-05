@@ -35,7 +35,7 @@ class StreamRenderer:
     """Compact terminal renderer for one live Agent run.
 
     Raw model reasoning is intentionally not printed. We expose reasoning as
-    a live state in the bottom toolbar and keep tool activity visible inline.
+    a live state in the terminal and keep tool activity visible inline.
     """
 
     model: str
@@ -56,11 +56,11 @@ class StreamRenderer:
 
     _content_buffer: str = ""
     _thinking_seen: bool = False
+    _finished_rendered: bool = False
 
     def show_user_context(self, workspace: str) -> None:
-        self._print(
-            f"\x1b[90m   · workspace {workspace}\x1b[0m"
-        )
+        """Kept for compatibility; workspace is shown once in the session header."""
+        return
 
     def _print_status(self, state: str) -> None:
         if self.context_budget:
@@ -102,6 +102,8 @@ class StreamRenderer:
             self.status = "thinking"
             if not self._thinking_seen:
                 self._thinking_seen = True
+                # Never expose raw chain-of-thought. Show only a safe live state.
+                self._print("\x1b[90mDAENA · reasoning…\x1b[0m")
 
         elif event_type == "content_delta":
             if self.status != "responding":
@@ -159,6 +161,11 @@ class StreamRenderer:
         elif event_type == "final_response":
             self._flush_content(force=True)
             self.usage = int(event.get("usage") or self.usage or 0)
+            response = str(event.get("text") or "")
+            if response and not self.response_streamed:
+                self._print("\x1b[36mDAENA ›\x1b[0m")
+                self._print(f"\x1b[37m{response}\x1b[0m")
+                self.response_streamed = True
             self.status = "completed"
 
         elif event_type == "run_stopped":
@@ -203,6 +210,34 @@ class StreamRenderer:
         text = self._content_buffer
         self._content_buffer = ""
         self._print(f"\x1b[37m{text}\x1b[0m")
+
+    def finish(self, result: Any = None, error: BaseException | None = None) -> None:
+        """Render the turn tail immediately from the worker thread.
+
+        This avoids waiting for the next user Enter just to display a completed
+        response when the main thread is blocked inside PromptSession.prompt().
+        """
+        if self._finished_rendered:
+            return
+
+        response = getattr(result, "response", None) if result is not None else None
+        if response and not self.response_streamed:
+            self._print("\x1b[36mDAENA ›\x1b[0m")
+            self._print(f"\x1b[37m{str(response)}\x1b[0m")
+            self.response_streamed = True
+
+        if error is not None:
+            state = "failed"
+        elif self.status == "stopped":
+            state = "stopped"
+        else:
+            state = "done"
+
+        self._print(
+            f"\x1b[90mDAENA · {state} · iter {self.iteration} · "
+            f"tools {self.tool_count} · usage {self.usage}\x1b[0m"
+        )
+        self._finished_rendered = True
 
     @staticmethod
     def _fmt_tokens(value: int) -> str:
