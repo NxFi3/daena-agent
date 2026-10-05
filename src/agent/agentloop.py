@@ -114,6 +114,22 @@ class Loop:
         # key -> (workspace_revision, successful_repeat_count)
         self._same_revision_call_counts: dict[str, tuple[int, int]] = {}
         self._same_revision_read_count = 0
+        self._observation_action_count = 0
+        self._phase = "explore"
+
+        context_config = self.config.get("context") or {}
+        try:
+            self.observation_action_limit = max(
+                1,
+                int(
+                    context_config.get(
+                        "observation_action_limit",
+                        self.DEFAULT_OBSERVATION_ACTION_LIMIT,
+                    )
+                ),
+            )
+        except (TypeError, ValueError):
+            self.observation_action_limit = self.DEFAULT_OBSERVATION_ACTION_LIMIT
 
         self._tool_loop_guard = ToolLoopGuard()
 
