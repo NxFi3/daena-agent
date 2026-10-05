@@ -141,7 +141,7 @@ class StreamRenderer:
 
         elif event_type == "tool_call":
             self._flush_content(force=True)
-            self._reasoning_phase = f"choosing {str(event.get("name") or "tool")}"
+            self._reasoning_phase = f"choosing {str(event.get('name') or 'tool')}"
             self.tool_count += 1
             self.status = f"tool:{_short(event.get('name') or 'unknown', 70)}"
             name = _short(event.get("name") or "unknown", 70)
@@ -244,7 +244,7 @@ class StreamRenderer:
 
         response = getattr(result, "response", None) if result is not None else None
         if response and not self.response_streamed:
-            self._print("\x1b[36mDAENA ›\x1b[0m")
+            self._print(f"\x1b[36mDAENA {self.model} ›\x1b[0m")
             self._print(f"\x1b[37m{str(response)}\x1b[0m")
             self.response_streamed = True
 
