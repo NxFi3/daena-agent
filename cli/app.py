@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import queue
+import select
+import sys
 import threading
 import time
 from pathlib import Path
@@ -226,6 +228,25 @@ def _run_turn(console: Console, agent: Agent, user_text: str) -> None:
             if stop_event.is_set():
                 renderer.status = "interrupt requested..."
 
+            # Allow operator guidance while the Agent is working. The input
+            # reader only feeds a thread-safe queue; Loop consumes it at its
+            # own safe iteration boundary, so SQLite/context state stays in
+            # the Agent thread.
+            try:
+                ready, _, _ = select.select([sys.stdin], [], [], 0)
+                if ready:
+                    incoming = sys.stdin.readline().strip()
+                    if incoming:
+                        if incoming.lower() in {"/interrupt", "/stop", "/cancel"}:
+                            stop_event.set()
+                            console.print("[bold yellow]↯ Interrupt requested.[/bold yellow]")
+                        else:
+                            steering = incoming[7:].strip() if incoming.lower().startswith("/steer ") else incoming
+                            agent.steer(steering)
+                            console.print(f"[bold magenta]➜ steering:[/bold magenta] {steering}")
+            except (OSError, ValueError):
+                pass
+
             try:
                 time.sleep(0.05)
             except KeyboardInterrupt:
@@ -284,7 +305,7 @@ def main() -> None:
     console.print(Panel.fit(
         "[bold cyan]DAENA[/bold cyan]  [white]Autonomous Coding Agent[/white]\n"
         f"[dim]model: {model_name} · workspace: {agent.workingdirectory}\n"
-        "type /help for commands · Ctrl+C interrupts the active turn · /exit quits[/dim]",
+        "type /help for commands · /steer text while working · Ctrl+C interrupts · /exit quits[/dim]",
         border_style="cyan",
     ))
 
@@ -384,4 +405,4 @@ def main() -> None:
     finally:
         agent.close()
 
-    console.print("[dim]Daena closed.[/dim]")
+    console.print("[bold cyan]◈ Daena session closed[/bold cyan]")
