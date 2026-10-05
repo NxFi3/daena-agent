@@ -575,3 +575,84 @@ def test_workspace_inventory_refresh_detects_external_changes(tmp_path):
     assert ws.refresh_workspace() is True
     paths = {item["path"] for item in ws.context()["workspace_inventory"]}
     assert "server.js" not in paths
+
+
+def test_historical_tool_events_and_unavailable_tools_are_excluded():
+    llm = FakeLLM()
+    builder = ContextBuilder(base_config(), llm)
+
+    old_task = event(
+        ContextRole.USER,
+        ContextType.MESSAGE,
+        "old task",
+        1,
+    )
+    old_assistant = event(
+        ContextRole.ASSISTANT,
+        ContextType.MESSAGE,
+        "",
+        2,
+    )
+    old_assistant.metadata = {
+        "llm_message": {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "old-search",
+                "type": "function",
+                "function": {
+                    "name": "search",
+                    "arguments": {"query": "old"},
+                },
+            }],
+        }
+    }
+    old_tool = event(
+        ContextRole.TOOL,
+        ContextType.TOOL_RESULT,
+        (
+            '{"name":"search","tool_call_id":"old-search","success":false,'
+            '"summary":"Tool search is unavailable."}'
+        ),
+        3,
+    )
+    current_task = event(
+        ContextRole.USER,
+        ContextType.MESSAGE,
+        "new task",
+        10,
+    )
+
+    messages = builder.build_context(
+        events=[old_task, old_assistant, old_tool, current_task],
+        task={
+            "id": str(current_task.id),
+            "content": current_task.content,
+            "step": current_task.step,
+        },
+        available_tool_names={"read_file", "apply_patch", "command_exec"},
+    )
+
+    rendered = "\n".join(str(message) for message in messages)
+    assert "old-search" not in rendered
+    assert '"name": "search"' not in rendered
+    assert all(message.get("role") != "tool" for message in messages)
+    assert messages[-1] == {"role": "user", "content": "new task"}
+
+
+def test_tool_payload_prefers_normalized_observation_state():
+    llm = FakeLLM()
+    builder = ContextBuilder(base_config(), llm)
+
+    payload = builder._tool_payload({
+        "name": "read_file",
+        "success": True,
+        "summary": "Read src/main.py.",
+        "evidence": {"path": "src/main.py", "content": "important finding"},
+        "effects": [{"action": "inspect", "target": "src/main.py"}],
+        "content": {"path": "src/main.py", "content": "huge raw content"},
+    })
+
+    assert "Read src/main.py." in payload
+    assert "important finding" in payload
+    assert "huge raw content" not in payload
