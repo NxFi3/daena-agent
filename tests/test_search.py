@@ -42,3 +42,16 @@ def test_search_is_discoverable_and_exposed_to_dispatcher():
     assert len(calls) == 1
     assert calls[0].valid is True
     assert calls[0].name == "search"
+
+
+def test_search_is_counted_as_observation():
+    from src.agent.agentloop import Loop
+    from src.models.ToolCall import ToolCall
+
+    call = ToolCall(
+        name="search",
+        id="search-observation",
+        valid=True,
+        args={"query": "ToolCall"},
+    )
+    assert Loop._is_observation_call(call) is True
