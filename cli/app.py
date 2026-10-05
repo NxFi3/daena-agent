@@ -4,7 +4,6 @@ import argparse
 import json
 import os
 import threading
-import time
 from datetime import datetime
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -15,7 +14,6 @@ from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 from rich.console import Console
-from rich.markdown import Markdown
 
 # Keep framework INFO logs in the file; the interactive terminal only shows warnings/errors.
 os.environ.setdefault("DAENA_CLI", "1")
@@ -465,6 +463,14 @@ def _start_turn(agent: Agent, text: str, state: dict) -> None:
                 }
             )
         finally:
+            # Finalize from the worker, not from the main prompt loop. The
+            # prompt remains blocked waiting for input, so deferring this until
+            # the next iteration makes a completed response look like it needs
+            # a second Enter.
+            renderer.finish(
+                result=state.get("result"),
+                error=state.get("error"),
+            )
             state["running"] = False
             state["stop_event"] = None
             state["turn_finished"] = True
@@ -488,29 +494,12 @@ def _start_turn(agent: Agent, text: str, state: dict) -> None:
 
 
 def _print_finished_turn(console: Console, state: dict) -> None:
-    renderer = state.get("renderer")
-    result = state.get("result")
-    error = state.get("error")
-
-    if error is not None:
-        console.print(f"[red]turn error: {error}[/red]")
-
-    response = getattr(result, "response", None) if result is not None else None
-    if response and not bool(getattr(renderer, "response_streamed", False)):
-        console.print(Markdown(str(response)))
-
-    if renderer is not None:
-        console.print(
-            f"[dim]done · iter {renderer.iteration} · "
-            f"tools {renderer.tool_count} · usage {renderer.usage}[/dim]"
-        )
-
+    """Release completed-turn state after the worker already rendered it."""
     state["result"] = None
     state["error"] = None
     state["renderer"] = None
     state["thread"] = None
     state["turn_finished"] = False
-
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -545,8 +534,10 @@ def main() -> None:
 
     model = str(agent.llm.llm_config.get("model_name") or "default")
     console.print(
-        f"[bold magenta]◈ DAENA[/bold magenta]  [bold cyan]{model}[/bold cyan]  [dim]terminal agent[/dim]\n"
-        f"[dim]{agent.workingdirectory} · Tab commands · type while working to redirect · Ctrl+C interrupt[/dim]"
+        f"[bold magenta]◈ DAENA[/bold magenta]  [bold cyan]{model}[/bold cyan]  "
+        f"[dim]· {agent.llm.provider_name} · terminal agent[/dim]\n"
+        f"[dim]cwd[/dim] {agent.workingdirectory}\n"
+        f"[dim]Tab commands · type while working to redirect · Ctrl+C interrupt[/dim]"
     )
 
     busy_mode = "steer"
@@ -637,13 +628,11 @@ def main() -> None:
                 session_id=str(agent.session_id),
                 think_enabled=_think_value(agent),
             )
-            renderer.show_user_context(agent.workingdirectory)
             state["renderer"] = renderer
             _start_turn(agent, user_text, state)
 
             # Busy mode remains active until the worker finishes.
             # The next prompt remains immediately available for steering.
-            time.sleep(0.01)
     finally:
         stop_event = state.get("stop_event")
         if stop_event is not None:
