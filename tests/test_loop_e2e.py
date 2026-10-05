@@ -321,15 +321,22 @@ def test_runtime_blocks_repeated_semantic_tool_failure_across_unrelated_success(
         loop._apply_result(first_bad_call, first_bad_result, 1)
 
         read_call = ToolCall(
-            name="read_file",
-            id="read-between",
-            valid=False,
-            validation_error="File path is required.",
+            name="command_exec",
+            id="command-between",
+            valid=True,
+            args={"command": ["pwd"], "workdir": "."},
         )
         read_result = ToolResult(
             success=True,
-            name="read_file",
-            content={"success": True, "path": "hello.txt", "content": "hello"},
+            name="command_exec",
+            content={
+                "success": True,
+                "command": ["pwd"],
+                "workdir": ".",
+                "status": "exited",
+                "exit_code": 0,
+                "stdout": ".",
+            },
         )
         loop._apply_result(read_call, read_result, 2)
 
