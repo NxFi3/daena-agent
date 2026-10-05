@@ -577,9 +577,9 @@ def main() -> None:
             running = bool(state["running"])
 
             try:
-                with patch_stdout(raw=False):
+                with patch_stdout(raw=True):
                     user_text = session.prompt(
-                        HTML(f"<ansimagenta><b>YOU</b></ansimagenta> <ansicyan><b>{'↪' if running else '›'}</b></ansicyan> "),
+                        HTML(f"<ansimagenta><b>YOU</b></ansimagenta> <ansicyan><b>{'»' if running else '›'}</b></ansicyan> "),
                         completer=completer,
                     ).strip()
             except KeyboardInterrupt:
@@ -637,7 +637,7 @@ def main() -> None:
                 session_id=str(agent.session_id),
                 think_enabled=_think_value(agent),
             )
-            renderer.begin_user_message(user_text)
+            renderer.show_user_context(agent.workingdirectory)
             state["renderer"] = renderer
             _start_turn(agent, user_text, state)
 
