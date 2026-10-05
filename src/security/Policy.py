@@ -32,7 +32,6 @@ DEFAULT_BLOCKED_COMMANDS = {
 DEFAULT_ALLOWED_TOOLS = {
     "plan",
     "read_file",
-    "search",
     "apply_patch",
     "command_exec",
     "process_poll",
@@ -116,8 +115,8 @@ class SecurityPolicy:
         if not isinstance(args, dict):
             return SecurityDecision(False, "Tool arguments must be an object.", "args")
 
-        if name in {"read_file", "search"}:
-            return self._check_workspace_search_or_read(name, args, sandbox)
+        if name == "read_file":
+            return self._check_read_file(args, sandbox)
 
         if name == "apply_patch":
             return self._check_apply_patch(args, sandbox)
@@ -134,18 +133,6 @@ class SecurityPolicy:
                 )
 
         return SecurityDecision(True, "Allowed by policy.", "default_allow")
-
-    def _check_workspace_search_or_read(self, name: str, args: dict[str, Any], sandbox) -> SecurityDecision:
-        key = "file_path" if name == "read_file" else "path"
-        path = args.get(key, ".")
-        if not isinstance(path, str) or not path.strip():
-            return SecurityDecision(False, f"{key} must be a non-empty string.", "path_required")
-        if self.workspace_only:
-            try:
-                sandbox.resolve(path)
-            except (PermissionError, ValueError) as exc:
-                return SecurityDecision(False, str(exc), "workspace_boundary")
-        return SecurityDecision(True, "Filesystem target is inside the workspace.", "workspace_read")
 
     def _check_read_file(self, args: dict[str, Any], sandbox) -> SecurityDecision:
         path = args.get("file_path")
