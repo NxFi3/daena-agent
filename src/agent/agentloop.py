@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import queue
 import re
 import time
 from pathlib import Path
@@ -132,6 +133,7 @@ class Loop:
 
         self._event_sink: Callable[[dict[str, Any]], None] | None = None
         self._stop_event: Any | None = None
+        self._steering_queue: queue.Queue[str] = queue.Queue()
 
         context_config = self.config.get("context") or {}
         retrieval_config = self.config.get("retrieval") or {}
@@ -198,6 +200,28 @@ class Loop:
         self._context_step += 1
 
         return self._context_step
+
+    def steer(self, text: str) -> None:
+        """Queue operator guidance to be consumed by the next safe loop boundary."""
+        message = str(text or "").strip()
+        if not message:
+            return
+        self._steering_queue.put(message)
+
+    def _consume_steering(self) -> None:
+        while True:
+            try:
+                message = self._steering_queue.get_nowait()
+            except queue.Empty:
+                return
+
+            self._store_nudge(
+                "Operator steering for the current task:\n"
+                f"{message}\n"
+                "Treat this as new user guidance. Continue the current task "
+                "while respecting this instruction."
+            )
+            self._emit_event("steering", text=message)
 
     def _emit_event(
         self,
@@ -1974,6 +1998,8 @@ class Loop:
                 self.agent_state.stop("Interrupted by user.")
                 self._emit_event("run_stopped", reason="Interrupted by user.")
                 return self._stopped_result("Interrupted by user.")
+
+            self._consume_steering()
 
             self._emit_event(
                 "iteration_start",
