@@ -40,6 +40,7 @@ class Loop:
     # observation should not become an infinite loop.
     OBSERVATION_REPEAT_LIMIT = 3
     READ_EXPLORATION_LIMIT = 10
+    DEFAULT_OBSERVATION_ACTION_LIMIT = 12
 
     # After repeated failures with the same tool and normalized error, block
     # the next matching failure pattern so the model must change strategy.
@@ -194,6 +195,77 @@ class Loop:
 
         return self._context_step
 
+    @staticmethod
+    def _is_observation_command(command: Any) -> bool:
+        if not isinstance(command, list):
+            return False
+
+        tokens = [str(item).strip().lower() for item in command if str(item).strip()]
+        if not tokens:
+            return False
+
+        executable = tokens[0].rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        if executable.endswith(".exe"):
+            executable = executable[:-4]
+
+        if executable in {
+            "pwd", "ls", "find", "grep", "rg", "cat", "head", "tail",
+            "sed", "awk", "stat", "file", "which", "whereis", "type",
+        }:
+            return True
+
+        if executable == "git":
+            subcommand = tokens[1] if len(tokens) > 1 else ""
+            return subcommand in {
+                "status", "diff", "show", "log", "ls-files",
+                "branch", "rev-parse", "describe", "remote",
+            }
+
+        if executable in {"python", "python3", "pypy", "pypy3"}:
+            return "-c" in tokens or (
+                "-m" in tokens and "inspect" in tokens
+            )
+
+        return False
+
+    @classmethod
+    def _is_observation_call(cls, call) -> bool:
+        name = str(getattr(call, "name", "")).strip().lower()
+
+        if name in {"read_file", "search"}:
+            return True
+
+        if name == "command_exec":
+            arguments = getattr(call, "args", {}) or {}
+            return cls._is_observation_command(arguments.get("command"))
+
+        return False
+
+    @staticmethod
+    def _is_verification_call(call, result: ToolResult) -> bool:
+        if str(getattr(call, "name", "")).strip().lower() != "command_exec":
+            return False
+
+        content = result.content if isinstance(result.content, dict) else {}
+        command = content.get("command")
+        if not isinstance(command, list):
+            return False
+
+        lowered = [
+            str(item).strip().lower()
+            for item in command
+            if str(item).strip()
+        ]
+        markers = {
+            "test", "tests", "pytest", "jest", "vitest", "mocha",
+            "check", "lint", "build", "typecheck", "verify",
+        }
+        return any(
+            marker in token
+            for token in lowered
+            for marker in markers
+        )
+
     def _resume_step_counter(
         self,
     ) -> None:
@@ -269,6 +341,7 @@ class Loop:
                 content=text,
                 priority=ContextPriority.HIGH,
                 step=self._next_step(),
+                metadata={"runtime_nudge": True},
             )
         )
 
@@ -462,6 +535,9 @@ class Loop:
                 "",
             ),
             "success": result.success,
+            "summary": result.summary,
+            "evidence": result.evidence,
+            "effects": result.effects,
             "content": result.content,
             "metadata": result.metadata,
         }
@@ -1326,6 +1402,34 @@ class Loop:
                 summary="RUNTIME BLOCKED: read exploration limit reached.",
             )
 
+        if (
+            self._is_observation_call(call)
+            and str(getattr(call, "name", "")).strip().lower() != "process_poll"
+            and self._observation_action_count >= self.observation_action_limit
+        ):
+            return ToolResult(
+                success=False,
+                name=str(getattr(call, "name", "unknown")),
+                content={
+                    "success": False,
+                    "error": {
+                        "type": "observation_budget_exhausted",
+                        "message": (
+                            f"Observation budget exhausted after "
+                            f"{self._observation_action_count} actions. "
+                            "Use the evidence already collected and move to "
+                            "implementation, verification, or completion."
+                        ),
+                    },
+                },
+                metadata={
+                    "runtime_gate": True,
+                    "recovery_required": True,
+                    "phase": self._phase,
+                },
+                summary="RUNTIME BLOCKED: observation budget exhausted.",
+            )
+
         predicted_signature = self._predict_failure_signature(call)
         if predicted_signature:
             repeat_count = self._semantic_failure_counts.get(predicted_signature, 0)
@@ -1442,6 +1546,8 @@ class Loop:
 
             self.workspace_revision += 1
             self._same_revision_read_count = 0
+            self._observation_action_count = 0
+            self._phase = "implement"
             # Workspace progress invalidates the exact-failure recovery gate.
             self._failed_call_keys.clear()
             self._recovery_mode = False
@@ -1516,6 +1622,7 @@ class Loop:
                 )
 
         if not result.success and status not in {"running"}:
+            self._phase = "recover"
             failure_signature = self._failure_signature(call, result)
             self._semantic_failure_counts[failure_signature] = (
                 self._semantic_failure_counts.get(failure_signature, 0) + 1
@@ -1529,6 +1636,13 @@ class Loop:
             count = previous_count + 1 if previous_revision == self.workspace_revision else 1
             self._failed_call_keys[key] = (self.workspace_revision, count)
             self._recovery_mode = True
+
+        if self._is_observation_call(call) and str(getattr(call, "name", "")).strip().lower() != "process_poll":
+            self._observation_action_count += 1
+
+        if self._is_verification_call(call, result) and result.success:
+            self._phase = "verify"
+            self._observation_action_count = 0
 
         # Always append the tool result before any corrective USER nudge.
         # Inserting a user message between an assistant tool-call and its tool
@@ -2073,6 +2187,15 @@ class Loop:
 
         working_context = self.working_set.context()
         working_context["plan_progress"] = self._plan_progress.context()
+        working_context["execution_phase"] = self._phase
+
+        available_tool_names = {
+            str(definition.get("function", {}).get("name", "")).strip().lower()
+            for definition in self.tool_definitions
+            if isinstance(definition, dict)
+            and isinstance(definition.get("function"), dict)
+            and str(definition.get("function", {}).get("name", "")).strip()
+        }
 
         context = self.context.get_context(
             session_id=self.session_id,
@@ -2084,6 +2207,7 @@ class Loop:
             workspace_directory=(workspace_directory),
             recent_limit=self.recent_context_limit,
             search_top_k=self.search_context_top_k,
+            available_tool_names=available_tool_names,
         )
 
         context_builder = self.context.contextbuilder
@@ -2106,6 +2230,9 @@ class Loop:
         self.metrics["context_tool_results"] = tool_message_count
         self.metrics["context_read_results"] = read_message_count
         self.metrics["same_revision_read_count"] = self._same_revision_read_count
+        self.metrics["observation_action_count"] = self._observation_action_count
+        self.metrics["observation_action_limit"] = self.observation_action_limit
+        self.metrics["execution_phase"] = self._phase
 
         self.logger.info(
             "Context | "
@@ -2186,6 +2313,8 @@ class Loop:
         self._successful_tool_calls.clear()
         self._same_revision_call_counts.clear()
         self._same_revision_read_count = 0
+        self._observation_action_count = 0
+        self._phase = "explore"
 
         self._tool_loop_guard.reset()
 
