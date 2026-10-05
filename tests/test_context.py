@@ -159,6 +159,51 @@ def test_token_budget_uses_configured_num_ctx():
     assert builder.tokenbudget.context_length == 4096
     assert builder.tokenbudget.budget == 4096
 
+def test_token_budget_applies_working_prompt_cap():
+    llm = FakeLLM()
+    config = base_config()
+    config["llm"]["provider_config"]["generation_config"]["num_ctx"] = 120000
+    config["context"]["max_prompt_tokens"] = 8192
+
+    builder = ContextBuilder(config, llm)
+
+    assert builder.tokenbudget.context_length == 120000
+    assert builder.tokenbudget.budget == 8192
+
+
+def test_duplicate_read_results_are_collapsed():
+    llm = FakeLLM()
+    builder = ContextBuilder(base_config(), llm)
+
+    def read(path, step, content):
+        return {
+            "role": "tool",
+            "tool_name": "read_file",
+            "tool_call_id": f"call-{step}",
+            "content": (
+                '{"success":true,"path":"'
+                + path
+                + '","start_line":null,"end_line":null}\n'
+                + content
+            ),
+        }
+
+    messages = [
+        read("src/a.py", 1, "A" * 7000),
+        read("src/b.py", 2, "B" * 7000),
+        read("src/a.py", 3, "A" * 7000),
+        read("src/c.py", 4, "C" * 7000),
+        read("src/a.py", 5, "A" * 7000),
+        read("src/d.py", 6, "D" * 7000),
+    ]
+
+    builder._shrink_old_tool_results(messages)
+
+    assert len(messages[4]["content"]) <= builder.OLD_TOOL_CHARS + len(builder.OLD_RESULT_MARKER)
+    assert len(messages[5]["content"]) == len(read("src/d.py", 6, "D" * 7000)["content"])
+    assert len(messages[0]["content"]) <= builder.OLD_TOOL_CHARS + len(builder.OLD_RESULT_MARKER)
+
+
 
 def test_untrusted_orphan_tool_result_is_removed():
     llm = FakeLLM()
