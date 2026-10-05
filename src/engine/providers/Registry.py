@@ -81,12 +81,16 @@ class ProviderRegistry:
         return discovered_providers
 
     def discover(self):
+        # Rebuild the registry from the current provider packages so a failed
+        # or removed provider cannot remain available in a long-lived runtime.
+        self.providers.clear()
+
         discovered_providers = self._discover_providers()
 
         for provider in discovered_providers:
             self.providers[provider.name] = provider
 
-        self.logger.info(f"Discovered {len(discovered_providers)} provider(s)")
+        self.logger.info(f"Discovered {len(self.providers)} provider(s)")
         return list(self.providers.keys())
 
     def is_available(self, providername: str):
