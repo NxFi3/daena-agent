@@ -36,15 +36,21 @@ class LlmProvider:
         messages: list[Dict[str, Any]],
         tools: Optional[list] = None,
         images: Optional[list[np.ndarray]] = None,
+        options: Optional[Dict[str, Any]] = None,
     ):
         if self.model is not None:
             model_name = self.llm_config.get("model_name") or self.model.defaultModel
+
+            generation_options = dict(self.generation_config or {})
+            if options:
+                generation_options.update(options)
+
             inputs = LLMInput(
                 model_name=model_name,
                 tools=tools or [],
                 images=images or [],
                 messages=messages,
-                options=self.generation_config,
+                options=generation_options,
             )
             results = self.model.generate(inputs)
             return results if isinstance(results, LLMResult) else None
