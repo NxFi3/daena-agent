@@ -35,9 +35,9 @@ STYLE = Style.from_dict(
         "prompt": "ansicyan bold",
         "bottom-toolbar": "ansibrightblack bg:ansiblack",
         "completion-menu.completion": "bg:ansiblack fg:ansiwhite",
-        "completion-menu.completion.current": "bg:ansi36 fg:ansiwhite",
+        "completion-menu.completion.current": "bg:ansicyan fg:ansiwhite",
         "scrollbar.background": "bg:ansiblack",
-        "scrollbar.button": "bg:ansi36",
+        "scrollbar.button": "bg:ansicyan",
     }
 )
 
