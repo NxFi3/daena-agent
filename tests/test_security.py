@@ -268,16 +268,27 @@ def test_clear_background_approvals(tmp_path):
     assert checked.approved is False
     assert checked.security_rule == "background_disabled"
 
-def test_workspace_search_cannot_escape_workspace(tmp_path):
-    service = make_service(tmp_path)
+
+
+def test_force_approve_does_not_bypass_security_policy(tmp_path):
+    service = SecurityService({
+        "force_approve": True,
+        "workspace_only": True,
+        "allow_background": False,
+    })
+    service.set_workspace(str(tmp_path))
+
     call = ToolCall(
-        name="search",
-        id="c13",
+        name="command_exec",
+        id="force-1",
         valid=True,
-        args={"query": "secret", "path": "../"},
+        args={
+            "command": ["rm", "-rf", str(tmp_path)],
+            "workdir": str(tmp_path),
+        },
     )
 
     checked = service.check(call)
 
     assert checked.approved is False
-    assert checked.security_rule == "workspace_boundary"
+    assert checked.security_rule == "blocked_executable"
