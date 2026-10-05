@@ -565,6 +565,10 @@ class ContextBuilder:
             }
 
         if isinstance(working_set, dict):
+            phase = working_set.get("execution_phase")
+            if phase:
+                state["phase"] = str(phase).strip()
+
             inventory = working_set.get("workspace_inventory")
             if isinstance(inventory, list):
                 workspace_state = {
