@@ -200,12 +200,46 @@ class OllamaProvider(ProviderBase):
             )
 
         except Exception as exc:
+            error_text = str(exc)
 
-            logger.error("Chat generation failed: " f"{type(exc).__name__}: {exc}")
-
-            raise RuntimeError(
-                "Ollama generation failed: " f"{type(exc).__name__}: {exc}"
-            ) from exc
+            # Some gpt-oss/Ollama combinations can emit a malformed tool-call
+            # payload containing prose before the JSON tool call. Ollama then
+            # rejects its own output with HTTP 500. Retry once without
+            # reasoning before surfacing the provider failure.
+            if (
+                tools
+                and think is not False
+                and "error parsing tool call" in error_text.lower()
+            ):
+                logger.warning(
+                    "Ollama rejected a malformed tool call; retrying once with think=False."
+                )
+                try:
+                    chat_response = ollama.chat(
+                        model=model_name,
+                        messages=messages,
+                        tools=tools,
+                        think=False,
+                        options=options,
+                    )
+                except Exception as retry_exc:
+                    logger.error(
+                        "Tool-call recovery failed: "
+                        f"{type(retry_exc).__name__}: {retry_exc}"
+                    )
+                    raise RuntimeError(
+                        "Ollama generation failed: "
+                        f"{type(retry_exc).__name__}: {retry_exc}"
+                    ) from retry_exc
+            else:
+                logger.error(
+                    "Chat generation failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                raise RuntimeError(
+                    "Ollama generation failed: "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
 
         message = chat_response.message if chat_response else None
 
