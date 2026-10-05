@@ -42,6 +42,26 @@ class StreamRenderer:
     _content_buffer: str = ""
     _thinking_seen: bool = False
 
+    def begin_user_message(self, text: str) -> None:
+        """Render one submitted user turn and its live status below it."""
+        self._print(
+            f"\x1b[35m\x1b[1mYOU ›\x1b[0m \x1b[37m{_short(text, 4000)}\x1b[0m"
+        )
+        self._print_status("submitted")
+
+    def _print_status(self, state: str) -> None:
+        if self.context_budget:
+            percent = (self.context_tokens / self.context_budget) * 100.0
+            context = (
+                f"{self._fmt_tokens(self.context_tokens)}/"
+                f"{self._fmt_tokens(self.context_budget)} ({percent:.1f}%)"
+            )
+        else:
+            context = self._fmt_tokens(self.context_tokens)
+        self._print(
+            f"\x1b[90m   · {state} · ctx {context}\x1b[0m"
+        )
+
     def handle(self, event: dict[str, Any]) -> None:
         event_type = str(event.get("type") or "")
 
@@ -63,6 +83,7 @@ class StreamRenderer:
         elif event_type == "context":
             self.context_tokens = int(event.get("estimated_tokens") or 0)
             self.context_budget = int(event.get("budget") or 0)
+            self._print_status("thinking…")
 
         elif event_type == "thinking_delta":
             self.status = "thinking"
@@ -70,6 +91,8 @@ class StreamRenderer:
                 self._thinking_seen = True
 
         elif event_type == "content_delta":
+            if self.status != "responding":
+                self._print("\x1b[90m   · responding…\x1b[0m")
             self.status = "responding"
             delta = str(event.get("text") or "")
             if delta:
@@ -149,7 +172,7 @@ class StreamRenderer:
     def _flush_complete_lines(self) -> None:
         while "\n" in self._content_buffer:
             line, self._content_buffer = self._content_buffer.split("\n", 1)
-            self._print(f"\x1b[32m{line}\x1b[0m")
+            self._print(f"\x1b[37m{line}\x1b[0m")
 
         # Prevent a very long line from sitting in the buffer indefinitely.
         if len(self._content_buffer) >= 180:
@@ -163,7 +186,7 @@ class StreamRenderer:
 
         text = self._content_buffer
         self._content_buffer = ""
-        self._print(f"\x1b[32m{text}\x1b[0m")
+        self._print(f"\x1b[37m{text}\x1b[0m")
 
     @staticmethod
     def _fmt_tokens(value: int) -> str:
