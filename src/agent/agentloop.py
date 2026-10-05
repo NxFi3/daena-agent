@@ -2249,6 +2249,9 @@ class Loop:
         self.metrics["observation_action_count"] = self._observation_action_count
         self.metrics["observation_action_limit"] = self.observation_action_limit
         self.metrics["execution_phase"] = self._phase
+        self.metrics["observation_action_count"] = self._observation_action_count
+        self.metrics["observation_action_limit"] = self.observation_action_limit
+        self.metrics["execution_phase"] = self._phase
 
         self.logger.info(
             "Context | "
@@ -2357,6 +2360,9 @@ class Loop:
             "context_read_results": 0,
             "generation_failures": 0,
             "same_revision_read_count": 0,
+            "observation_action_count": 0,
+            "observation_action_limit": self.observation_action_limit,
+            "execution_phase": self._phase,
             "tool_call_attempts": 0,
             "tool_successes": 0,
             "tool_failures": 0,
