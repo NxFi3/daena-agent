@@ -9,7 +9,7 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.completion import FuzzyCompleter, NestedCompleter
+from prompt_toolkit.completion import NestedCompleter
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
@@ -32,12 +32,12 @@ CONFIG_PATH = ROOT / "config.json"
 
 STYLE = Style.from_dict(
     {
-        "prompt": "ansicyan bold",
-        "bottom-toolbar": "ansibrightblack bg:ansiblack",
+        "prompt": "ansimagenta bold",
+        "bottom-toolbar": "ansiwhite bg:ansiblack",
         "completion-menu.completion": "bg:ansiblack fg:ansiwhite",
-        "completion-menu.completion.current": "bg:ansicyan fg:ansiwhite",
+        "completion-menu.completion.current": "bg:ansiblue fg:ansiwhite",
         "scrollbar.background": "bg:ansiblack",
-        "scrollbar.button": "bg:ansicyan",
+        "scrollbar.button": "bg:ansiblue",
     }
 )
 
@@ -58,9 +58,6 @@ COMMANDS = {
         "max_iterations": None,
         "think": None,
     },
-    "tools": None,
-    "stats": None,
-    "cwd": None,
     "interrupt": None,
     "clear": None,
     "exit": None,
@@ -76,9 +73,6 @@ HELP_LINES = (
     "/provider [name]          show/switch provider",
     "/model [name]             show/set model",
     "/set key value            runtime setting",
-    "/cwd [path]               show/change workspace",
-    "/tools                    available tools",
-    "/stats                    last run metrics",
     "/interrupt                stop current task",
     "/clear                    clear terminal",
     "/exit                     quit Daena",
@@ -277,7 +271,7 @@ def _show_stats(console: Console, agent: Agent) -> None:
 
 
 def _show_help(console: Console) -> None:
-    console.print("[bold cyan]Daena commands[/bold cyan]")
+    console.print("[bold magenta]Daena commands[/bold magenta]")
     for line in HELP_LINES:
         console.print(f"  {line}")
 
@@ -347,10 +341,6 @@ def _handle_command(
         console.print("[green]new conversation[/green]")
     elif command == "/status":
         _show_status(console, agent, busy_mode)
-    elif command == "/tools":
-        _show_tools(console, agent)
-    elif command == "/stats":
-        _show_stats(console, agent)
     elif command in {"/reasoning", "/think"}:
         value = argument.lower() or str(_think_value(agent)).lower()
         if value == "on":
@@ -535,7 +525,7 @@ def main() -> None:
 
     console = Console()
     session = PromptSession(style=STYLE)
-    completer = FuzzyCompleter(NestedCompleter.from_nested_dict(COMMANDS))
+    completer = NestedCompleter.from_nested_dict(COMMANDS)
 
     state: dict = {
         "running": False,
@@ -550,9 +540,8 @@ def main() -> None:
 
     model = str(agent.llm.llm_config.get("model_name") or "default")
     console.print(
-        f"[bold cyan]◈ DAENA[/bold cyan]  [white]terminal agent[/white]\n"
-        f"[dim]{model} · {agent.workingdirectory}\n"
-        "Tab: autocomplete · /sessions: history · type while working to redirect · /exit: quit[/dim]"
+        f"[bold magenta]◈ DAENA[/bold magenta]  [bold cyan]{model}[/bold cyan]  [dim]terminal agent[/dim]\n"
+        f"[dim]{agent.workingdirectory} · Tab commands · type while working to redirect · Ctrl+C interrupt[/dim]"
     )
 
     busy_mode = "steer"
@@ -585,7 +574,7 @@ def main() -> None:
             try:
                 with patch_stdout(raw=True):
                     user_text = session.prompt(
-                        HTML(f"<ansicyan><b>you {'↪' if running else '›'} </b></ansicyan>"),
+                        HTML(f"<ansimagenta><b>YOU</b></ansimagenta> <ansicyan><b>{'↪' if running else '›'}</b></ansicyan> "),
                         completer=completer,
                         bottom_toolbar=lambda: state.get("toolbar", "ready"),
                     ).strip()
@@ -660,4 +649,4 @@ def main() -> None:
 
         agent.close()
 
-    console.print("[bold cyan]◈ session closed[/bold cyan]")
+    console.print("[bold magenta]◈ session closed[/bold magenta]")
