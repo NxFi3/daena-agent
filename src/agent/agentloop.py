@@ -59,8 +59,8 @@ class Loop:
 
     DEFAULT_MAX_ITERATIONS = 100
 
-    RECENT_CONTEXT_LIMIT = 100
-    SEARCH_CONTEXT_TOP_K = 5
+    DEFAULT_RECENT_CONTEXT_LIMIT = 60
+    DEFAULT_SEARCH_CONTEXT_TOP_K = 3
 
     def __init__(
         self,
@@ -125,6 +125,35 @@ class Loop:
         self._recovery_mode = False
 
         self._generation_retries = 0
+
+        context_config = self.config.get("context") or {}
+        retrieval_config = self.config.get("retrieval") or {}
+
+        try:
+            self.recent_context_limit = max(
+                1,
+                int(
+                    context_config.get(
+                        "recent_event_limit",
+                        self.DEFAULT_RECENT_CONTEXT_LIMIT,
+                    )
+                ),
+            )
+        except (TypeError, ValueError):
+            self.recent_context_limit = self.DEFAULT_RECENT_CONTEXT_LIMIT
+
+        try:
+            self.search_context_top_k = max(
+                1,
+                int(
+                    retrieval_config.get(
+                        "top_k",
+                        self.DEFAULT_SEARCH_CONTEXT_TOP_K,
+                    )
+                ),
+            )
+        except (TypeError, ValueError):
+            self.search_context_top_k = self.DEFAULT_SEARCH_CONTEXT_TOP_K
 
         self.max_iterations = self._read_max_iterations()
 
@@ -2015,8 +2044,8 @@ class Loop:
             observation=(self.working_set.observation_context()),
             recent_actions=(self.working_set.recent_actions_context()),
             workspace_directory=(workspace_directory),
-            recent_limit=(self.RECENT_CONTEXT_LIMIT),
-            search_top_k=(self.SEARCH_CONTEXT_TOP_K),
+            recent_limit=self.recent_context_limit,
+            search_top_k=self.search_context_top_k,
         )
 
         self.metrics["llm_calls"] = self.metrics.get("llm_calls", 0) + 1
