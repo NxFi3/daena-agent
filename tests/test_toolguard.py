@@ -43,32 +43,32 @@ def patch_result(path: str = "backend/routes/notes.js") -> ToolResult:
 
 def test_identical_successful_call_warns_then_blocks():
     guard = ToolLoopGuard()
-    tool_call = call("search", {"query": "notes"})
+    tool_call = call("read_file", {"file_path": "notes.txt"})
 
     guard.after_call(
         tool_call,
-        result("search", content={"success": True, "matches": []}),
+        result("read_file", content={"success": True, "path": "notes.txt", "content": "same"}),
         workspace_changed=False,
     )
     assert guard.before_call(tool_call).action == "allow"
 
     second = guard.after_call(
         tool_call,
-        result("search", content={"success": True, "matches": []}),
+        result("read_file", content={"success": True, "path": "notes.txt", "content": "same"}),
         workspace_changed=False,
     )
     assert second.action == "warn"
 
     third = guard.after_call(
         tool_call,
-        result("search", content={"success": True, "matches": []}),
+        result("read_file", content={"success": True, "path": "notes.txt", "content": "same"}),
         workspace_changed=False,
     )
     assert third.action == "warn"
 
     fourth = guard.after_call(
         tool_call,
-        result("search", content={"success": True, "matches": []}),
+        result("read_file", content={"success": True, "path": "notes.txt", "content": "same"}),
         workspace_changed=False,
     )
     assert fourth.action == "block"
@@ -197,7 +197,7 @@ def test_repeating_two_call_cycle_is_detected():
     guard = ToolLoopGuard()
 
     read = call("read_file", {"file_path": "a.txt"})
-    search = call("search", {"query": "hello"})
+    web = call("web_search", {"query": "hello"})
 
     for _ in range(8):
         guard.after_call(
@@ -206,8 +206,8 @@ def test_repeating_two_call_cycle_is_detected():
             workspace_changed=False,
         )
         guard.after_call(
-            search,
-            result("search", content={"success": True, "matches": ["a.txt"]}),
+            web,
+            result("web_search", content={"success": True, "results": ["a.txt"]}),
             workspace_changed=False,
         )
 
