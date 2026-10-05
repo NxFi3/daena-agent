@@ -98,6 +98,7 @@ def _show_help(console: Console) -> None:
     table.add_row("/set key value", "change runtime settings (temperature, threads, iterations, think)")
     table.add_row("/tools", "show tools currently exposed to the Agent")
     table.add_row("/stats", "show metrics from the last completed turn")
+    table.add_row("/steer text", "send guidance to the running Agent without ending the task")
     table.add_row("/clear", "clear the terminal")
     table.add_row("/exit", "close Daena")
     console.print(Panel(table, title="[bold cyan]Daena commands[/bold cyan]", border_style="cyan"))
