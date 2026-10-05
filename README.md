@@ -230,7 +230,7 @@ src/context/
 
 Those events are merged and passed to `ContextBuilder`.
 
-The current configuration uses recent context plus a small number of search results instead of replaying the entire session.
+The current configuration uses recent context plus a small number of search results instead of replaying the entire session. The runtime also supports a separate `context.max_prompt_tokens` working-set cap so a model with a large native context window does not accumulate an unnecessarily large agent history before compaction.
 
 ## ContextBuilder
 
