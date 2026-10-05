@@ -28,13 +28,17 @@ class Compactor:
                 max_length,
             )
 
+            # Compaction is a summarization job, not an agent-thinking turn.
+            # Reasoning models can otherwise spend the whole turn thinking
+            # and return an empty response, which used to make compaction fail.
             result = self.llm_provider.generate(
                 messages=[
                     {
                         "role": "system",
                         "content": prompt,
                     }
-                ]
+                ],
+                options={"think": False},
             )
 
             if result is None:
