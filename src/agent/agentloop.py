@@ -2284,12 +2284,18 @@ class Loop:
         # correct even when old file-creation events are no longer in context.
         self.working_set.refresh_workspace()
 
-        plan_state = self._read_plan_state()
-        self._plan_progress.sync(
-            plan_state,
-            iteration=int(self.metrics.get("iterations", 0) or 0),
-            workspace_revision=self.workspace_revision,
-        )
+        # A persisted plan belongs to an explicitly activated plan lifecycle
+        # in the current run. Do not synchronize stale workspace plan state into
+        # the model context before this run has created/activated a plan.
+        if self._plan_active_this_run:
+            plan_state = self._read_plan_state()
+            self._plan_progress.sync(
+                plan_state,
+                iteration=int(self.metrics.get("iterations", 0) or 0),
+                workspace_revision=self.workspace_revision,
+            )
+        else:
+            plan_state = PlanState.empty()
 
         available_tool_names = {
             str(definition.get("function", {}).get("name", "")).strip().lower()
@@ -2300,7 +2306,14 @@ class Loop:
         }
 
         working_context = self.working_set.context()
-        working_context["plan_progress"] = self._plan_progress.context()
+        # Expose plan progress only after this run has explicitly activated
+        # planning. This prevents an old .daena/plan.md from steering a fresh
+        # task into an unrelated plan completion/update.
+        working_context["plan_progress"] = (
+            self._plan_progress.context()
+            if self._plan_active_this_run
+            else {}
+        )
         working_context["execution_phase"] = self._phase
         working_context["available_tools"] = sorted(available_tool_names)
         working_context["tool_choice"] = {
