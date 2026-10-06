@@ -2039,6 +2039,12 @@ class Loop:
                 workspace_directory=(workspace_directory),
             )
 
+            if self._stop_event is not None and self._stop_event.is_set():
+                reason = "Interrupted by user."
+                self.agent_state.stop(reason)
+                self._emit_event("run_stopped", reason=reason)
+                return self._stopped_result(reason)
+
             if llmresult is None:
 
                 # A provider-level failure (e.g. Ollama's own tool-call
@@ -2356,6 +2362,7 @@ class Loop:
                     context,
                     tools=self.tool_definitions,
                     on_event=self._forward_llm_stream_event,
+                    stop_event=self._stop_event,
                 )
             except TypeError as type_error:
                 if "unexpected keyword argument 'on_event'" not in str(type_error):
@@ -2364,6 +2371,16 @@ class Loop:
                     context,
                     tools=self.tool_definitions,
                 )
+
+        except InterruptedError as exc:
+            self.agent_state.stop(str(exc) or "Interrupted by user.")
+            self._emit_event(
+                "run_stopped",
+                reason=str(exc) or "Interrupted by user.",
+            )
+            return self._stopped_result(
+                str(exc) or "Interrupted by user."
+            )
 
         except Exception as exc:
 
