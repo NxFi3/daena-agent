@@ -17,7 +17,7 @@ logger = get_logger("[GEMINI]")
 
 class GeminiProvider(ProviderBase):
     name = "gemini"
-    defaultModel = "gemini-2.5-flash-lite"
+    defaultModel = "gemini-3.5-flash-lite"
     defaultConfig: ClassVar[dict] = {"temperature": 0.3}
 
     def __init__(self) -> None:
