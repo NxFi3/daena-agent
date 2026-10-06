@@ -400,8 +400,11 @@ def _handle_command(
         if running and (agent_state := getattr(agent, "_cli_state", None)):
             stop_event = agent_state.get("stop_event")
             if stop_event is not None:
-                stop_event.set()
-                console.print("[#FBBF24]↯ interrupt requested[/#FBBF24]")
+                if stop_event.is_set():
+                    console.print("[#FBBF24]↯ interrupt already requested[/#FBBF24]")
+                else:
+                    stop_event.set()
+                    console.print("[#FBBF24]↯ interrupt requested[/#FBBF24]")
         else:
             console.print("[dim]No active task.[/dim]")
 
@@ -561,8 +564,12 @@ def main() -> None:
                     ).strip()
             except KeyboardInterrupt:
                 if state.get("running") and state.get("stop_event") is not None:
-                    state["stop_event"].set()
-                    console.print("[#FBBF24]↯ interrupt requested[/#FBBF24]")
+                    stop_event = state["stop_event"]
+                    if stop_event.is_set():
+                        console.print("[#FBBF24]↯ interrupt already requested[/#FBBF24]")
+                    else:
+                        stop_event.set()
+                        console.print("[#FBBF24]↯ interrupt requested[/#FBBF24]")
                     continue
                 console.print("[#FBBF24]Use /exit to leave Daena.[/#FBBF24]")
                 continue
