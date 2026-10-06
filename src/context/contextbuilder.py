@@ -785,6 +785,7 @@ class ContextBuilder:
         learned_experience: str | None,
         execution_state: str | None,
         available_tool_names: set[str] | None = None,
+        include_plan: bool = True,
     ) -> None:
         self.window.set_system(self.system_instruction)
         experience = ExperienceReader() if self.experience_enabled else ""
@@ -797,7 +798,7 @@ class ContextBuilder:
                 self.MAX_LEARNED_EXPERIENCE_CHARS,
             )
         )
-        self.window.set_plan(PlanReader(workspace))
+        self.window.set_plan(PlanReader(workspace) if include_plan else "")
         self.window.set_execution_state(execution_state)
         self.window.set_runtime(workspace)
         self.window.set_conversation(
@@ -1119,6 +1120,7 @@ class ContextBuilder:
         workspace: str | None = None,
         learned_experience: str | None = None,
         available_tool_names: set[str] | None = None,
+        include_plan: bool = True,
     ) -> list[dict[str, Any]]:
         execution_state = self._compact_execution_state(
             agent_state=agent_state,
@@ -1135,6 +1137,7 @@ class ContextBuilder:
             learned_experience,
             execution_state,
             available_tool_names=available_tool_names,
+            include_plan=include_plan,
         )
         messages = self.window.get_prompt()
 
