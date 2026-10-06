@@ -36,6 +36,7 @@ class LlmProvider:
         messages: list[Dict[str, Any]],
         tools: Optional[list] = None,
         images: Optional[list[np.ndarray]] = None,
+        on_event=None,
     ):
         if self.model is not None:
             model_name = self.llm_config.get("model_name") or self.model.defaultModel
@@ -46,5 +47,9 @@ class LlmProvider:
                 messages=messages,
                 options=self.generation_config,
             )
-            results = self.model.generate(inputs)
+            try:
+                results = self.model.generate(inputs, on_event=on_event)
+            except TypeError:
+                # Providers that do not implement streaming yet remain compatible.
+                results = self.model.generate(inputs)
             return results if isinstance(results, LLMResult) else None
