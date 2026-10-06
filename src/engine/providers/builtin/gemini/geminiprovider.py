@@ -4,8 +4,12 @@ import json
 import os
 from typing import Any, Callable, ClassVar
 
-from google import genai
-from google.genai import types
+try:
+    from google import genai
+    from google.genai import types
+except ImportError:  # Optional provider dependency.
+    genai = None
+    types = None
 
 from src.engine.providers.ProviderBase import ProviderBase
 from src.models.LLMInput import LLMInput
@@ -26,6 +30,11 @@ class GeminiProvider(ProviderBase):
     def _create_client(self) -> None:
         if self.client is not None:
             return
+        if genai is None or types is None:
+            raise RuntimeError(
+                "Gemini provider requires the google-genai package. "
+                "Install dependencies with: pip install -r requirements-dev.txt"
+            )
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             raise RuntimeError("GEMINI_API_KEY environment variable is not set")
