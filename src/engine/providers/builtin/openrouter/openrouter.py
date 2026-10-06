@@ -128,6 +128,7 @@ class OpenRouterProvider(ProviderBase):
         options: dict[str, Any],
         think: Any,
         callback: Callable[[dict[str, Any]], None],
+        stop_event: Any | None = None,
     ) -> LLMResult:
         thinking_parts: list[str] = []
         content_parts: list[str] = []
@@ -156,6 +157,8 @@ class OpenRouterProvider(ProviderBase):
             stream = client.chat.send(**request_kwargs)
 
             for event in stream:
+                if stop_event is not None and stop_event.is_set():
+                    break
                 last_event = event
 
                 usage = getattr(event, "usage", None)
@@ -265,6 +268,24 @@ class OpenRouterProvider(ProviderBase):
         if serialized_tool_calls:
             message["tool_calls"] = serialized_tool_calls
 
+        if stop_event is not None and stop_event.is_set():
+            cls._emit_stream_event(
+                callback,
+                "generation_stopped",
+                thinking_tokens=len(thinking.split()) if thinking else 0,
+                response_chars=len(content),
+                tool_calls=len(serialized_tool_calls),
+                usage=usage_total,
+            )
+            return LLMResult(
+                response=content,
+                message=message,
+                tool_calls=serialized_tool_calls,
+                thinking=thinking,
+                usage=usage_total,
+                raw=last_event,
+            )
+
         cls._emit_stream_event(
             callback,
             "generation_done",
@@ -332,6 +353,7 @@ class OpenRouterProvider(ProviderBase):
                 options=options,
                 think=think,
                 callback=stream_callback,
+                stop_event=getattr(llminput, "stop_event", None),
             )
 
         request_kwargs = {
