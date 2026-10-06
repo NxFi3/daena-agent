@@ -200,10 +200,23 @@ class OllamaProvider(ProviderBase):
         response_parts: list[str] = []
         tool_calls: list[Any] = []
         final_chunk = None
+        chunk_count = 0
+        thinking_chunks = 0
+        content_chunks = 0
+
+        self._emit_stream_event(
+            callback,
+            "generation_start",
+            model=model_name,
+            think=think,
+            streaming=True,
+        )
 
         def consume(stream):
-            nonlocal final_chunk, tool_calls
+            nonlocal final_chunk, tool_calls, chunk_count
+            nonlocal thinking_chunks, content_chunks
             for chunk in stream:
+                chunk_count += 1
                 final_chunk = chunk
                 message = getattr(chunk, "message", None)
                 if message is None:
@@ -211,6 +224,7 @@ class OllamaProvider(ProviderBase):
 
                 thinking_delta = str(getattr(message, "thinking", None) or "")
                 if thinking_delta:
+                    thinking_chunks += 1
                     thinking_parts.append(thinking_delta)
                     self._emit_stream_event(
                         callback,
@@ -220,6 +234,7 @@ class OllamaProvider(ProviderBase):
 
                 content_delta = str(getattr(message, "content", None) or "")
                 if content_delta:
+                    content_chunks += 1
                     response_parts.append(content_delta)
                     self._emit_stream_event(
                         callback,
@@ -307,6 +322,9 @@ class OllamaProvider(ProviderBase):
             response_chars=len(response_text),
             tool_calls=len(tool_calls),
             usage=usage,
+            stream_chunks=chunk_count,
+            thinking_chunks=thinking_chunks,
+            content_chunks=content_chunks,
         )
 
         return LLMResult(
