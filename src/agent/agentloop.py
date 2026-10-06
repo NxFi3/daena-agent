@@ -1188,9 +1188,13 @@ class Loop:
 
         current_response_keys: set[str] = set()
 
+        plan_active_for_classification = (
+            self._plan_active_this_run
+            or getattr(self._plan_progress, "current_step", None) is not None
+        )
         plan_state = (
             self._read_plan_state()
-            if self._plan_active_this_run
+            if plan_active_for_classification
             else PlanState.empty()
         )
 
