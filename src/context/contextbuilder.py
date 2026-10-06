@@ -594,6 +594,31 @@ class ContextBuilder:
             if phase:
                 state["phase"] = str(phase).strip()
 
+            workspace_guidance = working_set.get("workspace_guidance")
+            if isinstance(workspace_guidance, str) and workspace_guidance.strip():
+                state["workspace_guidance"] = self._truncate(
+                    workspace_guidance,
+                    700,
+                )
+
+            available_tools = working_set.get("available_tools")
+            if isinstance(available_tools, (list, tuple, set)):
+                state["available_tools"] = sorted(
+                    {
+                        str(name).strip()
+                        for name in available_tools
+                        if str(name).strip()
+                    }
+                )
+
+            tool_choice = working_set.get("tool_choice")
+            if isinstance(tool_choice, dict) and tool_choice:
+                state["tool_guidance"] = {
+                    str(key): self._truncate(str(value), 180)
+                    for key, value in list(tool_choice.items())[:8]
+                    if str(key).strip() and str(value).strip()
+                }
+
             inventory = working_set.get("workspace_inventory")
             if isinstance(inventory, list):
                 workspace_state = {
