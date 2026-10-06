@@ -11,7 +11,7 @@
   },
   "context": {
     "safe_margin": -1,
-    "recent_event_limit": 60,
+    "recent_event_limit": 300,
     "compaction_enabled": true,
     "compaction_target_tokens": 4096,
     "max_prompt_tokens": 120000
