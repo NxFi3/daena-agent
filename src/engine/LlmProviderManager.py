@@ -46,6 +46,19 @@ class LlmProvider:
             if options:
                 generation_options.update(options)
 
+            if callable(on_event):
+                try:
+                    on_event({
+                        "type": "generation_requested",
+                        "model": model_name,
+                        "streaming": True,
+                        "think": generation_options.get("think", "medium"),
+                    })
+                except Exception as exc:
+                    logger.debug(
+                        f"Generation event callback failed: {type(exc).__name__}: {exc}"
+                    )
+
             inputs = LLMInput(
                 model_name=model_name,
                 tools=tools or [],
