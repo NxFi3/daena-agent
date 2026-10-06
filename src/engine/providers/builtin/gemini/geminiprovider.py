@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, ClassVar
+from typing import Any, Callable, ClassVar
 
 from google import genai
 from google.genai import types
@@ -272,6 +272,171 @@ class GeminiProvider(ProviderBase):
         except (TypeError, ValueError):
             return 0
 
+    @staticmethod
+    def _emit_stream_event(
+        callback: Callable[[dict[str, Any]], None] | None,
+        event_type: str,
+        **payload: Any,
+    ) -> None:
+        if not callable(callback):
+            return
+        try:
+            callback({"type": event_type, **payload})
+        except Exception as exc:
+            logger.debug(
+                f"Stream callback failed: {type(exc).__name__}: {exc}"
+            )
+
+    @classmethod
+    def _generate_streaming(
+        cls,
+        client: genai.Client,
+        *,
+        model_name: str,
+        contents: list[types.Content],
+        config: types.GenerateContentConfig,
+        callback: Callable[[dict[str, Any]], None],
+        think: Any,
+    ) -> LLMResult:
+        content_parts: list[str] = []
+        thinking_parts: list[str] = []
+        tool_calls: list[dict[str, Any]] = []
+        usage = 0
+        last_chunk: Any = None
+
+        cls._emit_stream_event(
+            callback,
+            "generation_start",
+            model=model_name,
+            think=think,
+            streaming=True,
+        )
+
+        try:
+            stream = client.models.generate_content_stream(
+                model=model_name,
+                contents=contents,
+                config=config,
+            )
+
+            for chunk in stream:
+                last_chunk = chunk
+
+                chunk_usage = cls._usage_tokens(chunk)
+                if chunk_usage:
+                    usage = chunk_usage
+
+                candidates = getattr(chunk, "candidates", None) or []
+                if not candidates:
+                    continue
+
+                candidate_content = getattr(candidates[0], "content", None)
+                if candidate_content is None:
+                    continue
+
+                for part in getattr(candidate_content, "parts", None) or []:
+                    text = getattr(part, "text", None)
+                    if text:
+                        text = str(text)
+                        if getattr(part, "thought", False):
+                            thinking_parts.append(text)
+                            cls._emit_stream_event(
+                                callback,
+                                "thinking_delta",
+                                text=text,
+                            )
+                        else:
+                            content_parts.append(text)
+                            cls._emit_stream_event(
+                                callback,
+                                "content_delta",
+                                text=text,
+                            )
+
+                    function_call = getattr(part, "function_call", None)
+                    if function_call is None:
+                        continue
+
+                    name = getattr(function_call, "name", None)
+                    if not name:
+                        continue
+
+                    args = getattr(function_call, "args", None) or {}
+                    call_id = getattr(function_call, "id", None)
+
+                    normalized = {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": str(name),
+                            "arguments": json.dumps(
+                                dict(args),
+                                ensure_ascii=False,
+                            ),
+                        },
+                    }
+
+                    identity = (
+                        str(call_id)
+                        if call_id
+                        else f"{name}:{normalized['function']['arguments']}"
+                    )
+                    existing = next(
+                        (
+                            item
+                            for item in tool_calls
+                            if str(item.get("id") or "")
+                            == identity
+                            or (
+                                not item.get("id")
+                                and str(item["function"].get("name", "")) == str(name)
+                            )
+                        ),
+                        None,
+                    )
+                    if existing is None:
+                        tool_calls.append(normalized)
+
+        except Exception as exc:
+            logger.error(
+                "Streaming generation failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            raise RuntimeError(
+                "Gemini streaming failed: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+
+        content = "".join(content_parts)
+        thinking = "".join(thinking_parts) or None
+
+        message: dict[str, Any] = {
+            "role": "assistant",
+            "content": content,
+        }
+        if thinking:
+            message["thinking"] = thinking
+        if tool_calls:
+            message["tool_calls"] = tool_calls
+
+        cls._emit_stream_event(
+            callback,
+            "generation_done",
+            thinking_tokens=len(thinking.split()) if thinking else 0,
+            response_chars=len(content),
+            tool_calls=len(tool_calls),
+            usage=usage,
+        )
+
+        return LLMResult(
+            response=content,
+            message=message,
+            tool_calls=tool_calls,
+            thinking=thinking,
+            usage=usage,
+            raw=last_chunk,
+        )
+
     def generate(self, llminput: LLMInput) -> LLMResult:
         self._create_client()
 
@@ -285,6 +450,9 @@ class GeminiProvider(ProviderBase):
         if llminput.options:
             options.update(llminput.options)
 
+        stream_callback = getattr(llminput, "stream_callback", None)
+        think = options.pop("think", None)
+
         # Runtime settings are shared at the CLI level, but these options
         # belong to other providers and are not accepted by Gemini's SDK.
         options.pop("num_thread", None)
@@ -295,6 +463,12 @@ class GeminiProvider(ProviderBase):
         options.pop("parallel_tool_calls", None)
 
         config_kwargs = dict(options)
+
+        if think not in (None, False, "false", "off"):
+            # Gemini streams thought summaries when include_thoughts is enabled.
+            config_kwargs["thinking_config"] = types.ThinkingConfig(
+                include_thoughts=True
+            )
 
         if system_instruction:
             config_kwargs["system_instruction"] = system_instruction
@@ -316,11 +490,23 @@ class GeminiProvider(ProviderBase):
                 function_calling_config=types.FunctionCallingConfig(mode=mode)
             )
 
+        generate_config = types.GenerateContentConfig(**config_kwargs)
+
+        if callable(stream_callback):
+            return self._generate_streaming(
+                self.client,
+                model_name=model_name,
+                contents=messages,
+                config=generate_config,
+                callback=stream_callback,
+                think=think,
+            )
+
         try:
             response = self.client.models.generate_content(
                 model=model_name,
                 contents=messages,
-                config=types.GenerateContentConfig(**config_kwargs),
+                config=generate_config,
             )
         except Exception as exc:
             logger.error(
