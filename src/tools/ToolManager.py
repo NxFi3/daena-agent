@@ -109,30 +109,37 @@ class ToolManager:
         self._bind_runtime_services()
         return self._find_tool(name)
 
-    def _normalize_workspace_args(self, toolcall: ToolCall) -> ToolCall:
-        """Turn workspace-relative tool arguments into absolute safe paths.
+    def _resolve_execution_path(self, value: str) -> Path:
+        """Resolve a path against the active workspace and enforce policy."""
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("Path cannot be empty.")
 
-        Security validation alone is insufficient when a tool interprets a
-        relative path against the process CWD. Normalize after approval so the
-        actual execution target is the same target that policy evaluated.
-        """
+        raw = Path(value).expanduser()
+
+        if self.security.policy.workspace_only:
+            return self.security.sandbox.resolve(raw)
+
+        workspace_root = self.security.sandbox.root
+        if raw.is_absolute():
+            return raw.resolve(strict=False)
+        if workspace_root is not None:
+            return (workspace_root / raw).resolve(strict=False)
+        return raw.resolve(strict=False)
+
+    def _normalize_workspace_args(self, toolcall: ToolCall) -> ToolCall:
+        """Resolve tool paths relative to the active workspace."""
         args = dict(toolcall.args or {})
         name = toolcall.name
-        workspace_root = self.security.sandbox.root
 
         if name == "read_file":
-            raw_path = str(args["file_path"])
-            path = Path(raw_path).expanduser()
-            if not path.is_absolute() and workspace_root is not None:
-                path = workspace_root / path
-            args["file_path"] = str(path.resolve(strict=False))
+            args["file_path"] = str(
+                self._resolve_execution_path(args["file_path"])
+            )
 
         elif name == "command_exec":
-            raw_workdir = str(args.get("workdir") or "")
-            path = Path(raw_workdir).expanduser() if raw_workdir else Path(".")
-            if not path.is_absolute() and workspace_root is not None:
-                path = workspace_root / path
-            args["workdir"] = str(path.resolve(strict=False))
+            args["workdir"] = str(
+                self._resolve_execution_path(args.get("workdir") or ".")
+            )
 
         elif name == "apply_patch":
             patch = args["patch"]
@@ -146,10 +153,9 @@ class ToolManager:
                 )
                 if match:
                     path = match.group(2).strip()
-                    target = Path(path).expanduser()
-                    if not target.is_absolute() and workspace_root is not None:
-                        target = workspace_root / target
-                    line = match.group(1) + str(target.resolve(strict=False))
+                    line = match.group(1) + str(
+                        self._resolve_execution_path(path)
+                    )
                 normalized.append(line)
 
             args["patch"] = "\n".join(normalized)
