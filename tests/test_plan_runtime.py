@@ -330,3 +330,15 @@ def test_plan_actions_do_not_require_model_selected_step_numbers():
 
     assert error is not None
     assert error[0] == "completion_requires_work"
+
+
+
+def test_verified_runtime_does_not_block_final_for_incomplete_plan():
+    loop = Loop.__new__(Loop)
+    loop._plan_active_this_run = True
+    loop._verification_required = False
+    loop._phase = "verify"
+    loop._active_process_ids = set()
+    loop._read_plan_state = lambda: active_plan()
+
+    assert loop._final_response_gate() is None
