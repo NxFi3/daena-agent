@@ -35,6 +35,7 @@ class Loop:
     DUPLICATE_BLOCK_THRESHOLD = 3
     SAME_FAILURE_REPEAT_LIMIT = 1
     EMPTY_RESPONSE_THRESHOLD = 3
+    _final_verification_satisfied = False
 
     # File reads are observations rather than mutations. They may legitimately
     # be repeated while the workspace revision is unchanged, but an identical
