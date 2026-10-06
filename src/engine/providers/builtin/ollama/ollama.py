@@ -174,97 +174,119 @@ class OllamaProvider(ProviderBase):
     def generate(
         self,
         inputs: LLMInput,
+        on_event=None,
     ) -> LLMResult:
-
         model_name = inputs.model_name or self.defaultModel
 
         messages = self._prepare_messages(inputs.messages or [])
-
         tools = inputs.tools or []
 
         options = dict(self.defaultConfig)
-
         if inputs.options:
             options.update(inputs.options)
 
         think = self._resolve_think(options)
 
         try:
-
             chat_response = ollama.chat(
                 model=model_name,
                 messages=messages,
                 tools=tools,
                 think=think,
                 options=options,
+                stream=bool(on_event),
             )
 
+            if not on_event:
+                return self._result_from_response(chat_response, model_name)
+
+            thinking_parts: list[str] = []
+            content_parts: list[str] = []
+            last_message = None
+            last_response = None
+            tool_calls = []
+
+            for chunk in chat_response:
+                last_response = chunk
+                message = getattr(chunk, "message", None)
+                last_message = message or last_message
+
+                thinking = getattr(message, "thinking", None) if message else None
+                content = getattr(message, "content", None) if message else None
+
+                if thinking:
+                    thinking = str(thinking)
+                    thinking_parts.append(thinking)
+                    on_event({"type": "thinking_delta", "text": thinking})
+
+                if content:
+                    content = str(content)
+                    content_parts.append(content)
+                    on_event({"type": "content_delta", "text": content})
+
+                raw_calls = getattr(message, "tool_calls", None) if message else None
+                if raw_calls:
+                    tool_calls = list(raw_calls)
+
+            thinking_text = "".join(thinking_parts)
+            response_text = "".join(content_parts)
+
+            if last_message is not None:
+                normalized_message = (
+                    last_message.model_dump()
+                    if hasattr(last_message, "model_dump")
+                    else {}
+                )
+            else:
+                normalized_message = {}
+
+            prompt_tokens = getattr(last_response, "prompt_eval_count", 0) or 0
+            completion_tokens = getattr(last_response, "eval_count", 0) or 0
+
+            if last_response is not None:
+                raw_calls = getattr(last_message, "tool_calls", None) if last_message else None
+                if raw_calls:
+                    tool_calls = list(raw_calls)
+
+            result = LLMResult(
+                response=response_text,
+                message=normalized_message,
+                tool_calls=tool_calls,
+                thinking=thinking_text or None,
+                usage=int(prompt_tokens) + int(completion_tokens),
+                raw=last_response,
+            )
+
+            on_event({
+                "type": "generation_done",
+                "usage": result.usage,
+            })
+            return result
+
         except Exception as exc:
-
             logger.error("Chat generation failed: " f"{type(exc).__name__}: {exc}")
-
             raise RuntimeError(
                 "Ollama generation failed: " f"{type(exc).__name__}: {exc}"
             ) from exc
 
+    @staticmethod
+    def _result_from_response(chat_response, model_name: str) -> LLMResult:
         message = chat_response.message if chat_response else None
 
-        prompt_tokens = (
-            getattr(
-                chat_response,
-                "prompt_eval_count",
-                0,
-            )
-            or 0
-        )
-
-        completion_tokens = (
-            getattr(
-                chat_response,
-                "eval_count",
-                0,
-            )
-            or 0
-        )
-
+        prompt_tokens = getattr(chat_response, "prompt_eval_count", 0) or 0
+        completion_tokens = getattr(chat_response, "eval_count", 0) or 0
         total_tokens = prompt_tokens + completion_tokens
 
-        tool_calls = []
-
-        if message:
-
-            raw_tool_calls = (
-                getattr(
-                    message,
-                    "tool_calls",
-                    None,
-                )
-                or []
-            )
-
-            tool_calls = list(raw_tool_calls)
-
-        normalized_message = message.model_dump() if message else {}
-
-        thinking = (
-            getattr(
-                message,
-                "thinking",
-                None,
-            )
-            if message
-            else None
+        tool_calls = list(getattr(message, "tool_calls", None) or []) if message else []
+        normalized_message = (
+            message.model_dump()
+            if message and hasattr(message, "model_dump")
+            else {}
         )
-
+        thinking = getattr(message, "thinking", None) if message else None
         response_text = message.content if message else ""
 
         if not response_text and not tool_calls and thinking:
-
-            # Not fabricating a response here — Loop is responsible for
-            # deciding what to do about an empty turn (see agentloop.py's
-            # nudge-and-retry handling). This log line exists so a
-            # thinking-only turn is distinguishable from a truly broken
-            # one when reading logs.
             logger.warning(
                 f"Model '{model_name}' produced only reasoning this turn "
                 "(content and tool_calls are both empty, thinking is not)."
@@ -278,3 +300,4 @@ class OllamaProvider(ProviderBase):
             usage=total_tokens,
             raw=chat_response,
         )
+
