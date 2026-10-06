@@ -1,6 +1,6 @@
 """Daena – streaming terminal renderer.
 
-Reasoning tokens stream inline inside a boxed ╭─ thinking ─╮ block.
+Reasoning chunks stream live inside a readable boxed ╭─ thinking ─╮ block.
 Response chunks appear under a slim  ◆  daena  ──  model  header.
 Tool events, errors, and the finish summary use the same blue-purple palette
 with rose-red (#FB7185) reserved for failures and the run-end footer accent.
@@ -212,25 +212,38 @@ class StreamRenderer:
 
     def _feed_think(self, delta: str) -> None:
         if not self._think_open:
-            label = "─ thinking "
-            dashes = _W - len(label) - 2
+            mode = str(self.think_enabled or "").lower()
+            suffix = f" · {mode}" if mode not in {"", "false", "none"} else ""
+            label = f"─ thinking{suffix} "
+            dashes = max(1, _W - len(label) - 2)
             self._print(f"\n  {_THD}╭{label}{'─' * dashes}╮{_R}")
             self._think_open = True
 
         self._think_buf += delta
-        # Ollama emits very small reasoning deltas. Flush them immediately
-        # so the reasoning trace is visible while generation is running.
-        if "\n" not in self._think_buf and self._think_buf.strip():
-            self._emit_think_line(self._think_buf)
-            self._think_buf = ""
-            return
 
+        # Ollama's thinking stream is token-sized. Never print each token as
+        # its own line: accumulate a readable window and flush at natural
+        # whitespace boundaries while the model is still generating.
         while "\n" in self._think_buf:
             line, self._think_buf = self._think_buf.split("\n", 1)
             self._emit_think_line(line)
 
-        if len(self._think_buf) >= 120:
-            self._emit_think_line(self._think_buf)
+        flush_w = _W - 7
+        while len(self._think_buf) >= flush_w:
+            cut = self._think_buf.rfind(" ", 0, flush_w + 1)
+            if cut < flush_w // 2:
+                cut = flush_w
+            chunk = self._think_buf[:cut].rstrip()
+            self._think_buf = self._think_buf[cut:].lstrip()
+            if chunk:
+                self._emit_think_line(chunk)
+
+        # Keep latency low for short reasoning updates. Once a sentence or a
+        # reasonably sized phrase is complete, show it without waiting for a
+        # full line window.
+        stripped = self._think_buf.rstrip()
+        if len(stripped) >= 32 and stripped[-1:] in ".!?:":
+            self._emit_think_line(stripped)
             self._think_buf = ""
 
     def _emit_think_line(self, text: str) -> None:
