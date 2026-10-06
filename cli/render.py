@@ -8,13 +8,13 @@ with rose-red (#FB7185) reserved for failures and the run-end footer accent.
 
 from __future__ import annotations
 
+import sys
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
 from prompt_toolkit import print_formatted_text
 from prompt_toolkit.formatted_text import ANSI, HTML
-from prompt_toolkit.application.current import get_app
 
 _P    = "\x1b[38;2;167;139;250m"
 _P2   = "\x1b[38;2;139;92;246m"
@@ -71,7 +71,6 @@ class StreamRenderer:
     workspace: str
     session_id: str
     think_enabled: Any = "medium"
-    terminal_app: Any = field(default=None, repr=False)
 
     iteration: int = 0
     max_iterations: int = 0
@@ -350,15 +349,10 @@ class StreamRenderer:
         return f"{_fmt_tok(self.context_tokens)}/{_fmt_tok(self.context_budget)} ({pct:.0f}%)"
 
     def _print(self, text: str) -> None:
-        # Agent generation runs in a worker thread while PromptSession owns
-        # the terminal in the main thread.  Route every stream write through
-        # the captured prompt_toolkit application; otherwise thinking/content
-        # deltas can be swallowed or corrupt the live prompt.
-        app = self.terminal_app
-        if app is not None and getattr(app, "is_running", False):
-            app.run_in_terminal(
-                lambda: print_formatted_text(ANSI(text)),
-                in_executor=False,
-            )
-            return
-        print_formatted_text(ANSI(text))
+        # This method is called directly from the Ollama streaming worker.
+        # patch_stdout() replaces sys.stdout with PromptToolkit's
+        # thread-safe proxy while the prompt is active, so writing to stdout
+        # here gives us immediate flush semantics without waiting for the
+        # whole generation to finish.
+        sys.stdout.write(text + "\n")
+        sys.stdout.flush()
