@@ -62,7 +62,11 @@ class TokenBudget:
         # accumulate thousands of stale observations before compaction starts.
         configured_prompt_cap = self.config.get("max_prompt_tokens")
         if configured_prompt_cap is None:
-            configured_prompt_cap = min(8192, model_budget)
+            # Keep the agent working set intentionally below the provider's
+            # native context window. Long contexts are still available to the
+            # model, but the agent should compact before hundreds of tool
+            # observations accumulate.
+            configured_prompt_cap = min(24000, model_budget)
 
         try:
             configured_prompt_cap = int(configured_prompt_cap)
