@@ -52,6 +52,8 @@ COMMANDS = {
     "/think": {"low": None, "medium": None, "high": None, "off": None, "auto": None},
     "/busy": {"steer": None, "interrupt": None, "queue": None, "status": None},
     "/provider": None,
+    "/cwd": None,
+    "/workspace": None,
     "/model": None,
     "/set": {
         "temperature": None,
@@ -72,6 +74,7 @@ HELP_LINES = (
     "/reasoning low|medium|high|off|auto",
     "/busy steer|interrupt|queue",
     "/provider [name]          show / switch provider",
+    "/cwd [path]               show / change workspace directory",
     "/model [name]             show / set model",
     "/set key value            runtime setting",
     "/interrupt                stop current task",
@@ -376,12 +379,19 @@ def _handle_command(
             except Exception as exc:
                 console.print(f"[#FB7185]{exc}[/#FB7185]")
 
-    elif command == "/cwd":
+    elif command in {"/cwd", "/workspace"}:
         if not argument:
             console.print(agent.workingdirectory)
         else:
-            agent.set_workingdirectory(argument)
-            console.print(f"[#4ADE80]workspace → {agent.workingdirectory}[/#4ADE80]")
+            try:
+                agent.set_workingdirectory(argument)
+                console.print(
+                    f"[#4ADE80]workspace → {agent.workingdirectory}[/#4ADE80]"
+                )
+            except (OSError, RuntimeError, ValueError) as exc:
+                console.print(
+                    f"[#FB7185]could not change workspace: {exc}[/#FB7185]"
+                )
 
     elif command == "/interrupt":
         if running and (agent_state := getattr(agent, "_cli_state", None)):
