@@ -285,6 +285,12 @@ class GeminiProvider(ProviderBase):
         if llminput.options:
             options.update(llminput.options)
 
+        # Runtime settings are shared at the CLI level, but these options
+        # belong to other providers and are not accepted by Gemini's SDK.
+        options.pop("num_thread", None)
+        options.pop("num_threads", None)
+        options.pop("think", None)
+
         tool_choice = options.pop("tool_choice", None)
         options.pop("parallel_tool_calls", None)
 
