@@ -1237,41 +1237,47 @@ class Loop:
                 )
                 continue
 
-            previous_revision = self._successful_tool_calls.get(key)
-            tool = self.tool.get_tool(call.name)
-            allow_same_revision_repeat = bool(
-                getattr(tool, "allow_same_revision_repeat", False)
-            ) if tool is not None else False
+            # Plan transitions are stateful even when the filesystem has not
+            # changed: completing step 1 and completing step 2 are intentionally
+            # the same tool/arguments at the same workspace revision. The plan
+            # state itself is the changing evidence, so generic same-revision
+            # duplicate detection must not block later plan transitions.
+            if not self._is_plan_call(call):
+                previous_revision = self._successful_tool_calls.get(key)
+                tool = self.tool.get_tool(call.name)
+                allow_same_revision_repeat = bool(
+                    getattr(tool, "allow_same_revision_repeat", False)
+                ) if tool is not None else False
 
-            if (
-                previous_revision is not None
-                and previous_revision == self.workspace_revision
-            ):
-                if allow_same_revision_repeat:
-                    _, repeat_count = self._same_revision_call_counts.get(
-                        key,
-                        (self.workspace_revision, 0),
-                    )
-                    if repeat_count >= self.OBSERVATION_REPEAT_LIMIT:
+                if (
+                    previous_revision is not None
+                    and previous_revision == self.workspace_revision
+                ):
+                    if allow_same_revision_repeat:
+                        _, repeat_count = self._same_revision_call_counts.get(
+                            key,
+                            (self.workspace_revision, 0),
+                        )
+                        if repeat_count >= self.OBSERVATION_REPEAT_LIMIT:
+                            blocked_results[index] = self._duplicate_result(
+                                call,
+                                (
+                                    "This observation has already been performed "
+                                    f"{self.OBSERVATION_REPEAT_LIMIT} times at the "
+                                    "same workspace revision. Inspect the returned "
+                                    "evidence and choose a different action."
+                                ),
+                            )
+                            continue
+                    else:
                         blocked_results[index] = self._duplicate_result(
                             call,
                             (
-                                "This observation has already been performed "
-                                f"{self.OBSERVATION_REPEAT_LIMIT} times at the "
-                                "same workspace revision. Inspect the returned "
-                                "evidence and choose a different action."
+                                "An identical successful call already ran at the "
+                                "current workspace revision."
                             ),
                         )
                         continue
-                else:
-                    blocked_results[index] = self._duplicate_result(
-                        call,
-                        (
-                            "An identical successful call already ran at the "
-                            "current workspace revision."
-                        ),
-                    )
-                    continue
 
             if self._is_plan_call(call):
 
