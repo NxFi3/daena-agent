@@ -262,6 +262,9 @@ def _provider_switch(agent: Agent, name: str) -> None:
         )
     agent.llm._loadModel(key)
     agent.llm.provider_name = key
+    provider_model = getattr(agent.llm.model, "defaultModel", "") or ""
+    if provider_model:
+        agent.llm.llm_config["model_name"] = provider_model
     agent.llm.generation_config = dict(
         ((agent.config.get("llm") or {}).get("provider_config") or {}).get(
             "generation_config"
