@@ -116,6 +116,7 @@ class Loop:
         self._observation_action_count = 0
         self._phase = "explore"
         self._verification_required = False
+        self._final_verification_satisfied = False
 
         self._tool_loop_guard = ToolLoopGuard()
 
@@ -342,6 +343,51 @@ class Loop:
             for token in lowered
             for marker in markers
         )
+
+    @staticmethod
+    def _is_final_verification_call(call, result: ToolResult) -> bool:
+        """Identify a successful whole-suite verification suitable for finalization."""
+        if str(getattr(call, "name", "")).strip().lower() != "command_exec":
+            return False
+
+        content = result.content if isinstance(result.content, dict) else {}
+        command = content.get("command")
+        if not isinstance(command, list):
+            return False
+
+        tokens = [
+            str(item).strip().lower()
+            for item in command
+            if str(item).strip()
+        ]
+        if not tokens:
+            return False
+
+        executable = tokens[0].rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        if executable.endswith(".exe"):
+            executable = executable[:-4]
+
+        args = tokens[1:]
+        if executable == "pytest":
+            return not any(
+                token.endswith((".py", ".ini", ".toml"))
+                or "/" in token
+                or "\\" in token
+                for token in args
+                if not token.startswith("-")
+            )
+
+        if executable == "python" and len(args) >= 2 and args[0] == "-m" and args[1] == "pytest":
+            pytest_args = args[2:]
+            return not any(
+                token.endswith((".py", ".ini", ".toml"))
+                or "/" in token
+                or "\\" in token
+                for token in pytest_args
+                if not token.startswith("-")
+            )
+
+        return False
 
     def _resume_step_counter(
         self,
@@ -1142,6 +1188,9 @@ class Loop:
             )
 
         if transition == "completed":
+            if self._final_verification_satisfied:
+                return None
+
             step_number = current.number
             if not self._plan_progress.can_complete(step_number):
                 progress = self._plan_progress.context()
@@ -1293,6 +1342,14 @@ class Loop:
                             ),
                         )
                         continue
+
+            if self._final_verification_satisfied and not self._is_plan_call(call):
+                blocked_results[index] = self._plan_gate_result(
+                    call,
+                    "finalization_only",
+                    "The task has already passed final verification. Do not inspect, execute, or modify anything else; finalize the response. Only plan bookkeeping is allowed.",
+                )
+                continue
 
             if self._is_plan_call(call):
 
@@ -1700,6 +1757,8 @@ class Loop:
             self._phase = "verify"
             self._observation_action_count = 0
             self._verification_required = False
+            if self._is_final_verification_call(call, result):
+                self._final_verification_satisfied = True
 
         # Always append the tool result before any corrective USER nudge.
         # Inserting a user message between an assistant tool-call and its tool
@@ -2199,10 +2258,43 @@ class Loop:
                 )
 
                 if should_stop:
-
                     return self._stopped_result(
                         self.agent_state.error or "Agent stopped."
                     )
+
+                if (
+                    self._final_verification_satisfied
+                    and not self._verification_required
+                    and not self._active_process_ids
+                    and self._plan_active_this_run
+                ):
+                    final_state = self._read_plan_state()
+                    if final_state.is_complete:
+                        response = str(llmresult.response or "").strip()
+                        if not response:
+                            response = "Task completed and final verification passed."
+
+                        self._store_event(self._assistant_event(
+                            llmresult,
+                            normalized_tool_calls=parsed_calls,
+                        ))
+                        self.agent_state.complete()
+                        self.metrics["completed"] = True
+                        self.metrics["stop_reason"] = ""
+                        self.metrics["duration_ms"] = self._duration_ms()
+                        self._emit_event(
+                            "final_response",
+                            text=response,
+                            usage=int(getattr(llmresult, "usage", 0) or 0),
+                        )
+                        self._emit_event(
+                            "run_end",
+                            completed=True,
+                            stop_reason="",
+                            metrics=self.get_metrics(),
+                        )
+                        self.tool.close()
+                        return llmresult
 
                 continue
 
