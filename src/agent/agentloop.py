@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 import time
+import threading
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -125,6 +126,10 @@ class Loop:
         self._recovery_mode = False
 
         self._generation_retries = 0
+        self._event_callback = None
+        self._stop_event = None
+        self._steering_lock = threading.Lock()
+        self._steering_text: str | None = None
 
         self.max_iterations = self._read_max_iterations()
 
@@ -1749,7 +1754,12 @@ class Loop:
         self,
         user_task: ContextEvent,
         workspace_directory: str = "EvanaEval",
+        on_event=None,
+        stop_event=None,
     ) -> LLMResult | None:
+
+        self._event_callback = on_event
+        self._stop_event = stop_event
 
         if not isinstance(
             user_task,
@@ -1786,7 +1796,23 @@ class Loop:
 
         for iteration in range(self.max_iterations):
 
+            if self._stop_event is not None and self._stop_event.is_set():
+                reason = "Interrupted by user."
+                self.agent_state.stop(reason)
+                self._emit_event({"type": "run_stopped", "reason": reason})
+                return self._stopped_result(reason)
+
+            steering = self._consume_steering()
+            if steering:
+                self._store_nudge(steering)
+                self._emit_event({"type": "steering", "text": steering})
+
             iteration_number = iteration + 1
+            self._emit_event({
+                "type": "iteration_start",
+                "iteration": iteration_number,
+                "max_iterations": self.max_iterations,
+            })
 
             self.agent_state.iteration = iteration_number
             self.metrics["iterations"] = iteration_number
@@ -2023,9 +2049,16 @@ class Loop:
 
         try:
 
+            self._emit_event({
+                "type": "context",
+                "estimated_tokens": self._estimate_context_tokens(context),
+                "budget": int(getattr(self.llm.model, "defaultConfig", {}).get("num_ctx", 0) or 0),
+            })
+
             result = self.llm.generate(
                 context,
                 tools=self.tool_definitions,
+                on_event=self._emit_event,
             )
 
         except Exception as exc:
@@ -2054,6 +2087,36 @@ class Loop:
         )
 
         return result
+
+    def _emit_event(self, event: dict) -> None:
+        callback = self._event_callback
+        if callback is None:
+            return
+        try:
+            callback(event)
+        except Exception as exc:
+            self.logger.debug(f"CLI event callback failed: {exc}")
+
+    @staticmethod
+    def _estimate_context_tokens(context) -> int:
+        try:
+            text = json.dumps(context, ensure_ascii=False, default=str)
+            return max(1, len(text) // 4)
+        except Exception:
+            return 0
+
+    def steer(self, text: str) -> None:
+        text = str(text or "").strip()
+        if not text:
+            return
+        with self._steering_lock:
+            self._steering_text = text
+
+    def _consume_steering(self) -> str | None:
+        with self._steering_lock:
+            text = self._steering_text
+            self._steering_text = None
+            return text
 
     def set_workspace(
         self,
