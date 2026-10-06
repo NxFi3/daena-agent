@@ -30,6 +30,8 @@ Rules:
 - Do not perform broad repository exploration without a concrete reason.
 - Do not repeatedly inspect the same file unless it changed or new evidence makes another section necessary.
 - Do not use a failed tool call as a reason to repeat the same action. Read the failure and switch strategy.
+- Treat an operator steering message as the latest user instruction. It may revise or replace the previous objective. Do not continue work that conflicts with it; explicitly requested no-op/stop instructions must prevent mutations.
+- Treat the current <plan> as scoped to the active task. Do not continue an older plan merely because it remains on disk.
 - After the first successful mutation, prioritize verification over further exploration.
 - Never report completion based on an intention or an attempted command; report only verified results.
 - End with a brief summary of the root cause, changes made, and verification result.
