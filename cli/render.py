@@ -1,44 +1,71 @@
+"""Daena – streaming terminal renderer.
+
+Reasoning tokens stream inline inside a boxed ╭─ thinking ─╮ block.
+Response chunks appear under a slim  ◆  daena  ──  model  header.
+Tool events, errors, and the finish summary use the same blue-purple palette
+with rose-red (#FB7185) reserved for failures and the run-end footer accent.
+"""
+
 from __future__ import annotations
 
-from dataclasses import dataclass
 import time
+from dataclasses import dataclass, field
 from typing import Any
 
 from prompt_toolkit import print_formatted_text
 from prompt_toolkit.formatted_text import ANSI, HTML
 
+_P    = "\x1b[38;2;167;139;250m"
+_P2   = "\x1b[38;2;139;92;246m"
+_B    = "\x1b[38;2;96;165;250m"
+_TH   = "\x1b[38;2;109;101;156m"
+_THD  = "\x1b[38;2;130;110;200m"
+_RESP = "\x1b[38;2;219;234;254m"
+_TOOL = "\x1b[38;2;99;179;237m"
+_OK   = "\x1b[38;2;74;222;128m"
+_FAIL = "\x1b[38;2;251;113;133m"
+_ERR  = "\x1b[38;2;252;165;165m"
+_SEP  = "\x1b[38;2;79;64;124m"
+_DIM  = "\x1b[38;2;107;114;128m"
+_MUT  = "\x1b[38;2;71;85;105m"
+_R    = "\x1b[0m"
+_BD   = "\x1b[1m"
+_W = 68
 
-def _short(value: Any, limit: int = 500) -> str:
-    text = value if isinstance(value, str) else repr(value)
-    text = " ".join(str(text).split())
-    if len(text) > limit:
-        return text[: limit - 3] + "..."
-    return text
+def _sep(char: str = "─", w: int = _W, col: str = _SEP) -> str:
+    return f"{col}{char * w}{_R}"
 
+def _short(v: Any, lim: int = 500) -> str:
+    s = v if isinstance(v, str) else repr(v)
+    s = " ".join(str(s).split())
+    return (s[: lim - 1] + "…") if len(s) > lim else s
 
-def _tool_args(value: Any, limit: int = 260) -> str:
-    if not isinstance(value, dict) or not value:
+def _tool_args(v: Any, lim: int = 240) -> str:
+    if not isinstance(v, dict) or not v:
         return ""
-    parts = []
-    for key, item in value.items():
-        if isinstance(item, str):
-            shown = repr(item)
-        elif isinstance(item, (int, float, bool)) or item is None:
-            shown = str(item)
-        else:
-            shown = repr(item)
-        parts.append(f"{key}={shown}")
-    return _short(" · ".join(parts), limit)
+    parts = [
+        f"{k}={repr(i) if isinstance(i, str) else str(i)}"
+        for k, i in v.items()
+    ]
+    return _short("  ".join(parts), lim)
 
+def _fmt_tok(n: int) -> str:
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}k"
+    return str(n)
+
+def _bar(cur: int, tot: int, w: int = 12) -> str:
+    if tot <= 0:
+        return "─" * w
+    r = max(0.0, min(1.0, cur / tot))
+    f = int(round(r * w))
+    return "━" * f + "─" * (w - f)
 
 @dataclass
 class StreamRenderer:
-    """Compact terminal renderer for one live Agent run.
-
-    Raw model reasoning is intentionally not printed. We expose reasoning as
-    a live state in the terminal and keep tool activity visible inline.
-    """
-
+    """Polished blue-purple streaming renderer for a single Daena agent run."""
     model: str
     workspace: str
     session_id: str
@@ -51,272 +78,274 @@ class StreamRenderer:
     success_count: int = 0
     failure_count: int = 0
     usage: int = 0
-    response_streamed: bool = False
     context_tokens: int = 0
     context_budget: int = 0
+    response_streamed: bool = False
 
-    _content_buffer: str = ""
-    _thinking_seen: bool = False
-    _thinking_chars: int = 0
-    _last_reasoning_notice: float = 0.0
-    _reasoning_phase: str = "analyzing context"
-    _finished_rendered: bool = False
+    _content_buf: str = field(default="", repr=False)
+    _think_buf: str = field(default="", repr=False)
+    _think_open: bool = field(default=False, repr=False)
+    _resp_open: bool = field(default=False, repr=False)
+    _finished: bool = field(default=False, repr=False)
+    _start_ts: float = field(default_factory=time.monotonic, repr=False)
+    _finished_rendered: bool = field(default=False, repr=False)
+
+    def begin_user_message(self, text: str = "") -> None:
+        pass
 
     def show_user_context(self, workspace: str) -> None:
-        """Kept for compatibility; workspace is shown once in the session header."""
         return
 
-    def _print_status(self, state: str) -> None:
-        if self.context_budget:
-            percent = (self.context_tokens / self.context_budget) * 100.0
-            context = (
-                f"{self._fmt_tokens(self.context_tokens)}/"
-                f"{self._fmt_tokens(self.context_budget)} ({percent:.1f}%)"
-            )
-        else:
-            context = self._fmt_tokens(self.context_tokens)
-        self._print(
-            f"\x1b[90m   · {state} · ctx {context}\x1b[0m"
-        )
-
     def handle(self, event: dict[str, Any]) -> None:
-        event_type = str(event.get("type") or "")
+        t = str(event.get("type") or "")
 
-        if event_type == "run_start":
+        if t == "run_start":
             self.status = "starting"
-            self.max_iterations = int(
-                event.get("max_iterations") or self.max_iterations
-            )
+            self.max_iterations = int(event.get("max_iterations") or self.max_iterations)
             self.session_id = str(event.get("session_id") or self.session_id)
+            self._start_ts = time.monotonic()
+            self._print(_sep())
 
-        elif event_type == "iteration_start":
+        elif t == "iteration_start":
+            self._close_thinking()
+            self._close_response()
             self.iteration = int(event.get("iteration") or 0)
-            self.max_iterations = int(
-                event.get("max_iterations") or self.max_iterations
-            )
+            self.max_iterations = int(event.get("max_iterations") or self.max_iterations)
             self.status = "thinking"
-            self._thinking_seen = False
-            self._thinking_chars = 0
-            self._last_reasoning_notice = 0.0
-            self._reasoning_phase = "analyzing context"
 
-        elif event_type == "context":
+        elif t == "context":
             self.context_tokens = int(event.get("estimated_tokens") or 0)
             self.context_budget = int(event.get("budget") or 0)
-            self._print_status("thinking…")
+            self._print(f"  {_MUT}ctx {self._ctx_str()}{_R}")
 
-        elif event_type == "thinking_delta":
+        elif t == "thinking_delta":
             self.status = "thinking"
-            delta = str(event.get("text") or "")
-            self._thinking_chars += len(delta)
+            d = str(event.get("text") or "")
+            if d:
+                self._feed_think(d)
 
-            now = time.monotonic()
-            if not self._thinking_seen:
-                self._thinking_seen = True
-                self._last_reasoning_notice = now
-                self._print(
-                    f"\x1b[90mDAENA · reasoning · {self._reasoning_phase}…\x1b[0m"
-                )
-            elif now - self._last_reasoning_notice >= 0.75:
-                self._last_reasoning_notice = now
-                self._print(
-                    f"\x1b[90mDAENA · reasoning · {self._reasoning_phase}… "
-                    f"{self._thinking_chars:,} chars processed\x1b[0m"
-                )
-
-        elif event_type == "content_delta":
-            self._reasoning_phase = "forming response"
-            if self.status != "responding":
-                self._print("\x1b[90m   · responding…\x1b[0m")
-                self._print(f"\x1b[36mDAENA {self.model} ›\x1b[0m")
+        elif t == "content_delta":
+            self._close_thinking()
+            if not self._resp_open:
+                self._open_response()
             self.status = "responding"
-            delta = str(event.get("text") or "")
-            if delta:
+            d = str(event.get("text") or "")
+            if d:
                 self.response_streamed = True
-                self._content_buffer += delta
-                self._flush_complete_lines()
+                self._content_buf += d
+                self._flush_resp_lines()
 
-        elif event_type == "generation_done":
+        elif t == "generation_done":
             self.usage = int(event.get("usage") or self.usage or 0)
 
-        elif event_type == "tool_call":
-            self._flush_content(force=True)
-            self._reasoning_phase = f"choosing {str(event.get('name') or 'tool')}"
+        elif t == "tool_call":
+            self._close_thinking()
+            self._close_response()
             self.tool_count += 1
-            self.status = f"tool:{_short(event.get('name') or 'unknown', 70)}"
-            name = _short(event.get("name") or "unknown", 70)
+            name = _short(str(event.get("name") or "unknown"), 32)
             args = _tool_args(event.get("arguments") or {})
-            line = f"\x1b[34mDAENA ↳ {name}\x1b[0m"
+            self.status = f"tool:{name}"
+            row = f"\n  {_B}{_BD}↳{_R}  {_TOOL}{name:<26}{_R}"
             if args:
-                line += f"  \x1b[90m{args}\x1b[0m"
-            self._print(line)
+                row += f"  {_DIM}{args}{_R}"
+            self._print(row)
 
-        elif event_type == "tool_result":
-            self._flush_content(force=True)
-            self._reasoning_phase = "evaluating tool result"
-            name = _short(event.get("name") or "unknown", 70)
-            success = bool(event.get("success"))
-            if success:
+        elif t == "tool_result":
+            self._close_response()
+            name = _short(str(event.get("name") or "unknown"), 32)
+            ok = bool(event.get("success"))
+            if ok:
                 self.success_count += 1
-                icon = "\x1b[36m✓\x1b[0m"
+                icon, col = f"{_OK}✓{_R}", _OK
             else:
                 self.failure_count += 1
-                icon = "\x1b[31m✗\x1b[0m"
+                icon, col = f"{_FAIL}✗{_R}", _FAIL
+            summary = _short(event.get("summary") or event.get("content") or "", 380)
             self.status = f"result:{name}"
-            summary = _short(
-                event.get("summary") or event.get("content") or "",
-                600,
-            )
-            line = f"DAENA {icon} {name}"
+            row = f"  {icon}  {col}{name:<26}{_R}"
             if summary:
-                line += f"  \x1b[90m— {summary}\x1b[0m"
-            self._print(line)
+                row += f"  {_DIM}─  {summary}{_R}"
+            self._print(row)
 
-        elif event_type == "steering":
-            self._flush_content(force=True)
+        elif t == "steering":
+            self._close_thinking()
+            self._close_response()
             self.status = "redirected"
-            self._print(
-                f"\x1b[35mYOU ↪ redirect\x1b[0m  "
-                f"\x1b[90m{_short(event.get('text') or '', 700)}\x1b[0m"
-            )
+            msg = _short(str(event.get("text") or ""), 600)
+            self._print(f"\n  {_P}↪ redirect{_R}  {_DIM}{msg}{_R}")
 
-        elif event_type == "final_response":
-            self._flush_content(force=True)
+        elif t == "final_response":
+            self._close_thinking()
+            self._close_response()
             self.usage = int(event.get("usage") or self.usage or 0)
-            response = str(event.get("text") or "")
-            if response and not self.response_streamed:
-                self._print(f"\x1b[36mDAENA {self.model} ›\x1b[0m")
-                self._print(f"\x1b[37m{response}\x1b[0m")
+            text = str(event.get("text") or "")
+            if text and not self.response_streamed:
+                self._open_response()
+                for ln in text.splitlines():
+                    self._print(f"  {_RESP}{ln}{_R}")
                 self.response_streamed = True
             self.status = "completed"
 
-        elif event_type == "run_stopped":
-            self._flush_content(force=True)
+        elif t == "run_stopped":
+            self._close_thinking()
+            self._close_response()
             self.status = "stopped"
-            self._print(
-                f"\x1b[33mDAENA ■ stopped\x1b[0m  "
-                f"\x1b[90m{_short(event.get('reason') or '', 800)}\x1b[0m"
-            )
+            reason = _short(str(event.get("reason") or ""), 600)
+            self._print(f"\n  {_FAIL}{_BD}■ stopped{_R}  {_DIM}{reason}{_R}")
 
-        elif event_type == "run_end":
-            self._flush_content(force=True)
+        elif t == "run_end":
+            self._close_thinking()
+            self._close_response()
             self.status = (
                 "completed"
                 if bool(event.get("completed"))
                 else str(event.get("stop_reason") or "stopped")
             )
 
-        elif event_type == "error":
-            self._flush_content(force=True)
+        elif t == "error":
+            self._close_thinking()
+            self._close_response()
             self.status = "error"
-            self._print(
-                f"\x1b[31mDAENA ✗ error\x1b[0m  "
-                f"\x1b[90m{_short(event.get('message') or '', 900)}\x1b[0m"
-            )
+            msg = _short(str(event.get("message") or ""), 700)
+            self._print(f"\n  {_ERR}{_BD}✗ error{_R}  {_DIM}{msg}{_R}")
 
-    def _flush_complete_lines(self) -> None:
-        while "\n" in self._content_buffer:
-            line, self._content_buffer = self._content_buffer.split("\n", 1)
-            self._print(f"\x1b[37m{line}\x1b[0m")
+    def _feed_think(self, delta: str) -> None:
+        if not self._think_open:
+            label = "─ thinking "
+            dashes = _W - len(label) - 2
+            self._print(f"\n  {_THD}╭{label}{'─' * dashes}╮{_R}")
+            self._think_open = True
 
-        # Prevent a very long line from sitting in the buffer indefinitely.
-        if len(self._content_buffer) >= 180:
-            self._flush_content(force=True)
+        self._think_buf += delta
+        while "\n" in self._think_buf:
+            line, self._think_buf = self._think_buf.split("\n", 1)
+            self._emit_think_line(line)
 
-    def _flush_content(self, force: bool = False) -> None:
-        if not self._content_buffer:
+        if len(self._think_buf) >= 120:
+            self._emit_think_line(self._think_buf)
+            self._think_buf = ""
+
+    def _emit_think_line(self, text: str) -> None:
+        text = text.rstrip()
+        if not text:
             return
-        if not force and "\n" not in self._content_buffer:
-            return
+        inner_w = _W - 5
+        while len(text) > inner_w:
+            self._print(f"  {_THD}│{_R}  {_TH}{text[:inner_w]}{_R}")
+            text = text[inner_w:]
+        if text:
+            self._print(f"  {_THD}│{_R}  {_TH}{text}{_R}")
 
-        text = self._content_buffer
-        self._content_buffer = ""
-        self._print(f"\x1b[37m{text}\x1b[0m")
+    def _close_thinking(self) -> None:
+        if not self._think_open:
+            return
+        if self._think_buf.strip():
+            self._emit_think_line(self._think_buf)
+        self._think_buf = ""
+        self._print(f"  {_THD}╰{'─' * (_W - 2)}╯{_R}")
+        self._think_open = False
+
+    def _open_response(self) -> None:
+        if self._resp_open:
+            return
+        m = self.model if len(self.model) <= 28 else self.model[:25] + "…"
+        gap = max(2, _W - 12 - len(m))
+        self._print(
+            f"\n  {_P2}{_BD}◆{_R}  {_P}{_BD}daena{_R}"
+            f"  {_SEP}{'─' * gap}{_R}  {_DIM}{m}{_R}"
+        )
+        self._resp_open = True
+
+    def _close_response(self) -> None:
+        if self._content_buf:
+            self._print(f"  {_RESP}{self._content_buf}{_R}")
+            self._content_buf = ""
+        self._resp_open = False
+
+    def _flush_resp_lines(self) -> None:
+        while "\n" in self._content_buf:
+            ln, self._content_buf = self._content_buf.split("\n", 1)
+            self._print(f"  {_RESP}{ln}{_R}")
+        if len(self._content_buf) >= 160:
+            self._print(f"  {_RESP}{self._content_buf}{_R}")
+            self._content_buf = ""
 
     def finish(self, result: Any = None, error: BaseException | None = None) -> None:
-        """Render the turn tail immediately from the worker thread.
-
-        This avoids waiting for the next user Enter just to display a completed
-        response when the main thread is blocked inside PromptSession.prompt().
-        """
-        if self._finished_rendered:
+        if self._finished or self._finished_rendered:
             return
 
-        response = getattr(result, "response", None) if result is not None else None
-        if response and not self.response_streamed:
-            self._print(f"\x1b[36mDAENA {self.model} ›\x1b[0m")
-            self._print(f"\x1b[37m{str(response)}\x1b[0m")
+        resp = getattr(result, "response", None) if result is not None else None
+        if resp and not self.response_streamed:
+            self._open_response()
+            for ln in str(resp).splitlines():
+                self._print(f"  {_RESP}{ln}{_R}")
             self.response_streamed = True
 
+        self._close_thinking()
+        self._close_response()
+
+        elapsed = f"{time.monotonic() - self._start_ts:.1f}s"
+        tok = _fmt_tok(self.usage)
+
         if error is not None:
-            state = "failed"
+            badge = f"{_ERR}{_BD}✗ failed{_R}"
         elif self.status == "stopped":
-            state = "stopped"
+            badge = f"{_FAIL}{_BD}■ stopped{_R}"
         else:
-            state = "done"
+            badge = f"{_OK}{_BD}✓ done{_R}"
 
+        tools_str = f"{_OK}✓{self.success_count}{_R}"
+        if self.failure_count:
+            tools_str += f"  {_FAIL}✗{self.failure_count}{_R}"
+
+        self._print(f"\n{_sep()}")
         self._print(
-            f"\x1b[90mDAENA · {state} · iter {self.iteration} · "
-            f"tools {self.tool_count} · usage {self.usage}\x1b[0m"
+            f"  {badge}  "
+            f"{_DIM}iter {self.iteration}  ·  tools {_R}"
+            f"{tools_str}  "
+            f"{_DIM}·  {tok} tok  ·  ctx {self._ctx_str()}  ·  {elapsed}{_R}"
         )
-        self._finished_rendered = True
+        self._finished = self._finished_rendered = True
 
-    @staticmethod
-    def _fmt_tokens(value: int) -> str:
-        if value >= 1_000_000:
-            return f"{value / 1_000_000:.1f}M"
-        if value >= 1_000:
-            return f"{value / 1_000:.1f}k"
-        return str(value)
-
-    @staticmethod
-    def _progress(current: int, maximum: int, width: int = 10) -> str:
-        if maximum <= 0:
-            return "──────────"
-        ratio = max(0.0, min(1.0, current / maximum))
-        filled = int(round(ratio * width))
-        return "━" * filled + "─" * (width - filled)
-
-    def toolbar(self) -> str:
+    def toolbar(self) -> HTML:
         if self.status == "thinking":
-            state = "thinking…"
+            label = "thinking…"
         elif self.status == "responding":
-            state = "responding…"
+            label = "responding…"
         elif self.status.startswith("tool:"):
-            state = self.status[5:]
+            label = self.status[5:]
         elif self.status.startswith("result:"):
-            state = self.status[7:]
-        elif self.status == "redirected":
-            state = "redirected"
-        elif self.status == "completed":
-            state = "ready"
+            label = self.status[7:]
+        elif self.status in {"completed", "done"}:
+            label = "ready"
         else:
-            state = self.status
+            label = self.status
 
-        iteration = (
-            f"{self.iteration}/{self.max_iterations}"
-            if self.max_iterations
-            else str(self.iteration)
-        )
-        ctx = (
-            f"{self._fmt_tokens(self.context_tokens)}/"
-            f"{self._fmt_tokens(self.context_budget)}"
-            if self.context_budget
-            else self._fmt_tokens(self.context_tokens)
-        )
-        progress = self._progress(self.context_tokens, self.context_budget)
+        itr = f"{self.iteration}/{self.max_iterations}" if self.max_iterations else str(self.iteration)
+        think = str(self.think_enabled).lower()
+        ctx = self._ctx_str()
+        pb = _bar(self.context_tokens, self.context_budget)
 
         return HTML(
-            f"<ansimagenta>  ◆</ansimagenta> "
-            f"<ansiwhite><b>{state}</b></ansiwhite>  "
-            f"<ansiblue>{progress}</ansiblue>  "
-            f"<ansiwhite>ctx {ctx}</ansiwhite> · "
-            f"<ansiwhite>iter {iteration}</ansiwhite> · "
-            f"<ansiwhite>tools {self.tool_count}</ansiwhite> "
-            f"<ansicyan>✓{self.success_count}</ansicyan> "
-            f"<ansired>✗{self.failure_count}</ansired> · "
-            f"<ansigray>{self.model} · think={str(self.think_enabled).lower()}</ansigray>  "
+            f"<ansibrightmagenta>  ◆  </ansibrightmagenta>"
+            f"<ansibrightwhite><b>{label}</b></ansibrightwhite>"
+            f"  <ansiblue>{pb}</ansiblue>"
+            f"  <ansicyan>ctx {ctx}</ansicyan>"
+            f"  <ansibrightblack>·</ansibrightblack>"
+            f"  <ansicyan>iter {itr}</ansicyan>"
+            f"  <ansibrightblack>·</ansibrightblack>"
+            f"  <ansibrightgreen>✓{self.success_count}</ansibrightgreen>"
+            f" <ansired>✗{self.failure_count}</ansired>"
+            f"  <ansibrightblack>·</ansibrightblack>"
+            f"  <ansibrightblack>{self.model}  think={think}</ansibrightblack>"
+            f"  "
         )
+
+    def _ctx_str(self) -> str:
+        if not self.context_budget:
+            return _fmt_tok(self.context_tokens)
+        pct = (self.context_tokens / self.context_budget) * 100
+        return f"{_fmt_tok(self.context_tokens)}/{_fmt_tok(self.context_budget)} ({pct:.0f}%)"
 
     @staticmethod
     def _print(text: str) -> None:
