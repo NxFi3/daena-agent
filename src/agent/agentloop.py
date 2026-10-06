@@ -1678,6 +1678,12 @@ class Loop:
 
         for index, call in enumerate(parsed_calls):
 
+            self._emit_event({
+                "type": "tool_call",
+                "name": getattr(call, "name", "unknown"),
+                "arguments": getattr(call, "args", {}) or {},
+            })
+
             if index in blocked_results:
 
                 result = blocked_results[index]
@@ -1695,6 +1701,12 @@ class Loop:
                 result=result,
                 iteration=iteration,
             )
+            self._emit_event({
+                "type": "tool_result",
+                "name": getattr(result, "name", getattr(call, "name", "unknown")),
+                "success": bool(getattr(result, "success", False)),
+                "summary": getattr(result, "summary", "") or getattr(result, "content", ""),
+            })
 
             stop_reason = self._check_failure_stuck(
                 call,
@@ -1791,6 +1803,11 @@ class Loop:
 
         # Persist the task immediately.
         self._store_event(user_task)
+        self._emit_event({
+            "type": "run_start",
+            "session_id": str(self.session_id),
+            "max_iterations": self.max_iterations,
+        })
 
         empty_streak = 0
 
@@ -1965,6 +1982,12 @@ class Loop:
                 self.metrics["duration_ms"] = self._duration_ms()
                 self.tool.close()
 
+                self._emit_event({
+                    "type": "final_response",
+                    "text": llmresult.response or "",
+                    "usage": llmresult.usage,
+                })
+                self._emit_event({"type": "run_end", "completed": True, "stop_reason": ""})
                 return llmresult
 
             empty_streak += 1
@@ -2006,6 +2029,7 @@ class Loop:
         self.metrics["completed"] = False
         self.metrics["stop_reason"] = reason
 
+        self._emit_event({"type": "run_end", "completed": False, "stop_reason": reason})
         return self._stopped_result(reason)
 
     def _generate_next_action(
