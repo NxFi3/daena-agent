@@ -29,6 +29,8 @@ class ContextService:
         self.default_search_top_k = max(
             1, int(retrieval_config.get("top_k", 3))
         )
+        self._retrieval_cache_key: tuple[str, str, int] | None = None
+        self._retrieval_cache: list[ContextEvent] = []
 
     @staticmethod
     def _task_to_dict(event: ContextEvent | None) -> dict[str, Any]:
@@ -85,15 +87,21 @@ class ContextService:
         )
 
         query = str(user_task.content or "").strip()
-        relevant_events = (
-            self.stm.search(
+        top_k = search_top_k or self.default_search_top_k
+        cache_key = (str(session_id), str(user_task.id), int(top_k))
+
+        if query and cache_key == self._retrieval_cache_key:
+            relevant_events = list(self._retrieval_cache)
+        elif query:
+            relevant_events = self.stm.search(
                 session_id=session_id,
                 query=query,
-                top_k=search_top_k or self.default_search_top_k,
+                top_k=top_k,
             )
-            if query
-            else []
-        )
+            self._retrieval_cache_key = cache_key
+            self._retrieval_cache = list(relevant_events or [])
+        else:
+            relevant_events = []
 
         events = self._merge_events(recent_events, relevant_events)
 
