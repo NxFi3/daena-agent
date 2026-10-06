@@ -45,6 +45,24 @@ def test_plan_create_complete_block_add(tmp_path, monkeypatch):
     assert duplicate.content["error"]["type"] == "duplicate_step"
 
 
+
+def test_plan_add_activates_step_when_no_step_is_in_progress(tmp_path, monkeypatch):
+    tool, plan_path = make_tool(tmp_path, monkeypatch)
+    tool.execute(
+        action="create",
+        goal="Recover",
+        steps=["Initial"],
+    )
+    tool._set_current_status("blocked", reason="blocked for test")
+
+    result = tool.execute(action="add", step="Recovery action")
+    assert result.success is True
+
+    content = plan_path.read_text(encoding="utf-8")
+    assert "1. [blocked] Initial" in content
+    assert "2. [in_progress] Recovery action" in content
+
+
 def test_plan_complete_action_advances_current_step(tmp_path, monkeypatch):
     tool, plan_path = make_tool(tmp_path, monkeypatch)
     tool.execute(
