@@ -38,8 +38,12 @@ class LlmProvider:
         images: Optional[list[np.ndarray]] = None,
         options: Optional[Dict[str, Any]] = None,
         on_event: Optional[Callable[[dict[str, Any]], None]] = None,
+        stop_event: Any | None = None,
     ):
         if self.model is not None:
+            if stop_event is not None and stop_event.is_set():
+                raise InterruptedError("LLM generation interrupted before start.")
+
             model_name = self.llm_config.get("model_name") or self.model.defaultModel
 
             generation_options = dict(self.generation_config or {})
@@ -66,6 +70,7 @@ class LlmProvider:
                 messages=messages,
                 options=generation_options,
                 stream_callback=on_event,
+                stop_event=stop_event,
             )
             results = self.model.generate(inputs)
             return results if isinstance(results, LLMResult) else None
