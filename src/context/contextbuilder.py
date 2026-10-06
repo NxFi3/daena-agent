@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -79,8 +80,11 @@ class ContextBuilder:
 
     MAX_EXPERIENCE_CHARS = 4000
     MAX_LEARNED_EXPERIENCE_CHARS = 3000
-    MAX_EXECUTION_STATE_CHARS = 7000
-    MAX_WORKSPACE_ENTRIES_FOR_CONTEXT = 80
+    MAX_EXECUTION_STATE_CHARS = 5000
+    MAX_WORKSPACE_ENTRIES_FOR_CONTEXT = 40
+
+    DEFAULT_COMPACTION_TRIGGER_RATIO = 0.72
+    COMPACTION_RECENT_MESSAGES = 10
 
     # When the execution state is too large, drop sections in this order
     # (least decision-critical first) instead of cutting the JSON mid-string.
@@ -103,6 +107,24 @@ class ContextBuilder:
         self.compactor = Compactor(self.llm)
         context_config = config.get("context") or {}
         self.compaction_enabled = bool(context_config.get("compaction_enabled", True))
+
+        try:
+            trigger_ratio = float(
+                context_config.get(
+                    "compaction_trigger_ratio",
+                    self.DEFAULT_COMPACTION_TRIGGER_RATIO,
+                )
+            )
+        except (TypeError, ValueError):
+            trigger_ratio = self.DEFAULT_COMPACTION_TRIGGER_RATIO
+
+        self.compaction_trigger_ratio = max(
+            0.50,
+            min(0.95, trigger_ratio),
+        )
+
+        self._compaction_cache_key = ""
+        self._compaction_cache_summary = ""
 
         target = int(
             context_config.get(
@@ -663,23 +685,23 @@ class ContextBuilder:
                     }
                     for key in ("stdout", "stderr"):
                         if isinstance(item.get(key), str) and item[key].strip():
-                            compact[key] = self._truncate(item[key], 500)
+                            compact[key] = self._truncate(item[key], 300)
                     compact_processes[str(process_id)] = compact
                 if compact_processes:
                     state["processes"] = compact_processes
 
             facts = working_set.get("facts")
             if isinstance(facts, list) and facts:
-                state["facts"] = [str(item) for item in facts[-6:]]
+                state["facts"] = [str(item) for item in facts[-5:]]
 
             unresolved = working_set.get("unresolved")
             if isinstance(unresolved, list) and unresolved:
-                state["unresolved"] = [str(item) for item in unresolved[-6:]]
+                state["unresolved"] = [str(item) for item in unresolved[-5:]]
 
             artifacts = working_set.get("artifacts")
             if isinstance(artifacts, dict) and artifacts:
                 compact_artifacts: dict[str, Any] = {}
-                for path, item in list(artifacts.items())[-6:]:
+                for path, item in list(artifacts.items())[-4:]:
                     if not isinstance(item, dict):
                         continue
                     compact = {
@@ -694,7 +716,7 @@ class ContextBuilder:
                     }
                     preview = item.get("preview")
                     if isinstance(preview, str) and preview.strip():
-                        compact["preview"] = self._truncate(preview, 600)
+                        compact["preview"] = self._truncate(preview, 450)
                     compact_artifacts[str(path)] = compact
                 if compact_artifacts:
                     state["artifacts"] = compact_artifacts
@@ -702,7 +724,7 @@ class ContextBuilder:
         if isinstance(progress, dict):
             items = progress.get("items")
             if isinstance(items, list) and items:
-                state["progress"] = [str(item) for item in items[-6:]]
+                state["progress"] = [str(item) for item in items[-4:]]
 
         if isinstance(recent_actions, dict):
             items = recent_actions.get("items")
@@ -720,7 +742,7 @@ class ContextBuilder:
                         )
                         if item.get(key) not in (None, "")
                     }
-                    for item in items[-6:]
+                    for item in items[-4:]
                     if isinstance(item, dict)
                 ]
 
@@ -748,7 +770,7 @@ class ContextBuilder:
                             if isinstance(evidence_copy.get(key), str):
                                 evidence_copy[key] = self._truncate(
                                     evidence_copy[key],
-                                    700,
+                                    500,
                                 )
                         compact["evidence"] = evidence_copy
                     compact_observations.append(compact)
@@ -880,16 +902,39 @@ class ContextBuilder:
             return None
 
         history = rest[:latest_user_index] + rest[latest_user_index + 1 :]
-        history_text = self._compaction_input(self._serialize_for_compaction(history))
-        if not history_text.strip():
+
+        # Keep the newest protocol-safe messages verbatim. Only older history
+        # is summarized, so active tool-call/result pairs remain directly
+        # usable and compaction does not erase the current working edge.
+        recent_history = self._sanitize_tool_protocol(
+            history[-self.COMPACTION_RECENT_MESSAGES :]
+        )
+        compactable_history = history[:-self.COMPACTION_RECENT_MESSAGES]
+
+        if not compactable_history:
             return None
 
-        summary = self.compactor.compact(
-            history_text,
-            self.compaction_target_tokens,
-        )
-        if not summary.strip():
-            return None
+        compactable_text = self._serialize_for_compaction(compactable_history)
+        cache_key = hashlib.sha256(
+            compactable_text.encode("utf-8", errors="replace")
+        ).hexdigest()
+
+        if cache_key == self._compaction_cache_key and self._compaction_cache_summary:
+            summary = self._compaction_cache_summary
+        else:
+            history_text = self._compaction_input(compactable_text)
+            if not history_text.strip():
+                return None
+
+            summary = self.compactor.compact(
+                history_text,
+                self.compaction_target_tokens,
+            )
+            if not summary.strip():
+                return None
+
+            self._compaction_cache_key = cache_key
+            self._compaction_cache_summary = summary
 
         latest_user = dict(rest[latest_user_index])
 
@@ -933,7 +978,9 @@ class ContextBuilder:
             }
         )
 
-        return [base_system, compacted_context, latest_user]
+        return self._sanitize_tool_protocol(
+            [base_system, compacted_context, *recent_history, latest_user]
+        )
 
     def _deterministic_compaction(
         self,
@@ -1140,6 +1187,24 @@ class ContextBuilder:
             include_plan=include_plan,
         )
         messages = self.window.get_prompt()
+
+        estimated_tokens = self.tokenbudget.estimate_messages_tokens(messages)
+        trigger_tokens = max(
+            256,
+            int(self.tokenbudget.budget * self.compaction_trigger_ratio),
+        )
+
+        # Compact proactively, before tail-fitting throws older evidence away.
+        # The native provider context can be much larger than this working set.
+        if (
+            self.compaction_enabled
+            and estimated_tokens > trigger_tokens
+        ):
+            compacted = self._compact_messages(messages)
+            if compacted is not None:
+                compacted = self._hard_fit_messages(compacted)
+                if self.tokenbudget.fits(compacted):
+                    return compacted
 
         if self.tokenbudget.fits(messages):
             return messages
