@@ -1075,6 +1075,17 @@ class Loop:
         if not state.exists or state.is_complete:
             return None
 
+        # Verification is the stronger runtime completion signal. Once the
+        # latest workspace change has been successfully verified, an
+        # incomplete model-maintained plan must not trap the run in endless
+        # bookkeeping iterations.
+        if (
+            not self._verification_required
+            and self._phase == "verify"
+            and not self._active_process_ids
+        ):
+            return None
+
         current = state.current_step
         if current is not None:
             return (
