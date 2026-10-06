@@ -84,14 +84,21 @@ class ToolDispatcher:
 
             tool = self.tool_registry.get(name)
             if tool is None or not self.tool_registry.is_available(name):
+                available_names = sorted(
+                    str(tool_name).strip()
+                    for tool_name in getattr(self.tool_registry, "tools", {}).keys()
+                    if str(tool_name).strip()
+                )
+                names_text = ", ".join(available_names)
                 return ToolCall(
                     name=name,
                     id=call_id,
                     args=arguments,
                     valid=False,
                     validation_error=(
-                        "Requested tool is not available in this runtime. "
-                        "Use one of the available tools."
+                        f"Requested tool '{name}' is not available in this runtime. "
+                        f"Available tools: {names_text}. "
+                        "Use exactly one of those tool names."
                     ),
                 )
 
