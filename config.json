@@ -20,7 +20,7 @@
     "top_k": 3
   },
   "security": {
-    "workspace_only": true,
+    "workspace_only": false,
     "allow_background": true,
     "allow_network_tools": true,
     "force_approve": true
