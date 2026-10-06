@@ -11,10 +11,11 @@
   },
   "context": {
     "safe_margin": -1,
-    "recent_event_limit": 300,
+    "recent_event_limit": 160,
     "compaction_enabled": true,
     "compaction_target_tokens": 4096,
-    "max_prompt_tokens": 120000
+    "max_prompt_tokens": 24000,
+    "compaction_trigger_ratio": 0.72
   },
   "retrieval": {
     "top_k": 3
