@@ -71,6 +71,7 @@ class StreamRenderer:
     workspace: str
     session_id: str
     think_enabled: Any = "medium"
+    terminal_app: Any = field(default=None, repr=False)
 
     iteration: int = 0
     max_iterations: int = 0
@@ -348,19 +349,16 @@ class StreamRenderer:
         pct = (self.context_tokens / self.context_budget) * 100
         return f"{_fmt_tok(self.context_tokens)}/{_fmt_tok(self.context_budget)} ({pct:.0f}%)"
 
-    @staticmethod
-    def _print(text: str) -> None:
-        # Stream events arrive from the agent worker thread. Marshal terminal
-        # writes through prompt_toolkit's active application so deltas cannot
-        # disappear while PromptSession is waiting for input.
-        try:
-            app = get_app()
-            if app.is_running:
-                app.run_in_terminal(
-                    lambda: print_formatted_text(ANSI(text)),
-                    in_executor=False,
-                )
-                return
-        except Exception:
-            pass
+    def _print(self, text: str) -> None:
+        # Agent generation runs in a worker thread while PromptSession owns
+        # the terminal in the main thread.  Route every stream write through
+        # the captured prompt_toolkit application; otherwise thinking/content
+        # deltas can be swallowed or corrupt the live prompt.
+        app = self.terminal_app
+        if app is not None and getattr(app, "is_running", False):
+            app.run_in_terminal(
+                lambda: print_formatted_text(ANSI(text)),
+                in_executor=False,
+            )
+            return
         print_formatted_text(ANSI(text))
