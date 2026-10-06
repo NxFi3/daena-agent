@@ -2333,6 +2333,12 @@ class Loop:
         )
         working_context["execution_phase"] = self._phase
         working_context["available_tools"] = sorted(available_tool_names)
+        working_context["workspace_guidance"] = (
+            "Workspace inventory is authoritative. Do not guess filenames. "
+            "Use read_file only for a known file; use command_exec for directory "
+            "inspection when the inventory is insufficient. Do not repeat an "
+            "identical successful observation."
+        )
         working_context["tool_choice"] = {
             "read_file": "read a known file or a narrow line range",
             "apply_patch": "create or modify files",
