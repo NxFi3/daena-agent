@@ -306,6 +306,7 @@ class GeminiProvider(ProviderBase):
         config: types.GenerateContentConfig,
         callback: Callable[[dict[str, Any]], None],
         think: Any,
+        stop_event: Any | None = None,
     ) -> LLMResult:
         content_parts: list[str] = []
         thinking_parts: list[str] = []
@@ -329,6 +330,8 @@ class GeminiProvider(ProviderBase):
             )
 
             for chunk in stream:
+                if stop_event is not None and stop_event.is_set():
+                    break
                 last_chunk = chunk
 
                 chunk_usage = cls._usage_tokens(chunk)
@@ -428,6 +431,24 @@ class GeminiProvider(ProviderBase):
         if tool_calls:
             message["tool_calls"] = tool_calls
 
+        if stop_event is not None and stop_event.is_set():
+            cls._emit_stream_event(
+                callback,
+                "generation_stopped",
+                thinking_tokens=len(thinking.split()) if thinking else 0,
+                response_chars=len(content),
+                tool_calls=len(tool_calls),
+                usage=usage,
+            )
+            return LLMResult(
+                response=content,
+                message=message,
+                tool_calls=tool_calls,
+                thinking=thinking,
+                usage=usage,
+                raw=last_chunk,
+            )
+
         cls._emit_stream_event(
             callback,
             "generation_done",
@@ -509,6 +530,7 @@ class GeminiProvider(ProviderBase):
                 config=generate_config,
                 callback=stream_callback,
                 think=think,
+                stop_event=getattr(llminput, "stop_event", None),
             )
 
         try:
