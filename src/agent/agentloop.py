@@ -135,6 +135,10 @@ class Loop:
         self._stop_event: Any | None = None
         self._steering_queue: queue.Queue[str] = queue.Queue()
 
+        # Plan enforcement is scoped to the current run. A stale plan left
+        # behind by an earlier user task must not block an unrelated new turn.
+        self._plan_active_this_run = False
+
         context_config = self.config.get("context") or {}
         retrieval_config = self.config.get("retrieval") or {}
 
@@ -216,10 +220,13 @@ class Loop:
                 return
 
             self._store_nudge(
-                "Operator steering for the current task:\n"
+                "Operator steering for the current run:\n"
                 f"{message}\n"
-                "Treat this as new user guidance. Continue the current task "
-                "while respecting this instruction."
+                "This is the latest operator instruction and may revise or "
+                "replace the previous objective. Follow it exactly. Do not "
+                "continue actions that conflict with it. If it says not to "
+                "modify files, do not modify files. Treat older task details "
+                "as background unless the latest instruction keeps them active."
             )
             self._emit_event("steering", text=message)
 
@@ -1051,7 +1058,12 @@ class Loop:
     def _final_response_gate(
         self,
     ) -> tuple[str, str] | None:
-        """Prevent a natural-language final answer while the plan is unfinished."""
+        """Prevent a natural-language final answer while this run's plan is unfinished."""
+        # A plan from an older user task is stale execution state. It must not
+        # force an unrelated task into the old plan lifecycle.
+        if not self._plan_active_this_run:
+            return None
+
         state = self._read_plan_state()
 
         if state.error:
@@ -1505,6 +1517,9 @@ class Loop:
     ) -> None:
 
         plan_before = self._read_plan_state()
+        if result.success and self._is_plan_call(call):
+            self._plan_active_this_run = True
+
         self._plan_progress.sync(
             plan_before,
             iteration=iteration,
@@ -2449,6 +2464,7 @@ class Loop:
         self._tool_loop_guard.reset()
 
         self._plan_progress.reset()
+        self._plan_active_this_run = False
 
         self._last_duplicate_key = None
 
