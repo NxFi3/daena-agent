@@ -34,11 +34,18 @@ class Agent:
     def act(
         self,
         event: ContextEvent,
+        on_event=None,
+        stop_event=None,
     ):
         return self.loop.run(
             user_task=event,
             workspace_directory=self.workingdirectory,
+            on_event=on_event,
+            stop_event=stop_event,
         )
+
+    def steer(self, text: str) -> None:
+        self.loop.steer(text)
 
     def approve_background_command(
         self,
