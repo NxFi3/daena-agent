@@ -97,6 +97,12 @@ class OpenRouterProvider(ProviderBase):
         if llminput.options:
             options.update(llminput.options)
 
+        # Runtime settings are shared at the CLI level, but some are
+        # provider-specific. Ollama's local CPU-thread setting is ignored
+        # by OpenRouter instead of leaking into the SDK request.
+        options.pop("num_thread", None)
+        options.pop("num_threads", None)
+
         # Do not send tool-specific options when
         # the request has no tools.
         if not tools:

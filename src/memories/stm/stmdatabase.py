@@ -416,6 +416,37 @@ class STMDatabase:
 
         return [self._row_to_event(row) for row in rows]
 
+    def list_sessions(
+        self,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Return recent sessions with lightweight CLI-friendly metadata."""
+        limit = max(1, int(limit))
+        rows = self.connection.execute(
+            """
+            SELECT
+                e.session_id,
+                COUNT(*) AS event_count,
+                MIN(e.timestamp) AS started_at,
+                MAX(e.timestamp) AS last_activity,
+                (
+                    SELECT u.content
+                    FROM context_events AS u
+                    WHERE u.session_id = e.session_id
+                      AND u.role = 'user'
+                      AND u.type = 'message'
+                    ORDER BY u.step ASC, u.timestamp ASC
+                    LIMIT 1
+                ) AS title
+            FROM context_events AS e
+            GROUP BY e.session_id
+            ORDER BY MAX(e.step) DESC, MAX(e.timestamp) DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def delete(
         self,
         event_id: UUID | str,

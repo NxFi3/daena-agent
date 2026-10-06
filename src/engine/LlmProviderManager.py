@@ -1,6 +1,6 @@
 # src/Engine/llmManagment/LlmProvider.py
 
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 from src.engine.providers.Registry import ProviderRegistry
 from src.models.LLMInput import LLMInput
 from src.models.LLMResult import LLMResult
@@ -37,6 +37,7 @@ class LlmProvider:
         tools: Optional[list] = None,
         images: Optional[list[np.ndarray]] = None,
         options: Optional[Dict[str, Any]] = None,
+        on_event: Optional[Callable[[dict[str, Any]], None]] = None,
     ):
         if self.model is not None:
             model_name = self.llm_config.get("model_name") or self.model.defaultModel
@@ -51,6 +52,7 @@ class LlmProvider:
                 images=images or [],
                 messages=messages,
                 options=generation_options,
+                stream_callback=on_event,
             )
             results = self.model.generate(inputs)
             return results if isinstance(results, LLMResult) else None

@@ -20,8 +20,9 @@ def get_logger(name="RAG Memory"):
 
     #  console handler
     console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.DEBUG)
-
+    console_handler.setLevel(
+        logging.ERROR if os.getenv("DAENA_CLI") == "1" else logging.DEBUG
+    )
     #  format
     formatter = logging.Formatter(
         "[%(asctime)s] [%(levelname)s] [%(name)s] → %(message)s",

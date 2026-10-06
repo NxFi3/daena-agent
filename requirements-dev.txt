@@ -4,3 +4,5 @@ ollama
 openrouter
 ddgs
 pypdf
+rich>=13.7,<15
+prompt_toolkit>=3.0,<4

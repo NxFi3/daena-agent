@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import json
+import queue
 import re
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import UUID, uuid4
 
 from src.agent.agentstate import AgentState
@@ -130,6 +131,10 @@ class Loop:
 
         self._generation_retries = 0
 
+        self._event_sink: Callable[[dict[str, Any]], None] | None = None
+        self._stop_event: Any | None = None
+        self._steering_queue: queue.Queue[str] = queue.Queue()
+
         context_config = self.config.get("context") or {}
         retrieval_config = self.config.get("retrieval") or {}
 
@@ -195,6 +200,47 @@ class Loop:
         self._context_step += 1
 
         return self._context_step
+
+    def steer(self, text: str) -> None:
+        """Queue operator guidance to be consumed by the next safe loop boundary."""
+        message = str(text or "").strip()
+        if not message:
+            return
+        self._steering_queue.put(message)
+
+    def _consume_steering(self) -> None:
+        while True:
+            try:
+                message = self._steering_queue.get_nowait()
+            except queue.Empty:
+                return
+
+            self._store_nudge(
+                "Operator steering for the current task:\n"
+                f"{message}\n"
+                "Treat this as new user guidance. Continue the current task "
+                "while respecting this instruction."
+            )
+            self._emit_event("steering", text=message)
+
+    def _emit_event(
+        self,
+        event_type: str,
+        **payload: Any,
+    ) -> None:
+        callback = self._event_sink
+        if not callable(callback):
+            return
+        event = {
+            "type": event_type,
+            "timestamp": time.time(),
+            "iteration": int(self.metrics.get("iterations", 0) or 0),
+            **payload,
+        }
+        try:
+            callback(event)
+        except Exception as exc:
+            self.logger.debug(f"Event sink failed: {type(exc).__name__}: {exc}")
 
     @staticmethod
     def _is_observation_command(command: Any) -> bool:
@@ -1726,6 +1772,13 @@ class Loop:
 
             return False
 
+        for call in parsed_calls:
+            self._emit_event(
+                "tool_call",
+                name=str(getattr(call, "name", "")),
+                arguments=getattr(call, "args", {}) or {},
+            )
+
         self.metrics["tool_call_attempts"] = (
             self.metrics.get("tool_call_attempts", 0) + len(parsed_calls)
         )
@@ -1819,6 +1872,14 @@ class Loop:
                 iteration=iteration,
             )
 
+            self._emit_event(
+                "tool_result",
+                name=str(getattr(call, "name", result.name)),
+                success=bool(result.success),
+                summary=str(result.summary or ""),
+                content=result.content if isinstance(result.content, (str, dict, list)) else str(result.content),
+            )
+
             stop_reason = self._check_failure_stuck(
                 call,
                 result,
@@ -1877,6 +1938,8 @@ class Loop:
         self,
         user_task: ContextEvent,
         workspace_directory: str | None = None,
+        event_sink: Callable[[dict[str, Any]], None] | None = None,
+        stop_event: Any | None = None,
     ) -> LLMResult | None:
 
         if not isinstance(
@@ -1894,12 +1957,21 @@ class Loop:
             workspace_directory = str(Path.cwd().resolve())
 
         self._reset_run_state()
+        self._event_sink = event_sink
+        self._stop_event = stop_event
         self._run_started_at = time.perf_counter()
         self.set_workspace(workspace_directory)
 
         # Must run AFTER _reset_run_state()
         # and BEFORE the first _next_step().
         self._resume_step_counter()
+
+        self._emit_event(
+            "run_start",
+            session_id=str(self.session_id),
+            workspace=workspace_directory,
+            max_iterations=self.max_iterations,
+        )
 
         self.logger.info(
             "Starting agent loop | "
@@ -1921,6 +1993,19 @@ class Loop:
 
             self.agent_state.iteration = iteration_number
             self.metrics["iterations"] = iteration_number
+
+            if self._stop_event is not None and self._stop_event.is_set():
+                self.agent_state.stop("Interrupted by user.")
+                self._emit_event("run_stopped", reason="Interrupted by user.")
+                return self._stopped_result("Interrupted by user.")
+
+            self._consume_steering()
+
+            self._emit_event(
+                "iteration_start",
+                iteration=iteration_number,
+                max_iterations=self.max_iterations,
+            )
 
             self.logger.info(
                 f"Iteration " f"{iteration_number}/" f"{self.max_iterations}"
@@ -2080,6 +2165,17 @@ class Loop:
                 self.metrics["completed"] = True
                 self.metrics["stop_reason"] = ""
                 self.metrics["duration_ms"] = self._duration_ms()
+                self._emit_event(
+                    "final_response",
+                    text=str(llmresult.response or ""),
+                    usage=int(getattr(llmresult, "usage", 0) or 0),
+                )
+                self._emit_event(
+                    "run_end",
+                    completed=True,
+                    stop_reason="",
+                    metrics=self.get_metrics(),
+                )
                 self.tool.close()
 
                 return llmresult
@@ -2202,6 +2298,19 @@ class Loop:
         self.metrics["execution_phase"] = self._phase
         self.metrics["verification_required"] = self._verification_required
 
+        self._emit_event(
+            "context",
+            estimated_tokens=estimated_context_tokens,
+            budget=int(getattr(context_builder.tokenbudget, "budget", 0) or 0),
+            max_prompt_tokens=int(
+                (self.config.get("context") or {}).get("max_prompt_tokens", 0) or 0
+            ),
+            messages=len(context),
+            tool_results=tool_message_count,
+            read_results=read_message_count,
+            same_revision_reads=self._same_revision_read_count,
+        )
+
         self.logger.info(
             "Context | "
             f"estimated_tokens={estimated_context_tokens} | "
@@ -2216,10 +2325,22 @@ class Loop:
 
         try:
 
-            result = self.llm.generate(
-                context,
-                tools=self.tool_definitions,
-            )
+            # Keep the event stream optional so small/test LLM adapters that
+            # implement the older generate(messages, tools=...) contract keep
+            # working. The UI-enabled LlmProvider accepts on_event.
+            try:
+                result = self.llm.generate(
+                    context,
+                    tools=self.tool_definitions,
+                    on_event=self._emit_event,
+                )
+            except TypeError as type_error:
+                if "unexpected keyword argument 'on_event'" not in str(type_error):
+                    raise
+                result = self.llm.generate(
+                    context,
+                    tools=self.tool_definitions,
+                )
 
         except Exception as exc:
 

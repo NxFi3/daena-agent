@@ -71,6 +71,13 @@ class STM:
             top_k=top_k,
         )
 
+    def list_sessions(
+        self,
+        limit: int = 50,
+    ) -> list[dict]:
+        """List recent persistent sessions for interactive clients."""
+        return self.db.list_sessions(limit=limit)
+
     def delete(
         self,
         event_id: UUID | str,
