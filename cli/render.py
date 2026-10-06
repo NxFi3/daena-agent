@@ -14,6 +14,7 @@ from typing import Any
 
 from prompt_toolkit import print_formatted_text
 from prompt_toolkit.formatted_text import ANSI, HTML
+from prompt_toolkit.application.current import get_app
 
 _P    = "\x1b[38;2;167;139;250m"
 _P2   = "\x1b[38;2;139;92;246m"
@@ -349,4 +350,17 @@ class StreamRenderer:
 
     @staticmethod
     def _print(text: str) -> None:
+        # Stream events arrive from the agent worker thread. Marshal terminal
+        # writes through prompt_toolkit's active application so deltas cannot
+        # disappear while PromptSession is waiting for input.
+        try:
+            app = get_app()
+            if app.is_running:
+                app.run_in_terminal(
+                    lambda: print_formatted_text(ANSI(text)),
+                    in_executor=False,
+                )
+                return
+        except Exception:
+            pass
         print_formatted_text(ANSI(text))
