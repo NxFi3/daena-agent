@@ -1,5 +1,5 @@
 import os
-from typing import Any, ClassVar
+from typing import Any, Callable, ClassVar
 
 from openrouter import OpenRouter
 
@@ -79,6 +79,210 @@ class OpenRouterProvider(ProviderBase):
 
         raise TypeError("Unsupported message type: " f"{type(message).__name__}")
 
+    @staticmethod
+    def _emit_stream_event(
+        callback: Callable[[dict[str, Any]], None] | None,
+        event_type: str,
+        **payload: Any,
+    ) -> None:
+        if not callable(callback):
+            return
+        try:
+            callback({"type": event_type, **payload})
+        except Exception as exc:
+            logger.debug(
+                f"Stream callback failed: {type(exc).__name__}: {exc}"
+            )
+
+    @staticmethod
+    def _reasoning_delta(delta: Any) -> str:
+        value = getattr(delta, "reasoning", None)
+        if value:
+            return str(value)
+
+        details = getattr(delta, "reasoning_details", None)
+        if not details:
+            return ""
+
+        parts: list[str] = []
+        if isinstance(details, list):
+            for item in details:
+                text = getattr(item, "text", None)
+                if text:
+                    parts.append(str(text))
+                elif isinstance(item, dict) and item.get("text"):
+                    parts.append(str(item["text"]))
+        elif isinstance(details, dict) and details.get("text"):
+            parts.append(str(details["text"]))
+
+        return "".join(parts)
+
+    @classmethod
+    def _generate_streaming(
+        cls,
+        client: OpenRouter,
+        *,
+        model_name: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        options: dict[str, Any],
+        think: Any,
+        callback: Callable[[dict[str, Any]], None],
+    ) -> LLMResult:
+        thinking_parts: list[str] = []
+        content_parts: list[str] = []
+        tool_buffers: dict[int, dict[str, Any]] = {}
+        usage_total = 0
+        last_event: Any = None
+
+        cls._emit_stream_event(
+            callback,
+            "generation_start",
+            model=model_name,
+            think=think,
+            streaming=True,
+        )
+
+        request_kwargs: dict[str, Any] = {
+            "model": model_name,
+            "messages": messages,
+            "stream": True,
+            **options,
+        }
+        if tools:
+            request_kwargs["tools"] = tools
+
+        try:
+            stream = client.chat.send(**request_kwargs)
+
+            for event in stream:
+                last_event = event
+
+                usage = getattr(event, "usage", None)
+                if usage is not None:
+                    total = getattr(usage, "total_tokens", None)
+                    if total is not None:
+                        try:
+                            usage_total = int(total)
+                        except (TypeError, ValueError):
+                            pass
+
+                choices = getattr(event, "choices", None) or []
+                if not choices:
+                    continue
+
+                delta = getattr(choices[0], "delta", None)
+                if delta is None:
+                    continue
+
+                reasoning_delta = cls._reasoning_delta(delta)
+                if reasoning_delta:
+                    thinking_parts.append(reasoning_delta)
+                    cls._emit_stream_event(
+                        callback,
+                        "thinking_delta",
+                        text=reasoning_delta,
+                    )
+
+                content_delta = getattr(delta, "content", None)
+                if content_delta:
+                    content_delta = str(content_delta)
+                    content_parts.append(content_delta)
+                    cls._emit_stream_event(
+                        callback,
+                        "content_delta",
+                        text=content_delta,
+                    )
+
+                raw_tool_calls = getattr(delta, "tool_calls", None) or []
+                for tool_call in raw_tool_calls:
+                    index = getattr(tool_call, "index", None)
+                    if index is None and isinstance(tool_call, dict):
+                        index = tool_call.get("index", 0)
+                    try:
+                        index = int(index if index is not None else 0)
+                    except (TypeError, ValueError):
+                        index = 0
+
+                    target = tool_buffers.setdefault(
+                        index,
+                        {
+                            "id": None,
+                            "type": "function",
+                            "function": {
+                                "name": "",
+                                "arguments": "",
+                            },
+                        },
+                    )
+
+                    call_id = getattr(tool_call, "id", None)
+                    if call_id:
+                        target["id"] = str(call_id)
+
+                    function = getattr(tool_call, "function", None)
+                    if function is None and isinstance(tool_call, dict):
+                        function = tool_call.get("function")
+
+                    if function is not None:
+                        name = getattr(function, "name", None)
+                        arguments = getattr(function, "arguments", None)
+                        if isinstance(function, dict):
+                            name = function.get("name")
+                            arguments = function.get("arguments")
+
+                        if name:
+                            target["function"]["name"] += str(name)
+                        if arguments:
+                            target["function"]["arguments"] += str(arguments)
+
+        except Exception as exc:
+            logger.error(
+                "Streaming generation failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            raise RuntimeError(
+                "OpenRouter streaming failed: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+
+        serialized_tool_calls = [
+            value
+            for _, value in sorted(tool_buffers.items(), key=lambda item: item[0])
+            if value.get("function", {}).get("name")
+        ]
+
+        thinking = "".join(thinking_parts) or None
+        content = "".join(content_parts)
+
+        message: dict[str, Any] = {
+            "role": "assistant",
+            "content": content,
+        }
+        if thinking:
+            message["reasoning"] = thinking
+            message["thinking"] = thinking
+        if serialized_tool_calls:
+            message["tool_calls"] = serialized_tool_calls
+
+        cls._emit_stream_event(
+            callback,
+            "generation_done",
+            thinking_tokens=len(thinking.split()) if thinking else 0,
+            response_chars=len(content),
+            tool_calls=len(serialized_tool_calls),
+            usage=usage_total,
+        )
+
+        return LLMResult(
+            response=content,
+            message=message,
+            tool_calls=serialized_tool_calls,
+            thinking=thinking,
+            usage=usage_total,
+            raw=last_event,
+        )
+
     def generate(
         self,
         llminput: LLMInput,
@@ -97,6 +301,15 @@ class OpenRouterProvider(ProviderBase):
         if llminput.options:
             options.update(llminput.options)
 
+        stream_callback = getattr(llminput, "stream_callback", None)
+        think = options.pop("think", None)
+
+        # Map Daena's shared reasoning setting to OpenRouter's reasoning option.
+        if think not in (None, False, "false", "off"):
+            effort = "medium" if think is True else str(think).lower()
+            if effort in {"low", "medium", "high"}:
+                options["reasoning"] = {"effort": effort}
+
         # Runtime settings are shared at the CLI level, but some are
         # provider-specific. Ollama's local CPU-thread setting is ignored
         # by OpenRouter instead of leaking into the SDK request.
@@ -109,6 +322,17 @@ class OpenRouterProvider(ProviderBase):
             options.pop("tool_choice", None)
 
             options.pop("parallel_tool_calls", None)
+
+        if callable(stream_callback):
+            return self._generate_streaming(
+                self.client,
+                model_name=model_name,
+                messages=messages,
+                tools=tools,
+                options=options,
+                think=think,
+                callback=stream_callback,
+            )
 
         request_kwargs = {
             "model": model_name,
