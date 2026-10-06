@@ -56,3 +56,28 @@ def test_start_beyond_end_of_file_still_reports_total_lines(tmp_path):
 
     assert result.success is False
     assert result.content["total_lines"] == 3
+
+
+def test_read_file_normalizes_too_small_output_bound(tmp_path):
+    target = _numbered_file(tmp_path)
+
+    dispatcher = __import__("src.tools.ToolDispatcher", fromlist=["ToolDispatcher"]).ToolDispatcher
+
+    class Registry:
+        def is_available(self, name):
+            return name == "read_file"
+
+        def get(self, name):
+            return ReadFile() if name == "read_file" else None
+
+    call = dispatcher(Registry()).dispatch({
+        "name": "read_file",
+        "arguments": {
+            "file_path": str(target),
+            "max_output_chars": 200,
+        },
+    })[0]
+
+    assert call.valid is True
+    assert call.args["max_output_chars"] == ReadFile.MIN_OUTPUT_CHARS
+    assert any("max_output_chars" in note for note in call.normalization_notes)
