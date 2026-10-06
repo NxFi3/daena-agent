@@ -1221,10 +1221,12 @@ class ContextBuilder:
 
         # Compact proactively, before tail-fitting throws older evidence away.
         # The native provider context can be much larger than this working set.
+        compaction_attempted = False
         if (
             self.compaction_enabled
             and estimated_tokens > trigger_tokens
         ):
+            compaction_attempted = True
             compacted = self._compact_messages(messages)
             if compacted is not None:
                 compacted = self._hard_fit_messages(compacted)
@@ -1238,9 +1240,10 @@ class ContextBuilder:
         if self.tokenbudget.fits(fitted):
             return fitted
 
-        compacted = self._compact_messages(messages)
-        if compacted is not None and self.tokenbudget.fits(compacted):
-            return compacted
+        if not compaction_attempted:
+            compacted = self._compact_messages(messages)
+            if compacted is not None and self.tokenbudget.fits(compacted):
+                return compacted
 
         # A failed compactor must not erase all useful history. Keep a
         # deterministic factual slice before falling back to system + task.
