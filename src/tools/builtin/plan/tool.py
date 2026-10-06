@@ -362,10 +362,11 @@ class Plan(Tool):
             )
 
         number = len(current_steps) + 1
+        has_active_step = self._find_in_progress(current_steps) is not None
         current_steps.append(
             PlanStep(
                 number=number,
-                status="pending",
+                status=("pending" if has_active_step else "in_progress"),
                 description=str(step).strip(),
             )
         )
