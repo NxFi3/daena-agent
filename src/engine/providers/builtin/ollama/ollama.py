@@ -194,8 +194,9 @@ class OllamaProvider(ProviderBase):
         think: Any,
         options: dict[str, Any],
         callback: Callable[[dict[str, Any]], None],
+        stop_event: Any | None = None,
     ) -> LLMResult:
-        """Stream Ollama reasoning/content while preserving one final LLMResult."""
+        """Stream Ollama reasoning/content and honor cooperative cancellation."""
         thinking_parts: list[str] = []
         response_parts: list[str] = []
         tool_calls: list[Any] = []
@@ -203,6 +204,7 @@ class OllamaProvider(ProviderBase):
         chunk_count = 0
         thinking_chunks = 0
         content_chunks = 0
+        interrupted = False
 
         self._emit_stream_event(
             callback,
@@ -214,40 +216,50 @@ class OllamaProvider(ProviderBase):
 
         def consume(stream):
             nonlocal final_chunk, tool_calls, chunk_count
-            nonlocal thinking_chunks, content_chunks
-            for chunk in stream:
-                chunk_count += 1
-                final_chunk = chunk
-                message = getattr(chunk, "message", None)
-                if message is None:
-                    continue
+            nonlocal thinking_chunks, content_chunks, interrupted
 
-                thinking_delta = str(getattr(message, "thinking", None) or "")
-                if thinking_delta:
-                    thinking_chunks += 1
-                    thinking_parts.append(thinking_delta)
-                    self._emit_stream_event(
-                        callback,
-                        "thinking_delta",
-                        text=thinking_delta,
-                    )
+            try:
+                for chunk in stream:
+                    if stop_event is not None and stop_event.is_set():
+                        interrupted = True
+                        break
 
-                content_delta = str(getattr(message, "content", None) or "")
-                if content_delta:
-                    content_chunks += 1
-                    response_parts.append(content_delta)
-                    self._emit_stream_event(
-                        callback,
-                        "content_delta",
-                        text=content_delta,
-                    )
+                    chunk_count += 1
+                    final_chunk = chunk
+                    message = getattr(chunk, "message", None)
+                    if message is None:
+                        continue
 
-                raw_tool_calls = getattr(message, "tool_calls", None) or []
-                if raw_tool_calls:
-                    # Ollama normally emits tool calls as complete structures;
-                    # retain the latest non-empty list rather than duplicating
-                    # calls across streaming chunks.
-                    tool_calls = list(raw_tool_calls)
+                    thinking_delta = str(getattr(message, "thinking", None) or "")
+                    if thinking_delta:
+                        thinking_chunks += 1
+                        thinking_parts.append(thinking_delta)
+                        self._emit_stream_event(
+                            callback,
+                            "thinking_delta",
+                            text=thinking_delta,
+                        )
+
+                    content_delta = str(getattr(message, "content", None) or "")
+                    if content_delta:
+                        content_chunks += 1
+                        response_parts.append(content_delta)
+                        self._emit_stream_event(
+                            callback,
+                            "content_delta",
+                            text=content_delta,
+                        )
+
+                    raw_tool_calls = getattr(message, "tool_calls", None) or []
+                    if raw_tool_calls:
+                        tool_calls = list(raw_tool_calls)
+            finally:
+                close = getattr(stream, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        pass
 
         try:
             consume(
@@ -261,7 +273,9 @@ class OllamaProvider(ProviderBase):
                 )
             )
         except Exception as exc:
-            if tools and think is not False and "error parsing tool call" in str(exc).lower():
+            if stop_event is not None and stop_event.is_set():
+                interrupted = True
+            elif tools and think is not False and "error parsing tool call" in str(exc).lower():
                 logger.warning(
                     "Ollama rejected a streamed tool call; retrying once with think=False."
                 )
@@ -269,33 +283,63 @@ class OllamaProvider(ProviderBase):
                 response_parts.clear()
                 tool_calls.clear()
                 final_chunk = None
-                try:
-                    consume(
-                        ollama.chat(
-                            model=model_name,
-                            messages=messages,
-                            tools=tools,
-                            think=False,
-                            options=options,
-                            stream=True,
-                        )
+                chunk_count = 0
+                thinking_chunks = 0
+                content_chunks = 0
+                interrupted = False
+                consume(
+                    ollama.chat(
+                        model=model_name,
+                        messages=messages,
+                        tools=tools,
+                        think=False,
+                        options=options,
+                        stream=True,
                     )
-                except Exception as retry_exc:
-                    raise RuntimeError(
-                        "Ollama streaming failed: "
-                        f"{type(retry_exc).__name__}: {retry_exc}"
-                    ) from retry_exc
+                )
             else:
                 raise RuntimeError(
                     "Ollama streaming failed: "
                     f"{type(exc).__name__}: {exc}"
                 ) from exc
 
+        if interrupted or (stop_event is not None and stop_event.is_set()):
+            self._emit_stream_event(
+                callback,
+                "generation_stopped",
+                thinking_tokens=len("".join(thinking_parts).split()),
+                response_chars=len("".join(response_parts)),
+                tool_calls=len(tool_calls),
+                usage=(
+                    int(getattr(final_chunk, "prompt_eval_count", 0) or 0)
+                    + int(getattr(final_chunk, "eval_count", 0) or 0)
+                    if final_chunk is not None
+                    else 0
+                ),
+            )
+            return LLMResult(
+                response="".join(response_parts),
+                message={"role": "assistant", "content": "".join(response_parts)},
+                tool_calls=tool_calls,
+                thinking="".join(thinking_parts) or None,
+                usage=(
+                    int(getattr(final_chunk, "prompt_eval_count", 0) or 0)
+                    + int(getattr(final_chunk, "eval_count", 0) or 0)
+                    if final_chunk is not None
+                    else 0
+                ),
+                raw=final_chunk,
+            )
+
         if final_chunk is None:
             raise RuntimeError("Ollama returned an empty streaming response.")
 
         message = getattr(final_chunk, "message", None)
-        message_data = message.model_dump() if message and hasattr(message, "model_dump") else {}
+        message_data = (
+            message.model_dump()
+            if message and hasattr(message, "model_dump")
+            else {}
+        )
         response_text = "".join(response_parts)
         thinking_text = "".join(thinking_parts) or None
         message_data["content"] = response_text
@@ -364,6 +408,7 @@ class OllamaProvider(ProviderBase):
                 think=think,
                 options=options,
                 callback=stream_callback,
+                stop_event=getattr(inputs, "stop_event", None),
             )
 
         try:
