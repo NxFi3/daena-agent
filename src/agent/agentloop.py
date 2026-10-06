@@ -2597,6 +2597,7 @@ class Loop:
         self._observation_action_count = 0
         self._phase = "explore"
         self._verification_required = False
+        self._final_verification_satisfied = False
 
         self._tool_loop_guard.reset()
 
