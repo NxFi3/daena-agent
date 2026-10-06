@@ -11,7 +11,6 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.application import get_app
 from prompt_toolkit.completion import NestedCompleter
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.patch_stdout import patch_stdout
@@ -439,9 +438,6 @@ def _start_turn(agent: Agent, text: str, state: dict) -> None:
 
     state["running"] = True
     state["stop_event"] = stop_event
-    # Capture the live PromptSession application before the worker starts.
-    # StreamRenderer uses this app to marshal every delta back to the terminal.
-    renderer.terminal_app = get_app()
     state["renderer"] = renderer
     state["result"] = None
     state["error"] = None
