@@ -1177,7 +1177,11 @@ class Loop:
 
         current_response_keys: set[str] = set()
 
-        plan_state = self._read_plan_state()
+        plan_state = (
+            self._read_plan_state()
+            if self._plan_active_this_run
+            else PlanState.empty()
+        )
 
         valid_plan_calls = [
             call
@@ -2316,6 +2320,7 @@ class Loop:
             recent_limit=self.recent_context_limit,
             search_top_k=self.search_context_top_k,
             available_tool_names=available_tool_names,
+            include_plan=self._plan_active_this_run,
         )
 
         context_builder = self.context.contextbuilder
