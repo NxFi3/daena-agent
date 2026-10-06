@@ -116,19 +116,23 @@ class ToolManager:
         relative path against the process CWD. Normalize after approval so the
         actual execution target is the same target that policy evaluated.
         """
-        if not self.security.policy.workspace_only:
-            return toolcall
-
         args = dict(toolcall.args or {})
         name = toolcall.name
+        workspace_root = self.security.sandbox.root
 
         if name == "read_file":
-            args["file_path"] = str(self.security.sandbox.resolve(args["file_path"]))
+            raw_path = str(args["file_path"])
+            path = Path(raw_path).expanduser()
+            if not path.is_absolute() and workspace_root is not None:
+                path = workspace_root / path
+            args["file_path"] = str(path.resolve(strict=False))
 
         elif name == "command_exec":
-            args["workdir"] = str(
-                self.security.sandbox.resolve(args.get("workdir") or ".")
-            )
+            raw_workdir = str(args.get("workdir") or "")
+            path = Path(raw_workdir).expanduser() if raw_workdir else Path(".")
+            if not path.is_absolute() and workspace_root is not None:
+                path = workspace_root / path
+            args["workdir"] = str(path.resolve(strict=False))
 
         elif name == "apply_patch":
             patch = args["patch"]
@@ -142,9 +146,10 @@ class ToolManager:
                 )
                 if match:
                     path = match.group(2).strip()
-                    line = match.group(1) + str(
-                        self.security.sandbox.resolve(path)
-                    )
+                    target = Path(path).expanduser()
+                    if not target.is_absolute() and workspace_root is not None:
+                        target = workspace_root / target
+                    line = match.group(1) + str(target.resolve(strict=False))
                 normalized.append(line)
 
             args["patch"] = "\n".join(normalized)
