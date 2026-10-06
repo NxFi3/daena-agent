@@ -63,7 +63,7 @@ class SecurityPolicy:
         default_factory=lambda: set(DEFAULT_BLOCKED_COMMANDS)
     )
     allowed_commands: set[str] | None = None
-    workspace_only: bool = True
+    workspace_only: bool = False
     allow_background: bool = False
     allow_network_tools: bool = True
 
@@ -94,7 +94,7 @@ class SecurityPolicy:
                 if allowed_commands
                 else None
             ),
-            workspace_only=bool(config.get("workspace_only", True)),
+            workspace_only=bool(config.get("workspace_only", False)),
             allow_background=bool(config.get("allow_background", False)),
             allow_network_tools=bool(config.get("allow_network_tools", True)),
         )
