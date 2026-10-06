@@ -242,6 +242,29 @@ class Loop:
         except Exception as exc:
             self.logger.debug(f"Event sink failed: {type(exc).__name__}: {exc}")
 
+    def _forward_llm_stream_event(self, event: dict[str, Any]) -> None:
+        """Bridge provider stream events into the Loop event protocol.
+
+        Providers emit one event dictionary at a time, while _emit_event()
+        accepts an event type plus keyword payload. Passing the dictionary
+        directly as the first positional argument makes event["type"] itself
+        a dict and breaks every downstream consumer with
+        TypeError: unhashable type: 'dict'.
+        """
+        if not isinstance(event, dict):
+            return
+
+        event_type = event.get("type")
+        if not isinstance(event_type, str) or not event_type:
+            return
+
+        payload = {
+            key: value
+            for key, value in event.items()
+            if key != "type"
+        }
+        self._emit_event(event_type, **payload)
+
     @staticmethod
     def _is_observation_command(command: Any) -> bool:
         if not isinstance(command, list):
@@ -2332,7 +2355,7 @@ class Loop:
                 result = self.llm.generate(
                     context,
                     tools=self.tool_definitions,
-                    on_event=self._emit_event,
+                    on_event=self._forward_llm_stream_event,
                 )
             except TypeError as type_error:
                 if "unexpected keyword argument 'on_event'" not in str(type_error):
