@@ -734,3 +734,105 @@ def test_runtime_does_not_exhaust_observation_from_counters(tmp_path):
         assert loop._runtime_recovery_gate(read_call) is None
     finally:
         loop.close()
+
+def test_final_verification_detects_whole_suite_only(tmp_path):
+    loop = Loop(
+        {
+            "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
+            "context": {"safe_margin": 0, "compaction_enabled": False},
+            "retrieval": {"top_k": 1},
+            "security": {"workspace_only": True, "force_approve": True},
+            "max_agent_iterations": 3,
+            "experience": {"enabled": False},
+        },
+        FakeLLM(),
+    )
+    try:
+        whole_suite = ToolCall(
+            name="command_exec",
+            id="verify-all",
+            valid=True,
+            args={"command": ["pytest", "-q"], "workdir": "."},
+        )
+        whole_suite_result = ToolResult(
+            success=True,
+            name="command_exec",
+            content={
+                "command": ["pytest", "-q"],
+                "status": "exited",
+                "exit_code": 0,
+            },
+        )
+
+        targeted = ToolCall(
+            name="command_exec",
+            id="verify-one",
+            valid=True,
+            args={"command": ["pytest", "-q", "test_workspace_stats.py"], "workdir": "."},
+        )
+        targeted_result = ToolResult(
+            success=True,
+            name="command_exec",
+            content={
+                "command": ["pytest", "-q", "test_workspace_stats.py"],
+                "status": "exited",
+                "exit_code": 0,
+            },
+        )
+
+        assert loop._is_final_verification_call(whole_suite, whole_suite_result) is True
+        assert loop._is_final_verification_call(targeted, targeted_result) is False
+    finally:
+        loop.close()
+
+
+def test_finalization_mode_blocks_non_plan_tools(tmp_path):
+    loop = Loop(
+        {
+            "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
+            "context": {"safe_margin": 0, "compaction_enabled": False},
+            "retrieval": {"top_k": 1},
+            "security": {"workspace_only": True, "force_approve": True},
+            "max_agent_iterations": 3,
+            "experience": {"enabled": False},
+        },
+        FakeLLM(),
+    )
+    loop.session_id = uuid4()
+    loop.set_workspace(str(tmp_path))
+    try:
+        loop._plan_active_this_run = True
+        loop._final_verification_satisfied = True
+
+        read_call = ToolCall(
+            name="read_file",
+            id="read-after-verify",
+            valid=True,
+            args={"file_path": "workspace_stats.py"},
+        )
+        allowed, blocked = loop._classify_calls([read_call])
+
+        assert allowed == []
+        assert blocked[0].content["error"]["type"] == "finalization_only"
+    finally:
+        loop.close()
+
+
+def test_final_verification_state_resets_between_runs(tmp_path):
+    loop = Loop(
+        {
+            "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
+            "context": {"safe_margin": 0, "compaction_enabled": False},
+            "retrieval": {"top_k": 1},
+            "security": {"workspace_only": True, "force_approve": True},
+            "max_agent_iterations": 3,
+            "experience": {"enabled": False},
+        },
+        FakeLLM(),
+    )
+    try:
+        loop._final_verification_satisfied = True
+        loop._reset_run_state()
+        assert loop._final_verification_satisfied is False
+    finally:
+        loop.close()
