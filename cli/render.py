@@ -218,6 +218,13 @@ class StreamRenderer:
             self._think_open = True
 
         self._think_buf += delta
+        # Ollama emits very small reasoning deltas. Flush them immediately
+        # so the reasoning trace is visible while generation is running.
+        if "\n" not in self._think_buf and self._think_buf.strip():
+            self._emit_think_line(self._think_buf)
+            self._think_buf = ""
+            return
+
         while "\n" in self._think_buf:
             line, self._think_buf = self._think_buf.split("\n", 1)
             self._emit_think_line(line)
