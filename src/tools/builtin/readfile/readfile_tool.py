@@ -33,10 +33,11 @@ class ReadFile(Tool):
     MIN_OUTPUT_CHARS = 512
 
     description = (
-        "Read a UTF-8 text file. "
+        "Read a UTF-8 text file. Only use this for a file you know exists; "
+        "do not use it to inspect directories or guess filenames. "
         "Optional start_line and end_line can limit the returned range. "
         "Output is bounded to protect agent context. "
-        "Use command_exec for running commands or direct workspace inspection."
+        "Use command_exec for directory inspection or running commands."
     )
 
     parameters = {
@@ -110,8 +111,7 @@ class ReadFile(Tool):
         arguments: dict[str, Any],
     ) -> tuple[dict[str, Any], list[str]]:
         """Strip fields that belong to this tool's result, not its input."""
-        normalized = dict(arguments or {})
-        notes: list[str] = []
+        normalized, notes = super().normalize_arguments(arguments)
         output_only = {
             "success",
             "type",
