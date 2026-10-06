@@ -289,7 +289,10 @@ def _handle_command(
     if command in {"/exit", "/quit", "/q"}:
         return "exit", None
 
-    if running and command in {"/provider", "/model", "/session", "/sessions", "/cwd", "/new"}:
+    if running and command in {
+        "/provider", "/model", "/session", "/sessions",
+        "/cwd", "/workspace", "/new"
+    }:
         console.print("[#FBBF24]Daena is busy. Use /interrupt first for this command.[/#FBBF24]")
         return "continue", busy_mode
 
