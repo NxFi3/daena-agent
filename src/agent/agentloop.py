@@ -2644,6 +2644,18 @@ class Loop:
                     ).strip().lower() == "plan"
                 )
             ]
+        elif self._verification_required and not self._recovery_mode:
+            effective_tool_definitions = [
+                definition
+                for definition in self.tool_definitions
+                if (
+                    isinstance(definition, dict)
+                    and isinstance(definition.get("function"), dict)
+                    and str(
+                        definition.get("function", {}).get("name", "")
+                    ).strip().lower() in {"command_exec", "process_poll"}
+                )
+            ]
 
         available_tool_names = {
             str(definition.get("function", {}).get("name", "")).strip().lower()

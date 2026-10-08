@@ -1034,3 +1034,53 @@ def test_post_mutation_requires_verification_before_more_exploration(tmp_path):
         assert blocked == {}
     finally:
         loop.close()
+
+
+def test_post_mutation_generation_exposes_only_verification_tools(tmp_path):
+    llm = FakeLLM()
+    captured = []
+
+    def capture_generate(messages, tools=None):
+        captured.append([
+            item.get("function", {}).get("name")
+            for item in (tools or [])
+            if isinstance(item, dict)
+        ])
+        return LLMResult(
+            response="verify",
+            message={"role": "assistant", "content": "verify"},
+            tool_calls=[],
+            thinking=None,
+            usage=5,
+        )
+
+    llm.generate = capture_generate
+
+    config = {
+        "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
+        "context": {"safe_margin": 0, "compaction_enabled": False},
+        "retrieval": {"top_k": 1},
+        "security": {"workspace_only": True, "force_approve": True},
+        "max_agent_iterations": 3,
+        "experience": {"enabled": False},
+    }
+    loop = Loop(config, llm)
+    loop.session_id = uuid4()
+    loop.set_workspace(str(tmp_path))
+    try:
+        loop._verification_required = True
+        loop._recovery_mode = False
+        loop._plan_active_this_run = True
+        loop._plan_required_this_run = False
+
+        task = ContextEvent(
+            role=ContextRole.USER,
+            type=ContextType.MESSAGE,
+            content="Verify the completed implementation.",
+        )
+        loop._generate_next_action(task, str(tmp_path))
+
+        assert captured
+        assert set(captured[0]) <= {"command_exec", "process_poll"}
+    finally:
+        loop.close()
