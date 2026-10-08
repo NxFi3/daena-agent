@@ -22,6 +22,9 @@ class ToolDispatcher:
             "content": "patch",
             "diff": "patch",
         },
+        "plan": {
+            "operation": "action",
+        },
         "command_exec": {
             "cmd": "command",
             "working_dir": "workdir",

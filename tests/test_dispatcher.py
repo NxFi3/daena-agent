@@ -315,3 +315,31 @@ def test_dispatcher_normalizes_wait_ms_alias():
     assert call.valid is True
     assert call.args["yield_time_ms"] == 5000
     assert "wait_ms" not in call.args
+
+
+def test_dispatcher_accepts_legacy_plan_operation_alias():
+    from src.tools.builtin.plan.tool import Plan
+
+    plan = Plan()
+
+    class PlanRegistry:
+        def is_available(self, name):
+            return name == "plan"
+
+        def get(self, name):
+            return plan if name == "plan" else None
+
+    dispatcher = ToolDispatcher(PlanRegistry())
+    calls = dispatcher.dispatch({
+        "name": "plan",
+        "arguments": {
+            "operation": "create",
+            "goal": "Ship safely",
+            "steps": ["Implement", "Verify"],
+        },
+    })
+
+    assert len(calls) == 1
+    assert calls[0].valid is True
+    assert calls[0].args["action"] == "create"
+    assert "operation" not in calls[0].args
