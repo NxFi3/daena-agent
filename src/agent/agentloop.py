@@ -2515,9 +2515,23 @@ class Loop:
         else:
             plan_state = PlanState.empty()
 
+        effective_tool_definitions = self.tool_definitions
+        if self._plan_required_this_run and not self._plan_active_this_run:
+            effective_tool_definitions = [
+                definition
+                for definition in self.tool_definitions
+                if (
+                    isinstance(definition, dict)
+                    and isinstance(definition.get("function"), dict)
+                    and str(
+                        definition.get("function", {}).get("name", "")
+                    ).strip().lower() == "plan"
+                )
+            ]
+
         available_tool_names = {
             str(definition.get("function", {}).get("name", "")).strip().lower()
-            for definition in self.tool_definitions
+            for definition in effective_tool_definitions
             if isinstance(definition, dict)
             and isinstance(definition.get("function"), dict)
             and str(definition.get("function", {}).get("name", "")).strip()
@@ -2621,7 +2635,7 @@ class Loop:
             try:
                 result = self.llm.generate(
                     context,
-                    tools=self.tool_definitions,
+                    tools=effective_tool_definitions,
                     on_event=self._forward_llm_stream_event,
                     stop_event=self._stop_event,
                 )
@@ -2630,7 +2644,7 @@ class Loop:
                     raise
                 result = self.llm.generate(
                     context,
-                    tools=self.tool_definitions,
+                    tools=effective_tool_definitions,
                 )
 
         except InterruptedError as exc:

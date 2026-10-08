@@ -948,3 +948,54 @@ def test_strict_observation_repeat_is_bounded_after_one_success(tmp_path):
         assert blocked[0].content["error"]["type"] == "duplicate_action"
     finally:
         loop.close()
+
+
+
+def test_preplan_generation_exposes_only_plan_tool(tmp_path):
+    llm = FakeLLM()
+    captured = []
+
+    original_generate = llm.generate
+
+    def capture_generate(messages, tools=None):
+        captured.append([
+            item.get("function", {}).get("name")
+            for item in (tools or [])
+            if isinstance(item, dict)
+        ])
+        return LLMResult(
+            response="plan",
+            message={"role": "assistant", "content": "plan"},
+            tool_calls=[],
+            thinking=None,
+            usage=5,
+        )
+
+    llm.generate = capture_generate
+
+    config = {
+        "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
+        "context": {"safe_margin": 0, "compaction_enabled": False},
+        "retrieval": {"top_k": 1},
+        "security": {"workspace_only": True, "force_approve": True},
+        "max_agent_iterations": 3,
+        "experience": {"enabled": False},
+    }
+    loop = Loop(config, llm)
+    loop.session_id = uuid4()
+    loop.set_workspace(str(tmp_path))
+    try:
+        task = ContextEvent(
+            role=ContextRole.USER,
+            type=ContextType.MESSAGE,
+            content="Investigate, implement, and verify the bug.",
+        )
+        loop._plan_required_this_run = True
+        loop._plan_active_this_run = False
+
+        loop._generate_next_action(task, str(tmp_path))
+
+        assert captured
+        assert captured[0] == ["plan"]
+    finally:
+        loop.close()
