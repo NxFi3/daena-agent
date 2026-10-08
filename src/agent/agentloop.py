@@ -1814,11 +1814,22 @@ class Loop:
 
         tool_name = str(getattr(call, "name", result.name)).strip().lower()
 
-        self._plan_progress.record(
-            tool_call=call,
-            result=result,
-            iteration=iteration,
+        gate_block = (
+            isinstance(result.metadata, dict)
+            and (
+                result.metadata.get("plan_gate")
+                or result.metadata.get("runtime_gate")
+                or result.metadata.get("duplicate_action")
+                or result.metadata.get("loop_guard_block")
+            )
         )
+
+        if not gate_block:
+            self._plan_progress.record(
+                tool_call=call,
+                result=result,
+                iteration=iteration,
+            )
 
         workspace_mutated = changed and tool_name != "plan"
 
