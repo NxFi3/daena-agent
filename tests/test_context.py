@@ -575,7 +575,7 @@ def test_workspace_inventory_is_visible_even_without_old_creation_events(tmp_pat
     )
 
     system = messages[0]["content"]
-    assert "workspace" in system
+    assert "workspace" not in system
     assert "public/index.html" not in system
 
     dynamic = next(

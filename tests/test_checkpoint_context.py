@@ -68,7 +68,7 @@ def test_checkpoint_persists_and_prevents_repeat_compaction(tmp_path):
 
     try:
         for step in range(1, 61):
-            stm.add(session_id, event(f"state-{step}-" + ("x" * 60), step))
+            stm.add(session_id, event(f"state-{step}-" + ("x" * 180), step))
 
         first_task = ContextEvent(
             id=uuid4(),

@@ -5,7 +5,9 @@
       "model_name": "gpt-oss:20b",
       "generation_config": {
         "temperature": 0.3,
-        "num_thread": 16
+        "num_thread": 16,
+        "think": "low",
+        "num_predict": 1024
       }
     }
   },
@@ -35,7 +37,7 @@
       "model_name": "BAAI/bge-reranker-v2-m3"
     }
   },
-  "max_agent_iterations": 300,
+  "max_agent_iterations": 50,
   "experience": {
     "enabled": true
   }

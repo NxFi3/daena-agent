@@ -54,7 +54,7 @@ def SystemInstructionReader() -> str:
 def ExperienceReader() -> str:
     try:
         return EXPERIENCE_PATH.read_text(encoding="utf-8").strip()
-    except (FileNotFoundError, OSError):
+    except (FileNotFoundError, OSError, UnicodeDecodeError):
         return ""
 
 

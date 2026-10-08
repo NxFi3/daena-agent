@@ -25,32 +25,13 @@ from src.models.ContextEvent import (
 from src.models.LLMResult import LLMResult
 from src.models.ToolResult import ToolResult
 from src.memories.stm.STM import STM
-from src.agent.toolguard import ToolLoopGuard
 from src.tools.ToolManager import ToolManager
 from src.utils.logger import get_logger
 
 
 class Loop:
 
-    FAILURE_STUCK_THRESHOLD = 4
-    DUPLICATE_BLOCK_THRESHOLD = 3
-    SAME_FAILURE_REPEAT_LIMIT = 1
     EMPTY_RESPONSE_THRESHOLD = 3
-    _final_verification_satisfied = False
-
-    # File reads are observations rather than mutations. They may legitimately
-    # be repeated while the workspace revision is unchanged, but an identical
-    # observation should not become an infinite loop.
-    OBSERVATION_REPEAT_LIMIT = 3
-
-    # After repeated failures with the same tool and normalized error, block
-    # the next matching failure pattern so the model must change strategy.
-    SEMANTIC_FAILURE_REPEAT_LIMIT = 2
-
-    # Once a foreground managed process is running, the runtime owns the
-    # execution boundary until that process is observed, fed, or stopped.
-    # Read/edit/other work must not run around a still-live command.
-    PROCESS_CONTROL_TOOLS = frozenset({"process_poll", "process_write", "process_stop"})
 
     # How many times a single iteration may be retried in place after a
     # generation failure (provider exception, e.g. Ollama's own tool-call
@@ -104,50 +85,19 @@ class Loop:
         self.working_set = WorkingSet()
 
         self._plan_progress = PlanProgressTracker()
-        self._plan_required_this_run = False
-        self._observation_repeat_limit = 3
 
         self.workspace_revision = 0
 
-        self._successful_tool_calls: dict[
-            str,
-            int,
-        ] = {}
-
-        self._last_duplicate_key: str | None = None
-
-        self._duplicate_block_streak = 0
-
-        # key -> (workspace_revision, successful_repeat_count)
-        self._same_revision_call_counts: dict[str, tuple[int, int]] = {}
         self._same_revision_read_count = 0
         self._observation_action_count = 0
         self._phase = "explore"
-        self._verification_required = False
-        self._final_verification_satisfied = False
-
-        guard_level = str(
-            self.config.get("guard_level")
-            or (self.config.get("agent") or {}).get("guard_level")
-            or "strict"
-        ).strip().lower()
-        if guard_level not in {"strict", "light"}:
-            guard_level = "strict"
-        self.guard_level = guard_level
-        self._observation_repeat_limit = 2 if guard_level == "strict" else 3
-        self._tool_loop_guard = ToolLoopGuard(guard_level=guard_level)
-
-        # Per-tool semantic failure evidence. Unrelated successful tools must
-        # not erase a different tool's recovery history.
-        self._semantic_failure_counts: dict[str, int] = {}
-        # Runtime-enforced recovery state. The model is not allowed to repeat
-        # the exact failed action at the same workspace revision without
-        # producing new evidence first.
-        self._failed_call_keys: dict[str, tuple[int, int]] = {}
         self._active_process_ids: set[str] = set()
-        self._recovery_mode = False
 
         self._generation_retries = 0
+        # Consecutive model turns that produce neither a tool call nor a final
+        # response are a liveness problem, not a strategy decision. Keep the
+        # model in control, but make the next prompt explicitly demand progress.
+        self._no_action_turns = 0
 
         self._event_sink: Callable[[dict[str, Any]], None] | None = None
         self._stop_event: Any | None = None
@@ -333,129 +283,6 @@ class Loop:
         if name == "command_exec":
             arguments = getattr(call, "args", {}) or {}
             return cls._is_observation_command(arguments.get("command"))
-
-        return False
-
-    @classmethod
-    def _is_verification_call(cls, call, result: ToolResult) -> bool:
-        """Return True when a successful command produced fresh execution evidence.
-
-        Verification is semantic rather than a hard-coded list of test runners:
-        a successful project test, build, script, executable, or other
-        non-observational command can prove that a workspace mutation works.
-        Pure observations such as pwd/ls/git status do not clear the gate.
-        """
-        if str(getattr(call, "name", "")).strip().lower() != "command_exec":
-            return False
-
-        content = result.content if isinstance(result.content, dict) else {}
-        command = content.get("command")
-        if not isinstance(command, list) or not command:
-            return False
-
-        status = str(content.get("status") or "").strip().lower()
-        exit_code = content.get("exit_code")
-        try:
-            successful_exit = status in {"exited", "completed", "terminated"} and int(exit_code) == 0
-        except (TypeError, ValueError):
-            successful_exit = False
-
-        if not successful_exit:
-            return False
-
-        return not cls._is_observation_command(command)
-
-    @staticmethod
-    def _is_final_verification_call(call, result: ToolResult) -> bool:
-        """Identify a successful whole-suite verification suitable for finalization."""
-        if str(getattr(call, "name", "")).strip().lower() != "command_exec":
-            return False
-
-        content = result.content if isinstance(result.content, dict) else {}
-        command = content.get("command")
-        if not isinstance(command, list):
-            return False
-
-        tokens = [
-            str(item).strip().lower()
-            for item in command
-            if str(item).strip()
-        ]
-        if not tokens:
-            return False
-
-        executable = tokens[0].rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-        if executable.endswith(".exe"):
-            executable = executable[:-4]
-
-        args = tokens[1:]
-
-        if (
-            executable in {"bash", "sh", "dash", "zsh"}
-            and args[:1] in (["-c"], ["-lc"], ["-ic"])
-            and len(args) >= 2
-        ):
-            try:
-                nested = shlex.split(args[1])
-            except ValueError:
-                nested = []
-            if nested:
-                executable = nested[0].rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-                if executable.endswith(".exe"):
-                    executable = executable[:-4]
-                args = nested[1:]
-
-        def pytest_args_are_global(pytest_args: list[str]) -> bool:
-            return not any(
-                token.endswith((".py", ".ini", ".toml"))
-                or "/" in token
-                or "\\" in token
-                for token in pytest_args
-                if not token.startswith("-")
-            )
-
-        if executable == "pytest":
-            return pytest_args_are_global(args)
-
-        if executable in {"python", "python3"} and len(args) >= 2 and args[0] == "-m" and args[1] == "pytest":
-            return pytest_args_are_global(args[2:])
-
-        if executable in {"uv", "poetry", "pipenv", "pdm"} and "pytest" in args:
-            index = args.index("pytest")
-            return pytest_args_are_global(args[index + 1:])
-
-        if executable in {"npm", "yarn", "pnpm", "bun"}:
-            if args[:1] == ["test"] or args[:2] == ["run", "test"]:
-                return True
-
-        if executable == "cargo":
-            return "test" in args and not any(
-                not token.startswith("-")
-                and token not in {"test", "all", "workspace"}
-                and "::" not in token
-                for token in args
-            )
-
-        if executable == "go":
-            return (
-                args[:1] == ["test"]
-                and (
-                    len(args) == 1
-                    or all(
-                        token.startswith("-") or token == "./..."
-                        for token in args[1:]
-                    )
-                )
-            )
-
-        if executable in {"dotnet", "mvn", "gradle", "mix", "tox", "nox"}:
-            return "test" in args or executable in {"tox", "nox"}
-
-        if executable.endswith("gradlew") or executable.endswith("gradlew.bat"):
-            return "test" in args
-
-        if executable == "make":
-            return args[:1] == ["test"]
 
         return False
 
@@ -747,180 +574,6 @@ class Loop:
             step=self._next_step(),
         )
 
-    def _tool_call_key(
-        self,
-        call,
-    ) -> str:
-
-        name = str(
-            getattr(
-                call,
-                "name",
-                "",
-            )
-        ).strip().lower()
-
-        arguments = getattr(call, "args", {}) or {}
-
-        tool = self.tool.get_tool(name)
-
-        duplicate_key = getattr(tool, "duplicate_key", None) if tool else None
-
-        if callable(duplicate_key):
-            try:
-                arguments = duplicate_key(
-                    arguments,
-                    workspace_root=(
-                        str(self._workspace_root)
-                        if self._workspace_root is not None
-                        else None
-                    ),
-                )
-            except Exception as exc:
-                self.logger.debug(
-                    f"Duplicate-key normalization failed for '{name}': {exc}"
-                )
-
-        payload = {
-            "name": name,
-            "args": arguments,
-        }
-
-        return json.dumps(
-            payload,
-            ensure_ascii=False,
-            sort_keys=True,
-            default=str,
-        )
-
-    @staticmethod
-    def _canonical_failure_message(message: str) -> str:
-        """Normalize equivalent validation errors to one semantic cause."""
-        text = re.sub(r"\s+", " ", str(message or "")).strip().lower()
-        text = re.sub(r"0x[0-9a-f]+", "0xaddr", text)
-        text = re.sub(r"\d+", "N", text)
-
-        match = re.search(
-            r"missing required argument(?:\(s\))?:\s*([^.;]+)",
-            text,
-        )
-        if match:
-            names = [item.strip() for item in match.group(1).split(",") if item.strip()]
-            if names:
-                return "missing_required:" + ",".join(sorted(set(names)))
-
-        match = re.search(r"\b([a-z_][a-z0-9_]*)\s+is required\b", text)
-        if match:
-            return "missing_required:" + match.group(1)
-
-        match = re.search(
-            r"unknown argument(?:\(s\))?:\s*([^.;]+)",
-            text,
-        )
-        if match:
-            names = [item.strip() for item in match.group(1).split(",") if item.strip()]
-            if names:
-                return "unknown_argument:" + ",".join(sorted(set(names)))
-
-        return text[:180]
-
-    def _predict_failure_signature(self, call) -> str | None:
-        """Predict deterministic argument/schema failures before execution."""
-        name = str(getattr(call, "name", "")).strip().lower()
-        if not name:
-            return None
-
-        validation_error = str(getattr(call, "validation_error", "") or "").strip()
-        if validation_error:
-            return f"{name}::{self._canonical_failure_message(validation_error)}"
-
-        arguments = getattr(call, "args", {}) or {}
-        if not isinstance(arguments, dict):
-            return None
-
-        try:
-            tool = self.tool.get_tool(name)
-            schema = getattr(tool, "parameters", {}) or {}
-        except Exception:
-            return None
-
-        required = schema.get("required", []) if isinstance(schema, dict) else []
-        if not isinstance(required, list):
-            return None
-
-        missing = [str(key) for key in required if str(key) not in arguments]
-        empty = [
-            str(key)
-            for key in required
-            if str(key) in arguments
-            and isinstance(arguments.get(key), str)
-            and not arguments.get(key).strip()
-        ]
-        fields = sorted(set(missing + empty))
-        if fields:
-            return f"{name}::missing_required:{','.join(fields)}"
-
-        return None
-
-    @classmethod
-    def _failure_signature(
-        cls,
-        call,
-        result: ToolResult,
-    ) -> str:
-        error_msg = ""
-        content = result.content
-
-        if isinstance(content, dict):
-            error = content.get("error")
-            if isinstance(error, dict):
-                error_msg = str(error.get("message", "") or "")
-            elif isinstance(error, str):
-                error_msg = error
-
-        if not error_msg:
-            error_msg = result.summary or "unknown"
-
-        name = str(getattr(call, "name", "unknown")).strip().lower() or "unknown"
-        return f"{name}::{cls._canonical_failure_message(error_msg)}"
-
-    @staticmethod
-    def _duplicate_result(
-        call,
-        reason: str,
-    ) -> ToolResult:
-
-        name = str(
-            getattr(
-                call,
-                "name",
-                "unknown",
-            )
-        )
-
-        summary = f"DUPLICATE BLOCKED: " f"'{name}'. " f"{reason}"
-
-        return ToolResult(
-            success=False,
-            name=name,
-            content={
-                "success": False,
-                "error": {
-                    "type": "duplicate_action",
-                    "message": summary,
-                },
-            },
-            metadata={
-                "duplicate_action": True,
-                "recovery_hint": (
-                    "Do not repeat the blocked call unchanged. "
-                    "Choose a different tool or change the arguments based on the "
-                    "last tool result."
-                ),
-            },
-            summary=summary,
-        )
-
     @staticmethod
     def _invalid_result(
         call,
@@ -970,34 +623,6 @@ class Loop:
             summary=message,
         )
 
-    @staticmethod
-    def _loop_guard_result(
-        call,
-        code: str,
-        message: str,
-        count: int = 0,
-    ) -> ToolResult:
-        name = str(getattr(call, "name", "unknown")).strip() or "unknown"
-        return ToolResult(
-            success=False,
-            name=name,
-            content={
-                "success": False,
-                "error": {
-                    "type": code,
-                    "message": message,
-                },
-            },
-            metadata={
-                "loop_guard_block": True,
-                "count": count,
-                "recovery_hint": (
-                    "Do not repeat the blocked action. Inspect the latest "
-                    "verification result and choose a different corrective action."
-                ),
-            },
-            summary=message,
-        )
 
     @staticmethod
     def _missing_result(
@@ -1072,425 +697,29 @@ class Loop:
     ) -> bool:
         return str(getattr(call, "name", "")).strip().lower() == "plan"
 
-    @staticmethod
-    def _plan_transition(
-        call,
-    ) -> str | None:
-        if str(getattr(call, "name", "")).strip().lower() != "plan":
-            return None
-
-        arguments = getattr(call, "args", {}) or {}
-        if not isinstance(arguments, dict):
-            return None
-
-        action = arguments.get("action")
-        if action == "create":
-            return "create"
-        if action == "complete":
-            return "completed"
-        if action == "block":
-            return "blocked"
-        if action == "add":
-            return "add"
-        if action == "update":
-            return "update"
-
-        return None
-
-    @staticmethod
-    def _plan_gate_result(
-        call,
-        error_type: str,
-        message: str,
-    ) -> ToolResult:
-        name = str(getattr(call, "name", "unknown")).strip() or "unknown"
-
-        return ToolResult(
-            success=False,
-            name=name,
-            content={
-                "success": False,
-                "error": {
-                    "type": error_type,
-                    "message": message,
-                },
-            },
-            metadata={
-                "plan_gate": True,
-            },
-            summary=message,
-        )
-
-    def _is_plan_file_observation(self, call) -> bool:
-        name = str(getattr(call, "name", "")).strip().lower()
-        if name != "read_file":
-            return False
-
-        arguments = getattr(call, "args", {}) or {}
-        if not isinstance(arguments, dict):
-            return False
-
-        candidates = (
-            arguments.get("file_path"),
-            arguments.get("path"),
-            arguments.get("query"),
-        )
-        return any(
-            ".daena/plan.md" in str(value).replace("\\", "/").lower()
-            for value in candidates
-            if value is not None
-        )
-
-    def _plan_gate_message(
-        self,
-        call,
-        state: PlanState,
-    ) -> tuple[str, str] | None:
-        """
-        Return an execution-order violation for a non-plan call, or None.
-
-        Planning remains model-directed, but the persisted plan is internal
-        runtime state and should be consumed through <plan>, not rediscovered
-        with filesystem tools.
-        """
-        if self._is_plan_call(call):
-            return None
-
-        if self._is_plan_file_observation(call):
-            return (
-                "plan_internal_state",
-                "Do not read .daena/plan.md with filesystem tools. The current plan is already provided in <plan>; use the plan tool to change it.",
-            )
-
-        if state.error:
-            return (
-                "plan_invalid",
-                "The current plan is invalid. Repair the plan before continuing.",
-            )
-
-        if not state.exists:
-            # Planning is model-directed. A fresh task can start working
-            # immediately; the plan tool is available whenever the model
-            # decides the task benefits from explicit phase tracking.
-            return None
-
-        return None
-
-    def _final_response_gate(
-        self,
-    ) -> tuple[str, str] | None:
-        """Prevent a natural-language final answer while this run's plan is unfinished."""
-        # A plan from an older user task is stale execution state. It must not
-        # force an unrelated task into the old plan lifecycle.
-        if not self._plan_active_this_run:
-            return None
-
-        state = self._read_plan_state()
-
-        if state.error:
-            return (
-                "plan_invalid",
-                "The execution plan is invalid. Repair the plan before giving the final answer.",
-            )
-
-        if not state.exists or state.is_complete:
-            return None
-
-        # Verification is the stronger runtime completion signal. Once the
-        # latest workspace change has been successfully verified, an
-        # incomplete model-maintained plan must not trap the run in endless
-        # bookkeeping iterations.
-        if (
-            not self._verification_required
-            and self._phase == "verify"
-            and not self._active_process_ids
-        ):
-            return None
-
-        current = state.current_step
-        if current is not None:
-            return (
-                "plan_incomplete",
-                (
-                    "The execution plan is not complete. Finish the active plan "
-                    f"step {current.number} ({current.description!r}) before giving "
-                    "the final answer. Update the plan when the step is actually "
-                    "complete."
-                ),
-            )
-
-        return (
-            "plan_incomplete",
-            "The execution plan is not complete. Continue the plan before giving the final answer.",
-        )
-
-    def _validate_plan_transition(
-        self,
-        call,
-        state: PlanState,
-    ) -> tuple[str, str] | None:
-        transition = self._plan_transition(call)
-        if transition is None:
-            return None
-
-        if state.error and transition != "create":
-            return (
-                "plan_invalid",
-                "The current plan is invalid. Repair the plan before continuing.",
-            )
-
-        if transition == "create":
-            if state.exists:
-                return (
-                    "plan_exists",
-                    "A plan already exists. Continue using the current plan.",
-                )
-            return None
-
-        if transition == "add":
-            if not state.exists:
-                return (
-                    "plan_missing",
-                    "No plan exists. Create the plan before adding steps.",
-                )
-            return None
-
-        if transition == "update":
-            if not state.exists:
-                return (
-                    "plan_missing",
-                    "No plan exists. Create the plan before updating it.",
-                )
-            return None
-
-        current = state.current_step
-        if current is None:
-            return (
-                "no_active_step",
-                "There is no in_progress step. Use the plan action that matches the current <plan> state.",
-            )
-
-        if transition == "completed":
-            if self._final_verification_satisfied:
-                return None
-
-            step_number = current.number
-            if not self._plan_progress.can_complete(step_number):
-                progress = self._plan_progress.context()
-                if progress.get("last_result_success") is False:
-                    return (
-                        "completion_requires_success",
-                        (
-                            f"Step {step_number} cannot be completed yet. "
-                            "The latest work action failed; recover from that result "
-                            "and obtain a successful action before completing the step."
-                        ),
-                    )
-
-                if progress.get("last_result_terminal") is False:
-                    return (
-                        "completion_requires_terminal_result",
-                        (
-                            f"Step {step_number} cannot be completed yet. "
-                            "The latest action is still running; observe or finish "
-                            "the managed process before completing the step."
-                        ),
-                    )
-
-                return (
-                    "completion_requires_work",
-                    (
-                        f"Step {step_number} cannot be completed yet. "
-                        "Perform and successfully finish work for the active step first."
-                    ),
-                )
-
-        return None
 
     def _classify_calls(
         self,
         parsed_calls: list,
-    ) -> tuple[
-        list[int],
-        dict[int, ToolResult],
-    ]:
+    ) -> tuple[list[int], dict[int, ToolResult]]:
+        """Normalize model-emitted calls without dictating execution strategy.
 
+        The runtime only rejects malformed calls. Valid calls remain model-owned:
+        no ordering, retry, verification, or duplicate suppression is imposed here.
+        """
         allowed_indices: list[int] = []
         blocked_results: dict[int, ToolResult] = {}
 
-        current_response_keys: set[str] = set()
-
-        plan_active_for_classification = (
-            self._plan_active_this_run
-            or getattr(self._plan_progress, "current_step", None) is not None
-        )
-        plan_state = (
-            self._read_plan_state()
-            if plan_active_for_classification
-            else PlanState.empty()
-        )
-
-        valid_plan_calls = [
-            call
-            for call in parsed_calls
-            if getattr(call, "valid", False) and self._is_plan_call(call)
-        ]
-
-        plan_transition_present = any(
-            self._plan_transition(call) is not None
-            for call in valid_plan_calls
-        )
-
-        plan_create_present = any(
-            self._plan_transition(call) == "create"
-            for call in valid_plan_calls
-        )
-
-        plan_calls_allowed = 0
-
         for index, call in enumerate(parsed_calls):
-
-            if not getattr(
-                call,
-                "valid",
-                False,
-            ):
+            if not getattr(call, "valid", False):
                 blocked_results[index] = self._invalid_result(call)
                 continue
 
-            key = self._tool_call_key(call)
-
-            if key in current_response_keys:
-                blocked_results[index] = self._duplicate_result(
-                    call,
-                    (
-                        "The same tool "
-                        "call appeared "
-                        "multiple times "
-                        "in this response."
-                    ),
-                )
-                continue
-
-            current_response_keys.add(key)
-
-            guard_decision = self._tool_loop_guard.before_call(call)
-            if guard_decision.should_block:
-                blocked_results[index] = self._loop_guard_result(
-                    call=call,
-                    code=guard_decision.code,
-                    message=guard_decision.message,
-                    count=guard_decision.count,
-                )
-                continue
-
-            # Plan transitions are stateful even when the filesystem has not
-            # changed: completing step 1 and completing step 2 are intentionally
-            # the same tool/arguments at the same workspace revision. The plan
-            # state itself is the changing evidence, so generic same-revision
-            # duplicate detection must not block later plan transitions.
-            if not self._is_plan_call(call):
-                previous_revision = self._successful_tool_calls.get(key)
-                tool = self.tool.get_tool(call.name)
-                allow_same_revision_repeat = bool(
-                    getattr(tool, "allow_same_revision_repeat", False)
-                ) if tool is not None else False
-
-                if (
-                    previous_revision is not None
-                    and previous_revision == self.workspace_revision
-                ):
-                    if allow_same_revision_repeat:
-                        if str(getattr(call, "name", "")).strip().lower() != "process_poll":
-                            _, repeat_count = self._same_revision_call_counts.get(
-                                key,
-                                (self.workspace_revision, 0),
-                            )
-                            if repeat_count >= self._observation_repeat_limit:
-                                blocked_results[index] = self._duplicate_result(
-                                    call,
-                                    (
-                                        "This observation has already been performed "
-                                        f"{self._observation_repeat_limit} time(s) at the "
-                                        "same workspace revision. Inspect the returned "
-                                        "evidence and choose a different action."
-                                    ),
-                                )
-                                continue
-                    else:
-                        blocked_results[index] = self._duplicate_result(
-                            call,
-                            (
-                                "An identical successful call already ran at the "
-                                "current workspace revision."
-                            ),
-                        )
-                        continue
-
-            if self._final_verification_satisfied and not self._is_plan_call(call):
-                blocked_results[index] = self._plan_gate_result(
-                    call,
-                    "finalization_only",
-                    "The task has already passed final verification. Do not inspect, execute, or modify anything else; finalize the response. Only plan bookkeeping is allowed.",
-                )
-                continue
-
-            if self._is_plan_call(call):
-
-                if plan_calls_allowed >= 1:
-                    blocked_results[index] = self._plan_gate_result(
-                        call,
-                        "duplicate_plan_call",
-                        "Only one plan update is allowed per model response. Continue from the updated plan on the next turn.",
-                    )
-                    continue
-
-                transition_error = self._validate_plan_transition(
-                    call,
-                    plan_state,
-                )
-
-                if transition_error is not None:
-                    error_type, message = transition_error
-                    blocked_results[index] = self._plan_gate_result(
-                        call,
-                        error_type,
-                        message,
-                    )
-                    continue
-
-                allowed_indices.append(index)
-                plan_calls_allowed += 1
-                continue
-
-            gate = self._plan_gate_message(
-                call,
-                plan_state,
-            )
-
-            if gate is not None:
-                error_type, message = gate
-                blocked_results[index] = self._plan_gate_result(
-                    call,
-                    error_type,
-                    message,
-                )
-                continue
-
-            if plan_transition_present:
-                blocked_results[index] = self._plan_gate_result(
-                    call,
-                    "plan_update_required_first",
-                    "Complete the plan state transition first. Continue other work on the next turn.",
-                )
-                continue
-
+            # Valid tool calls are model decisions. Do not deduplicate, reorder,
+            # or suppress them based on heuristics in the agent loop.
             allowed_indices.append(index)
 
-        return (
-            allowed_indices,
-            blocked_results,
-        )
+        return allowed_indices, blocked_results
 
     def _execute_allowed_calls(
         self,
@@ -1567,147 +796,7 @@ class Loop:
         process_id = content.get("process_id")
         return str(process_id).strip() if process_id else None
 
-    def _runtime_recovery_gate(
-        self,
-        call,
-    ) -> ToolResult | None:
-        name = str(getattr(call, "name", "")).strip().lower()
 
-        # A foreground managed process owns the execution boundary until it
-        # reaches a terminal state. Allow only the tools that can observe or
-        # control that process; unrelated work cannot run around it.
-        if self._active_process_ids and name not in self.PROCESS_CONTROL_TOOLS:
-            if name == "plan":
-                message = (
-                    "A foreground managed process is still running. "
-                    "Poll or stop it before updating/completing the plan."
-                )
-                summary = "PLAN BLOCKED: managed process still running."
-                error_type = "active_process"
-            else:
-                message = (
-                    "A foreground managed process is still running. "
-                    "Use process_poll to observe it, process_write to provide "
-                    "input when needed, or process_stop to terminate it before "
-                    "performing unrelated work."
-                )
-                summary = "RUNTIME BLOCKED: foreground process requires observation."
-                error_type = "active_process_requires_observation"
-
-            return ToolResult(
-                success=False,
-                name=name,
-                content={
-                    "success": False,
-                    "error": {
-                        "type": error_type,
-                        "message": message,
-                    },
-                },
-                metadata={
-                    "runtime_gate": True,
-                    "active_process_ids": sorted(self._active_process_ids),
-                    "process_control_tools": sorted(self.PROCESS_CONTROL_TOOLS),
-                },
-                summary=summary,
-            )
-
-        predicted_signature = self._predict_failure_signature(call)
-        if predicted_signature:
-            repeat_count = self._semantic_failure_counts.get(predicted_signature, 0)
-            if repeat_count >= self.SEMANTIC_FAILURE_REPEAT_LIMIT:
-                message = (
-                    f"'{name}' has already produced the same failure "
-                    f"{repeat_count} times in this run. Do not retry the same failing "
-                    "strategy. Inspect the concrete error, correct the arguments, "
-                    "or choose a different tool."
-                )
-                return ToolResult(
-                    success=False,
-                    name=name,
-                    content={
-                        "success": False,
-                        "error": {
-                            "type": "semantic_failure_repeat",
-                            "message": message,
-                        },
-                    },
-                    metadata={
-                        "runtime_gate": True,
-                        "recovery_required": True,
-                        "failure_signature": predicted_signature,
-                        "repeat_count": repeat_count,
-                    },
-                    summary=f"RECOVERY BLOCKED: {message}",
-                )
-
-        # Never repeat the exact failed action unchanged at the same revision.
-        key = self._tool_call_key(call)
-        failed = self._failed_call_keys.get(key)
-        if failed is not None:
-            failed_revision, count = failed
-            if failed_revision == self.workspace_revision and count >= self.SAME_FAILURE_REPEAT_LIMIT:
-                return ToolResult(
-                    success=False,
-                    name=name,
-                    content={
-                        "success": False,
-                        "error": {
-                            "type": "recovery_gate",
-                            "message": (
-                                "The exact action already failed at this workspace "
-                                "revision. Inspect the failure and choose a different "
-                                "diagnostic or corrective action before retrying it."
-                            ),
-                        },
-                    },
-                    metadata={"runtime_gate": True, "recovery_required": True},
-                    summary="RECOVERY BLOCKED: exact failed action repeated.",
-                )
-
-        return None
-
-    def _auto_finalize_verified_plan(self, iteration: int) -> bool:
-        """Complete any active plan step whose execution evidence is already successful."""
-        if not self._final_verification_satisfied or self._verification_required:
-            return False
-        if self._active_process_ids or not self._plan_active_this_run:
-            return False
-
-        plan_tool = self.tool.get_tool("plan")
-        if plan_tool is None:
-            return False
-
-        state = self._read_plan_state()
-        guard = 0
-        while state.exists and not state.is_complete and state.current_step is not None:
-            self._plan_progress.sync(
-                state,
-                iteration=iteration,
-                workspace_revision=self.workspace_revision,
-            )
-            step_number = state.current_step.number
-            can_complete_from_work = self._plan_progress.can_complete(step_number)
-            can_complete_from_verification = self._final_verification_satisfied
-            if not (can_complete_from_work or can_complete_from_verification):
-                break
-
-            completion = plan_tool.execute(action="complete")
-            if not completion.success:
-                break
-
-            guard += 1
-            if guard > 32:
-                break
-
-            state = self._read_plan_state()
-            self._plan_progress.sync(
-                state,
-                iteration=iteration,
-                workspace_revision=self.workspace_revision,
-            )
-
-        return bool(state.exists and state.is_complete)
 
     def _apply_result(
         self,
@@ -1753,7 +842,6 @@ class Loop:
             is_background = bool(content.get("background", False))
             if not is_background:
                 self._active_process_ids.add(process_id)
-                self._recovery_mode = True
         elif process_id and status in {"exited", "terminated", "unknown"}:
             self._active_process_ids.discard(process_id)
 
@@ -1765,141 +853,34 @@ class Loop:
 
         tool_name = str(getattr(call, "name", result.name)).strip().lower()
 
-        gate_block = (
-            isinstance(result.metadata, dict)
-            and (
-                result.metadata.get("plan_gate")
-                or result.metadata.get("runtime_gate")
-                or result.metadata.get("duplicate_action")
-                or result.metadata.get("loop_guard_block")
-            )
+        self._plan_progress.record(
+            tool_call=call,
+            result=result,
+            iteration=iteration,
         )
-
-        if not gate_block:
-            self._plan_progress.record(
-                tool_call=call,
-                result=result,
-                iteration=iteration,
-            )
 
         workspace_mutated = changed and tool_name != "plan"
 
         if result.success and workspace_mutated:
-
             self.workspace_revision += 1
             self._same_revision_read_count = 0
             self._observation_action_count = 0
             self._phase = "implement"
-            self._verification_required = True
-            # Workspace progress invalidates the exact-failure recovery gate.
-            self._failed_call_keys.clear()
-            self._recovery_mode = False
 
         if result.success:
             self.metrics["tool_successes"] = self.metrics.get("tool_successes", 0) + 1
         else:
             self.metrics["tool_failures"] = self.metrics.get("tool_failures", 0) + 1
-
-        if isinstance(result.metadata, dict) and result.metadata.get("duplicate_action"):
-            self.metrics["tool_blocks"] = self.metrics.get("tool_blocks", 0) + 1
-
-        if isinstance(result.metadata, dict) and result.metadata.get("plan_gate"):
-            self.metrics["plan_blocks"] = self.metrics.get("plan_blocks", 0) + 1
-
-        if isinstance(result.metadata, dict) and result.metadata.get("runtime_gate"):
-            self.metrics["recovery_blocks"] = self.metrics.get("recovery_blocks", 0) + 1
+            if status != "running":
+                self._phase = "recover"
 
         self.metrics["active_processes"] = len(self._active_process_ids)
 
-        if isinstance(result.metadata, dict) and result.metadata.get("loop_guard_block"):
-            self.metrics["loop_guard_blocks"] = (
-                self.metrics.get("loop_guard_blocks", 0) + 1
-            )
-
-        gate_block = (
-            isinstance(result.metadata, dict)
-            and (
-                result.metadata.get("plan_gate")
-                or result.metadata.get("runtime_gate")
-                or result.metadata.get("duplicate_action")
-                or result.metadata.get("loop_guard_block")
-            )
-        )
-
-        if not gate_block:
-            guard_decision = self._tool_loop_guard.after_call(
-                call=call,
-                result=result,
-                workspace_changed=changed,
-            )
-            if guard_decision.action == "warn":
-                self.metrics["loop_guard_warnings"] = (
-                    self.metrics.get("loop_guard_warnings", 0) + 1
-                )
-                self._store_nudge(guard_decision.message)
-
-        if result.success:
-            tool_name = str(getattr(call, "name", result.name)).strip().lower()
-            if tool_name == "read_file" and not changed:
-                self._same_revision_read_count += 1
-            if tool_name:
-                prefix = f"{tool_name}::"
-                self._semantic_failure_counts = {
-                    failure_key: count
-                    for failure_key, count in self._semantic_failure_counts.items()
-                    if not failure_key.startswith(prefix)
-                }
-
-            key = self._tool_call_key(call)
-
-            self._successful_tool_calls[key] = self.workspace_revision
-
-            tool = self.tool.get_tool(call.name)
-            if bool(
-                getattr(
-                    tool,
-                    "allow_same_revision_repeat",
-                    False,
-                )
-            ):
-                previous_revision, previous_count = self._same_revision_call_counts.get(
-                    key,
-                    (self.workspace_revision, 0),
-                )
-                if previous_revision == self.workspace_revision:
-                    count = previous_count + 1
-                else:
-                    count = 1
-                self._same_revision_call_counts[key] = (
-                    self.workspace_revision,
-                    count,
-                )
-
-        if not result.success and status not in {"running"} and not gate_block:
-            self._phase = "recover"
-            failure_signature = self._failure_signature(call, result)
-            self._semantic_failure_counts[failure_signature] = (
-                self._semantic_failure_counts.get(failure_signature, 0) + 1
-            )
-
-            key = self._tool_call_key(call)
-            previous_revision, previous_count = self._failed_call_keys.get(
-                key,
-                (self.workspace_revision, 0),
-            )
-            count = previous_count + 1 if previous_revision == self.workspace_revision else 1
-            self._failed_call_keys[key] = (self.workspace_revision, count)
-            self._recovery_mode = True
+        if result.success and str(getattr(call, "name", result.name)).strip().lower() == "read_file" and not changed:
+            self._same_revision_read_count += 1
 
         if self._is_observation_call(call) and str(getattr(call, "name", "")).strip().lower() != "process_poll":
             self._observation_action_count += 1
-
-        if self._is_verification_call(call, result) and result.success:
-            self._phase = "verify"
-            self._observation_action_count = 0
-            self._verification_required = False
-            if self._is_final_verification_call(call, result):
-                self._final_verification_satisfied = True
 
         # Always append the tool result before any corrective USER nudge.
         # Inserting a user message between an assistant tool-call and its tool
@@ -1926,54 +907,9 @@ class Loop:
             elif error:
                 error_type = str(error).strip().lower()
 
-        if (
-            isinstance(result.metadata, dict)
-            and result.metadata.get("runtime_gate")
-            and error_type == "active_process_requires_observation"
-        ):
-            self._store_nudge(
-                "A foreground managed process is still running. "
-                "Do not perform unrelated work yet. Poll the process, provide "
-                "required stdin with process_write, or stop it with process_stop."
-            )
-
-        if (
-            isinstance(result.metadata, dict)
-            and result.metadata.get("plan_gate")
-            and error_type == "plan_required_first"
-        ):
-            self._store_nudge(
-                "PLANNING REQUIRED: call the plan tool next. Do not call "
-                "read_file, grep, glob, list_dir, explore, command_exec, or any "
-                "other repository tool until the plan has been created."
-            )
-
-        if (
-            not result.success
-            and error_type in {
-                "invalid_tool_call",
-                "tool_argument_error",
-                "invalid_argument",
-            }
-        ):
-            hint = ""
-            if isinstance(result.metadata, dict):
-                hint = str(result.metadata.get("recovery_hint") or "").strip()
-
-            if (
-                error_type == "invalid_tool_call"
-                and self.tool.get_tool(str(result.name)) is None
-            ):
-                self._store_nudge(
-                    "The requested tool is not available in this runtime. "
-                    "Use one of the available tools."
-                )
-            else:
-                self._store_nudge(
-                    f"Tool '{result.name}' rejected the last call. "
-                    f"{result.summary or 'Use valid arguments.'} "
-                    f"{hint}".strip()
-                )
+        # Schema/dispatcher failures are concrete evidence. Keep the result
+        # in context and let the model decide how to recover; do not inject a
+        # fixed recovery sequence here.
 
         # Refresh real filesystem state before the next model turn so a file
         # that was created earlier cannot disappear from model-visible state
@@ -1995,9 +931,6 @@ class Loop:
         if not isinstance(result, ToolResult) or not result.success:
             return
 
-        if isinstance(result.metadata, dict) and result.metadata.get("plan_gate"):
-            return
-
         if self._is_plan_call(call):
             plan_after = self._read_plan_state()
             self._plan_progress.sync(
@@ -2006,35 +939,6 @@ class Loop:
                 workspace_revision=self.workspace_revision,
             )
 
-    def _check_failure_stuck(
-        self,
-        call,
-        result: ToolResult,
-    ) -> str | None:
-        is_duplicate = bool(
-            isinstance(result.metadata, dict)
-            and result.metadata.get("duplicate_action", False)
-        )
-
-        status = self._tool_result_status(result)
-        if status == "running":
-            return None
-
-        if isinstance(result.metadata, dict) and result.metadata.get("runtime_gate"):
-            return None
-
-        if result.success or is_duplicate:
-            return None
-
-        if isinstance(result.metadata, dict) and result.metadata.get("loop_guard_block"):
-            return None
-
-        signature = self._failure_signature(call, result)
-        count = self._semantic_failure_counts.get(signature, 0)
-        if count >= self.FAILURE_STUCK_THRESHOLD:
-            return f"STUCK: '{call.name}' produced the same semantic failure {count} times in this run."
-
-        return None
 
     def _execute_tool_calls(
         self,
@@ -2057,27 +961,10 @@ class Loop:
             self.metrics.get("tool_call_attempts", 0) + len(parsed_calls)
         )
 
-        runtime_blocked: dict[int, ToolResult] = {}
-
-        for index, call in enumerate(parsed_calls):
-            gated = self._runtime_recovery_gate(call)
-            if gated is not None:
-                runtime_blocked[index] = gated
-
         (
             allowed_indices,
             blocked_results,
         ) = self._classify_calls(parsed_calls)
-
-        blocked_results.update(runtime_blocked)
-
-        # Remove runtime-blocked calls from the dispatcher input by filtering
-        # the resulting allowed indices. This preserves the original indices
-        # used by the existing result assembly.
-        allowed_indices = [
-            index for index in allowed_indices
-            if index not in runtime_blocked
-        ]
 
         (
             executed_calls,
@@ -2154,58 +1041,9 @@ class Loop:
                 content=result.content if isinstance(result.content, (str, dict, list)) else str(result.content),
             )
 
-            stop_reason = self._check_failure_stuck(
-                call,
-                result,
-            )
-
-            if stop_reason:
-
-                self.agent_state.stop(stop_reason)
-
-                return True
-
-        if blocked_results and not allowed_indices:
-
-            index = min(blocked_results)
-
-            key = self._tool_call_key(parsed_calls[index])
-
-            if key == self._last_duplicate_key:
-
-                self._duplicate_block_streak += 1
-
-            else:
-
-                self._duplicate_block_streak = 1
-
-            self._last_duplicate_key = key
-
-        else:
-
-            self._duplicate_block_streak = 0
-            self._last_duplicate_key = None
-
-        if self._duplicate_block_streak >= 2:
-            self._store_nudge(
-                "The last tool action was blocked because it repeated an earlier "
-                "action without progress. Do not repeat it unchanged. Diagnose the "
-                "last result and choose a different tool or arguments."
-            )
-
-        if self._duplicate_block_streak >= self.DUPLICATE_BLOCK_THRESHOLD:
-
-            reason = (
-                "Repeated identical tool "
-                "action was blocked "
-                f"{self.DUPLICATE_BLOCK_THRESHOLD} "
-                "times."
-            )
-
-            self.agent_state.stop(reason)
-
-            return True
-
+        # Invalid tool calls are fed back as concrete tool results so the
+        # model can correct them. There is no heuristic retry/stop policy here;
+        # the model sees the evidence and chooses the next action.
         return False
 
     def run(
@@ -2255,10 +1093,7 @@ class Loop:
         )
 
         user_task.step = self._next_step()
-        # Planning is an optional capability selected by the model. Do not
-        # infer a mandatory plan from task wording; that turned natural
-        # agent behavior into a brittle runtime state machine.
-        self._plan_required_this_run = False
+        # Planning is an optional capability selected by the model.
         self.metrics["plan_required"] = False
 
         # Persist the task immediately.
@@ -2339,6 +1174,7 @@ class Loop:
             if llmresult.tool_calls:
 
                 empty_streak = 0
+                self._no_action_turns = 0
 
                 try:
 
@@ -2419,63 +1255,12 @@ class Loop:
                         self.agent_state.error or "Agent stopped."
                     )
 
-                if (
-                    self._final_verification_satisfied
-                    and not self._verification_required
-                    and not self._active_process_ids
-                    and self._plan_active_this_run
-                ):
-                    self._auto_finalize_verified_plan(iteration_number)
-
-                    response = str(llmresult.response or "").strip()
-                    if not response:
-                        response = "Task completed and final verification passed."
-
-                    self._store_event(self._assistant_event(
-                        llmresult,
-                        normalized_tool_calls=parsed_calls,
-                    ))
-                    self.agent_state.complete()
-                    self.metrics["completed"] = True
-                    self.metrics["stop_reason"] = ""
-                    self.metrics["duration_ms"] = self._duration_ms()
-                    self._emit_event(
-                        "final_response",
-                        text=response,
-                        usage=int(getattr(llmresult, "usage", 0) or 0),
-                    )
-                    self._emit_event(
-                        "run_end",
-                        completed=True,
-                        stop_reason="",
-                        metrics=self.get_metrics(),
-                    )
-                    self.tool.close()
-                    return llmresult
-
+                # Tool results become the next model-visible evidence. Do not
+                # auto-finalize plans, force verification, or reinterpret a tool
+                # turn as completion; the model owns that decision.
                 continue
 
             if isinstance(llmresult.response, str) and llmresult.response.strip():
-
-                if self._verification_required:
-                    self.metrics["verification_gate_blocks"] = (
-                        self.metrics.get("verification_gate_blocks", 0) + 1
-                    )
-                    self._store_nudge(
-                        "A successful workspace change has not been verified yet. "
-                        "Perform a relevant verification step (read the changed "
-                        "artifact or run the appropriate test/check) before reporting "
-                        "the task as complete."
-                    )
-                    continue
-
-                plan_gate = self._final_response_gate()
-                if plan_gate is not None:
-                    self.metrics["plan_final_blocks"] = (
-                        self.metrics.get("plan_final_blocks", 0) + 1
-                    )
-                    self._store_nudge(plan_gate[1])
-                    continue
 
                 self._store_event(self._assistant_event(llmresult))
 
@@ -2499,6 +1284,7 @@ class Loop:
                 return llmresult
 
             empty_streak += 1
+            self._no_action_turns += 1
 
             self.logger.warning("LLM produced neither " "response nor tool calls.")
 
@@ -2527,7 +1313,14 @@ class Loop:
 
                 nudge += " You only reasoned silently without acting."
 
-            nudge += " Call a tool now to make progress, or write your final answer."
+            if self._no_action_turns >= 2:
+                nudge += (
+                    " This is now a repeated no-progress turn. Stop analyzing "
+                    "the same facts: either call the concrete tool needed for "
+                    "the next action, or give the final answer if the task is done."
+                )
+            else:
+                nudge += " Call a tool now to make progress, or write your final answer."
 
             self._store_nudge(nudge)
 
@@ -2645,7 +1438,6 @@ class Loop:
         self.metrics["same_revision_read_count"] = self._same_revision_read_count
         self.metrics["observation_action_count"] = self._observation_action_count
         self.metrics["execution_phase"] = self._phase
-        self.metrics["verification_required"] = self._verification_required
 
         self._emit_event(
             "context",
@@ -2759,33 +1551,16 @@ class Loop:
 
         self._context_step = 0
 
-        self._successful_tool_calls.clear()
-        self._same_revision_call_counts.clear()
         self._same_revision_read_count = 0
         self._observation_action_count = 0
         self._phase = "explore"
-        self._verification_required = False
-        self._final_verification_satisfied = False
-
-        self._tool_loop_guard.reset()
 
         self._plan_progress.reset()
         self._plan_active_this_run = False
-        self._plan_required_this_run = False
-        self._observation_repeat_limit = (
-            2 if self.guard_level == "strict" else 3
-        )
-
-        self._last_duplicate_key = None
-
-        self._duplicate_block_streak = 0
-
-        self._semantic_failure_counts.clear()
-        self._failed_call_keys.clear()
         self._active_process_ids.clear()
-        self._recovery_mode = False
 
         self._generation_retries = 0
+        self._no_action_turns = 0
         self._run_started_at = None
         self.metrics = {
             "iterations": 0,
@@ -2799,19 +1574,11 @@ class Loop:
             "same_revision_read_count": 0,
             "observation_action_count": 0,
             "execution_phase": self._phase,
-            "verification_required": False,
-            "verification_gate_blocks": 0,
             "tool_call_attempts": 0,
             "tool_successes": 0,
             "tool_failures": 0,
-            "tool_blocks": 0,
-            "plan_blocks": 0,
-            "plan_final_blocks": 0,
-            "plan_required": False,
-            "loop_guard_warnings": 0,
-            "loop_guard_blocks": 0,
             "active_processes": 0,
-            "recovery_blocks": 0,
+            "plan_required": False,
             "completed": False,
             "stop_reason": "",
             "duration_ms": 0.0,
