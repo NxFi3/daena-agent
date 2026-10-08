@@ -59,6 +59,12 @@ class CommandExec(Tool):
 
     BACKGROUND_STARTUP_GRACE_MS = 150
 
+    def __init__(self) -> None:
+        self._workspace_root: Path | None = None
+
+    def set_workspace(self, directory: str | Path) -> None:
+        self._workspace_root = Path(directory).expanduser().resolve()
+
     description = (
         "Run a local command given as an argv array (not a shell command string). "
         "Shell operators such as >, |, &&, ||, $(...), heredocs, and shell globbing are "
@@ -523,7 +529,7 @@ class CommandExec(Tool):
     ]:
 
         if workdir is None:
-            return None, None
+            return self._workspace_root, None
 
         if not isinstance(workdir, str):
             return (
@@ -537,9 +543,11 @@ class CommandExec(Tool):
         workdir = workdir.strip()
 
         if not workdir:
-            return None, None
+            return self._workspace_root, None
 
         path = Path(workdir).expanduser()
+        if not path.is_absolute() and self._workspace_root is not None:
+            path = self._workspace_root / path
 
         try:
             path = path.resolve()

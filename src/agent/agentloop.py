@@ -1886,6 +1886,17 @@ class Loop:
             )
 
         if (
+            isinstance(result.metadata, dict)
+            and result.metadata.get("plan_gate")
+            and error_type == "plan_required_first"
+        ):
+            self._store_nudge(
+                "PLANNING REQUIRED: call the plan tool next. Do not call "
+                "read_file, grep, glob, list_dir, explore, command_exec, or any "
+                "other repository tool until the plan has been created."
+            )
+
+        if (
             not result.success
             and error_type in {
                 "invalid_tool_call",

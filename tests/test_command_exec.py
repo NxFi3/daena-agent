@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 from src.tools.builtin.command_exec.tool import CommandExec
 from src.tools.builtin.command_exec.process_manager import PROCESS_MANAGER
@@ -309,3 +310,26 @@ def test_known_execution_failure_keeps_concrete_diagnostic():
     assert result.success is False
     assert result.content["error"]["type"] == "resource_in_use"
     assert "EADDRINUSE" in result.content["error"]["message"]
+
+
+
+def test_relative_and_omitted_workdir_use_active_workspace(tmp_path):
+    target = tmp_path / "workspace"
+    target.mkdir()
+    tool = CommandExec()
+    tool.set_workspace(target)
+
+    omitted = tool.execute(
+        command=[sys.executable, "-c", "import os; print(os.getcwd())"],
+    )
+    assert omitted.success is True
+    assert Path(omitted.content["stdout"].strip()).resolve() == target.resolve()
+
+    nested = target / "nested"
+    nested.mkdir()
+    relative = tool.execute(
+        command=[sys.executable, "-c", "import os; print(os.getcwd())"],
+        workdir="nested",
+    )
+    assert relative.success is True
+    assert Path(relative.content["stdout"].strip()).resolve() == nested.resolve()
