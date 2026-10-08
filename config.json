@@ -37,6 +37,6 @@
   },
   "max_agent_iterations": 300,
   "experience": {
-    "enabled": false
+    "enabled": true
   }
 }

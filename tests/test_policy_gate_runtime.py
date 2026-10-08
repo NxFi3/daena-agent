@@ -42,17 +42,23 @@ def test_policy_gate_does_not_touch_loop_guard_or_failure_memory(tmp_path):
         loop._plan_required_this_run = True
         loop._plan_active_this_run = False
 
+        # The legacy plan-required flag no longer gates repository work.
+        # A plan policy check must never become a fake tool failure/recovery event.
         allowed, blocked = loop._classify_calls([call])
-        assert allowed == []
-        assert blocked[0].content["error"]["type"] == "plan_required_first"
+        assert allowed == [0]
+        assert blocked == {}
 
-        loop._apply_result(call, blocked[0], 1)
+        result = ToolResult(
+            success=True,
+            name="command_exec",
+            content={"status": "exited", "exit_code": 0},
+            metadata={},
+        )
+        loop._apply_result(call, result, 1)
 
         assert loop._failed_call_keys == {}
         assert loop._semantic_failure_counts == {}
         assert loop._recovery_mode is False
-
-        loop._plan_active_this_run = True
     finally:
         loop.close()
 
@@ -85,7 +91,7 @@ def test_plan_updates_do_not_advance_code_workspace_revision(tmp_path):
         loop.close()
 
 
-def test_verification_gate_allows_recovery_after_failed_verification(tmp_path):
+def test_verification_is_a_completion_gate_not_an_exploration_gate(tmp_path):
     loop = make_loop(tmp_path)
     try:
         loop._verification_required = True
@@ -98,8 +104,8 @@ def test_verification_gate_allows_recovery_after_failed_verification(tmp_path):
             args={"file_path": "src/app.py"},
         )
         allowed, blocked = loop._classify_calls([read_call])
-        assert allowed == []
-        assert blocked[0].content["error"]["type"] == "verification_required_first"
+        assert allowed == [0]
+        assert blocked == {}
 
         failed_test = ToolCall(
             name="command_exec",

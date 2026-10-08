@@ -735,6 +735,56 @@ def test_runtime_does_not_exhaust_observation_from_counters(tmp_path):
     finally:
         loop.close()
 
+def test_successful_project_command_counts_as_verification_but_observation_does_not(tmp_path):
+    loop = Loop(
+        {
+            "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
+            "context": {"safe_margin": 0, "compaction_enabled": False},
+            "retrieval": {"top_k": 1},
+            "security": {"workspace_only": True, "force_approve": True},
+            "max_agent_iterations": 3,
+            "experience": {"enabled": False},
+        },
+        FakeLLM(),
+    )
+    try:
+        run_call = ToolCall(
+            name="command_exec",
+            id="run-script",
+            valid=True,
+            args={"command": ["python3", "hello.py"], "workdir": "."},
+        )
+        run_result = ToolResult(
+            success=True,
+            name="command_exec",
+            content={
+                "command": ["python3", "hello.py"],
+                "status": "exited",
+                "exit_code": 0,
+            },
+        )
+        assert loop._is_verification_call(run_call, run_result) is True
+
+        pwd_call = ToolCall(
+            name="command_exec",
+            id="observe",
+            valid=True,
+            args={"command": ["pwd"], "workdir": "."},
+        )
+        pwd_result = ToolResult(
+            success=True,
+            name="command_exec",
+            content={
+                "command": ["pwd"],
+                "status": "exited",
+                "exit_code": 0,
+            },
+        )
+        assert loop._is_verification_call(pwd_call, pwd_result) is False
+    finally:
+        loop.close()
+
+
 def test_final_verification_detects_whole_suite_only(tmp_path):
     loop = Loop(
         {
@@ -877,7 +927,7 @@ def test_final_verification_supports_common_project_runners():
         loop.close()
 
 
-def test_multiphase_task_requires_plan_before_repository_work(tmp_path):
+def test_multiphase_task_can_start_without_a_runtime_plan_gate(tmp_path):
     config = {
         "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
         "context": {"safe_margin": 0, "compaction_enabled": False},
@@ -890,6 +940,7 @@ def test_multiphase_task_requires_plan_before_repository_work(tmp_path):
     loop.session_id = uuid4()
     loop.set_workspace(str(tmp_path))
     try:
+        # This legacy state flag is intentionally ignored for fresh work.
         loop._plan_required_this_run = True
 
         read_call = ToolCall(
@@ -899,9 +950,10 @@ def test_multiphase_task_requires_plan_before_repository_work(tmp_path):
             args={"file_path": "app.py"},
         )
         allowed, blocked = loop._classify_calls([read_call])
-        assert allowed == []
-        assert blocked[0].content["error"]["type"] == "plan_required_first"
+        assert allowed == [0]
+        assert blocked == {}
 
+        # The model can still opt into explicit planning when it helps.
         plan_call = ToolCall(
             name="plan",
             id="plan-first",
@@ -952,7 +1004,7 @@ def test_strict_observation_repeat_is_bounded_after_one_success(tmp_path):
 
 
 
-def test_preplan_generation_exposes_only_plan_tool(tmp_path):
+def test_generation_keeps_full_tool_vocabulary_before_optional_plan(tmp_path):
     llm = FakeLLM()
     captured = []
 
@@ -997,12 +1049,16 @@ def test_preplan_generation_exposes_only_plan_tool(tmp_path):
         loop._generate_next_action(task, str(tmp_path))
 
         assert captured
-        assert captured[0] == ["plan"]
+        assert "plan" in captured[0]
+        assert "read_file" in captured[0]
+        assert "apply_patch" in captured[0]
+        assert "command_exec" in captured[0]
+        assert len(captured[0]) > 2
     finally:
         loop.close()
 
 
-def test_post_mutation_requires_verification_before_more_exploration(tmp_path):
+def test_post_mutation_allows_more_exploration_before_verification(tmp_path):
     config = {
         "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
         "context": {"safe_margin": 0, "compaction_enabled": False},
@@ -1025,18 +1081,13 @@ def test_post_mutation_requires_verification_before_more_exploration(tmp_path):
             args={"file_path": "app.py"},
         )
         allowed, blocked = loop._classify_calls([read_call])
-        assert allowed == []
-        assert blocked[0].content["error"]["type"] == "verification_required_first"
-
-        loop._recovery_mode = True
-        allowed, blocked = loop._classify_calls([read_call])
         assert allowed == [0]
         assert blocked == {}
     finally:
         loop.close()
 
 
-def test_post_mutation_generation_exposes_only_verification_tools(tmp_path):
+def test_post_mutation_generation_keeps_full_tool_vocabulary(tmp_path):
     llm = FakeLLM()
     captured = []
 
@@ -1081,6 +1132,10 @@ def test_post_mutation_generation_exposes_only_verification_tools(tmp_path):
         loop._generate_next_action(task, str(tmp_path))
 
         assert captured
-        assert set(captured[0]) <= {"command_exec", "process_poll"}
+        assert "read_file" in captured[0]
+        assert "apply_patch" in captured[0]
+        assert "command_exec" in captured[0]
+        assert "process_poll" in captured[0]
+        assert len(captured[0]) > 2
     finally:
         loop.close()

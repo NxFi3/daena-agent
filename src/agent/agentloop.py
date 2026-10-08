@@ -336,30 +336,34 @@ class Loop:
 
         return False
 
-    @staticmethod
-    def _is_verification_call(call, result: ToolResult) -> bool:
+    @classmethod
+    def _is_verification_call(cls, call, result: ToolResult) -> bool:
+        """Return True when a successful command produced fresh execution evidence.
+
+        Verification is semantic rather than a hard-coded list of test runners:
+        a successful project test, build, script, executable, or other
+        non-observational command can prove that a workspace mutation works.
+        Pure observations such as pwd/ls/git status do not clear the gate.
+        """
         if str(getattr(call, "name", "")).strip().lower() != "command_exec":
             return False
 
         content = result.content if isinstance(result.content, dict) else {}
         command = content.get("command")
-        if not isinstance(command, list):
+        if not isinstance(command, list) or not command:
             return False
 
-        lowered = [
-            str(item).strip().lower()
-            for item in command
-            if str(item).strip()
-        ]
-        markers = {
-            "test", "tests", "pytest", "jest", "vitest", "mocha",
-            "check", "lint", "build", "typecheck", "verify",
-        }
-        return any(
-            marker in token
-            for token in lowered
-            for marker in markers
-        )
+        status = str(content.get("status") or "").strip().lower()
+        exit_code = content.get("exit_code")
+        try:
+            successful_exit = status in {"exited", "completed", "terminated"} and int(exit_code) == 0
+        except (TypeError, ValueError):
+            successful_exit = False
+
+        if not successful_exit:
+            return False
+
+        return not cls._is_observation_command(command)
 
     @staticmethod
     def _is_final_verification_call(call, result: ToolResult) -> bool:
@@ -1063,30 +1067,6 @@ class Loop:
         return PlanState.empty()
 
     @staticmethod
-    def _task_requires_plan(text: str) -> bool:
-        """Detect tasks that contain multiple meaningful execution phases.
-
-        Keep simple requests lightweight; require explicit planning when the
-        request combines discovery/analysis, implementation, or verification.
-        """
-        value = str(text or "").strip().lower()
-        if not value:
-            return False
-
-        phase_markers = (
-            ("investigate", "inspect", "analy", "understand", "find", "locate"),
-            ("fix", "change", "modify", "implement", "refactor", "add", "remove", "update", "create"),
-            ("test", "verify", "validate", "run the test", "full test suite", "benchmark", "check"),
-        )
-        phase_hits = sum(
-            1
-            for group in phase_markers
-            if any(marker in value for marker in group)
-        )
-
-        return phase_hits >= 2 or len(value.split()) >= 55
-
-    @staticmethod
     def _is_plan_call(
         call,
     ) -> bool:
@@ -1189,11 +1169,9 @@ class Loop:
             )
 
         if not state.exists:
-            if self._plan_required_this_run:
-                return (
-                    "plan_required_first",
-                    "This task has multiple execution phases. Create a high-level plan first, then continue with repository work on the next turn.",
-                )
+            # Planning is model-directed. A fresh task can start working
+            # immediately; the plan tool is available whenever the model
+            # decides the task benefits from explicit phase tracking.
             return None
 
         return None
@@ -1396,28 +1374,6 @@ class Loop:
 
             current_response_keys.add(key)
 
-            if self._plan_required_this_run and not self._plan_active_this_run:
-                if not self._is_plan_call(call):
-                    blocked_results[index] = self._plan_gate_result(
-                        call,
-                        "plan_required_first",
-                        "This task has multiple execution phases. Create the high-level plan first; no repository tool is allowed before the plan.",
-                    )
-                    continue
-
-            if (
-                self._verification_required
-                and not self._recovery_mode
-                and self._is_observation_call(call)
-                and str(getattr(call, "name", "")).strip().lower() != "process_poll"
-            ):
-                blocked_results[index] = self._plan_gate_result(
-                    call,
-                    "verification_required_first",
-                    "A workspace mutation succeeded and verification is still required. Run the relevant test/check now before more read-only exploration.",
-                )
-                continue
-
             guard_decision = self._tool_loop_guard.before_call(call)
             if guard_decision.should_block:
                 blocked_results[index] = self._loop_guard_result(
@@ -1471,19 +1427,6 @@ class Loop:
                         )
                         continue
 
-            if (
-                self._verification_required
-                and not self._recovery_mode
-                and self._is_observation_call(call)
-                and str(getattr(call, "name", "")).strip().lower() != "process_poll"
-            ):
-                blocked_results[index] = self._plan_gate_result(
-                    call,
-                    "verification_required_first",
-                    "A workspace mutation succeeded and verification is still required. Run the relevant test/check now before doing more read-only exploration. Read/grep/glob/explore are temporarily deferred until verification completes or fails.",
-                )
-                continue
-
             if self._final_verification_satisfied and not self._is_plan_call(call):
                 blocked_results[index] = self._plan_gate_result(
                     call,
@@ -1518,14 +1461,6 @@ class Loop:
 
                 allowed_indices.append(index)
                 plan_calls_allowed += 1
-                continue
-
-            if plan_create_present:
-                blocked_results[index] = self._plan_gate_result(
-                    call,
-                    "plan_required_first",
-                    "A plan operation is present in this response. Execute the plan update first; continue other work on the next turn.",
-                )
                 continue
 
             gate = self._plan_gate_message(
@@ -2320,10 +2255,11 @@ class Loop:
         )
 
         user_task.step = self._next_step()
-        self._plan_required_this_run = self._task_requires_plan(
-            str(user_task.content or "")
-        )
-        self.metrics["plan_required"] = self._plan_required_this_run
+        # Planning is an optional capability selected by the model. Do not
+        # infer a mandatory plan from task wording; that turned natural
+        # agent behavior into a brittle runtime state machine.
+        self._plan_required_this_run = False
+        self.metrics["plan_required"] = False
 
         # Persist the task immediately.
         self._store_event(user_task)
@@ -2631,31 +2567,12 @@ class Loop:
         else:
             plan_state = PlanState.empty()
 
+        # Tool availability describes the agent's capabilities, not an
+        # enforced execution sequence. The LLM may inspect, edit, execute, or
+        # observe processes whenever the task requires it. Runtime checks in
+        # _classify_calls() remain the safety boundary for destructive,
+        # duplicate, invalid, or otherwise unsafe actions.
         effective_tool_definitions = self.tool_definitions
-        if self._plan_required_this_run and not self._plan_active_this_run:
-            effective_tool_definitions = [
-                definition
-                for definition in self.tool_definitions
-                if (
-                    isinstance(definition, dict)
-                    and isinstance(definition.get("function"), dict)
-                    and str(
-                        definition.get("function", {}).get("name", "")
-                    ).strip().lower() == "plan"
-                )
-            ]
-        elif self._verification_required and not self._recovery_mode:
-            effective_tool_definitions = [
-                definition
-                for definition in self.tool_definitions
-                if (
-                    isinstance(definition, dict)
-                    and isinstance(definition.get("function"), dict)
-                    and str(
-                        definition.get("function", {}).get("name", "")
-                    ).strip().lower() in {"command_exec", "process_poll"}
-                )
-            ]
 
         available_tool_names = {
             str(definition.get("function", {}).get("name", "")).strip().lower()
