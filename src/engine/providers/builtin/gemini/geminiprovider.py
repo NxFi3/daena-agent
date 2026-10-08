@@ -21,8 +21,13 @@ logger = get_logger("[GEMINI]")
 
 class GeminiProvider(ProviderBase):
     name = "gemini"
-    defaultModel = "gemini-3.5-flash-lite"
-    defaultConfig: ClassVar[dict] = {"temperature": 0.3}
+    # Current stable Flash model optimized for long-horizon software engineering.
+    defaultModel = "gemini-3.8-flash"
+    defaultConfig: ClassVar[dict] = {
+        "temperature": 0.3,
+        "think": "low",
+        "max_output_tokens": 1024,
+    }
 
     def __init__(self) -> None:
         self.client: genai.Client | None = None
@@ -483,11 +488,15 @@ class GeminiProvider(ProviderBase):
         stream_callback = getattr(llminput, "stream_callback", None)
         think = options.pop("think", None)
 
-        # Runtime settings are shared at the CLI level, but these options
-        # belong to other providers and are not accepted by Gemini's SDK.
+        # Normalize settings that may have originated from another provider.
+        # Ollama uses `num_predict`; Gemini uses `max_output_tokens`.
+        num_predict = options.pop("num_predict", None)
+        if "max_output_tokens" not in options and num_predict is not None:
+            options["max_output_tokens"] = int(num_predict)
+
+        # Ollama-only CPU threading controls must never reach Gemini.
         options.pop("num_thread", None)
         options.pop("num_threads", None)
-        options.pop("think", None)
 
         tool_choice = options.pop("tool_choice", None)
         options.pop("parallel_tool_calls", None)
@@ -495,10 +504,15 @@ class GeminiProvider(ProviderBase):
         config_kwargs = dict(options)
 
         if think not in (None, False, "false", "off"):
-            # Gemini streams thought summaries when include_thoughts is enabled.
-            config_kwargs["thinking_config"] = types.ThinkingConfig(
-                include_thoughts=True
-            )
+            # Gemini 3.x exposes tunable thinking levels.
+            thinking_level = str(think).lower()
+            if thinking_level == "true":
+                thinking_level = "medium"
+            if thinking_level in {"low", "medium", "high"}:
+                config_kwargs["thinking_config"] = types.ThinkingConfig(
+                    thinking_level=thinking_level,
+                    include_thoughts=True,
+                )
 
         if system_instruction:
             config_kwargs["system_instruction"] = system_instruction

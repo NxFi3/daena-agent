@@ -268,12 +268,19 @@ def _provider_switch(agent: Agent, name: str) -> None:
     provider_model = getattr(agent.llm.model, "defaultModel", "") or ""
     if provider_model:
         agent.llm.llm_config["model_name"] = provider_model
-    agent.llm.generation_config = dict(
-        ((agent.config.get("llm") or {}).get("provider_config") or {}).get(
-            "generation_config"
-        )
-        or {}
-    )
+
+    # Provider configurations are not interchangeable. Start from the
+    # newly selected provider defaults so Ollama-only options such as
+    # `num_predict` and `num_thread` cannot leak into Gemini/OpenRouter.
+    previous_config = dict(getattr(agent.llm, "generation_config", {}) or {})
+    provider_defaults = dict(getattr(agent.llm.model, "defaultConfig", {}) or {})
+    shared_overrides = {
+        key: previous_config[key]
+        for key in ("temperature", "think", "max_output_tokens", "top_p", "top_k")
+        if key in previous_config
+    }
+    provider_defaults.update(shared_overrides)
+    agent.llm.generation_config = provider_defaults
 
 def _handle_command(
     console: Console,
