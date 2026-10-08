@@ -515,6 +515,19 @@ class ProcessManager:
                 + (os.pathsep + runtime_env["PATH"] if runtime_env.get("PATH") else "")
             )
 
+        if workdir is not None:
+            workspace_pythonpath = str(Path(workdir).resolve())
+            existing_pythonpath = runtime_env.get("PYTHONPATH", "")
+            if workspace_pythonpath not in existing_pythonpath.split(os.pathsep):
+                runtime_env["PYTHONPATH"] = (
+                    workspace_pythonpath
+                    + (
+                        os.pathsep + existing_pythonpath
+                        if existing_pythonpath
+                        else ""
+                    )
+                )
+
         kwargs = {
             "args": command,
             "cwd": str(workdir) if workdir is not None else None,

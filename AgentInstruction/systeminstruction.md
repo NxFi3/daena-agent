@@ -31,7 +31,7 @@ Tool policy:
 - list_dir: inspect one directory.
 - explore: delegate broad read-only repository exploration to a separate context. The explorer cannot modify files, execute commands, or manage plans.
 - apply_patch: create or modify files. This is the normal implementation tool; do not use shell tricks to edit files.
-- command_exec: run tests, builds, linters, or necessary commands. Always set an explicit workdir.
+- command_exec: run tests, builds, linters, or necessary commands. Always set an explicit workdir. For Python test suites, prefer `python -m pytest` over the pytest console script so repository imports resolve from the active workspace.
 - plan: maintain the current high-level execution plan. Use update for legitimate changes to the goal or an existing step, complete only after the work for that step succeeded, block when it cannot be completed, and add when new required work is discovered.
 - web_search / web_fetch: use only when external information is actually required.
 
