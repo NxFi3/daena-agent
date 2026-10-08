@@ -1433,6 +1433,19 @@ class Loop:
                         )
                         continue
 
+            if (
+                self._verification_required
+                and not self._recovery_mode
+                and self._is_observation_call(call)
+                and str(getattr(call, "name", "")).strip().lower() != "process_poll"
+            ):
+                blocked_results[index] = self._plan_gate_result(
+                    call,
+                    "verification_required_first",
+                    "A workspace mutation succeeded and verification is still required. Run the relevant test/check now before doing more read-only exploration. Read/grep/glob/explore are temporarily deferred until verification completes or fails.",
+                )
+                continue
+
             if self._final_verification_satisfied and not self._is_plan_call(call):
                 blocked_results[index] = self._plan_gate_result(
                     call,
@@ -1788,9 +1801,6 @@ class Loop:
             tool_name = str(getattr(call, "name", result.name)).strip().lower()
             if tool_name == "read_file" and not changed:
                 self._same_revision_read_count += 1
-                if self._verification_required:
-                    self._verification_required = False
-                    self._phase = "verify"
             if tool_name:
                 prefix = f"{tool_name}::"
                 self._semantic_failure_counts = {

@@ -999,3 +999,37 @@ def test_preplan_generation_exposes_only_plan_tool(tmp_path):
         assert captured[0] == ["plan"]
     finally:
         loop.close()
+
+
+def test_post_mutation_requires_verification_before_more_exploration(tmp_path):
+    config = {
+        "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
+        "context": {"safe_margin": 0, "compaction_enabled": False},
+        "retrieval": {"top_k": 1},
+        "security": {"workspace_only": True, "force_approve": True},
+        "max_agent_iterations": 3,
+        "experience": {"enabled": False},
+    }
+    loop = Loop(config, FakeLLM())
+    loop.session_id = uuid4()
+    loop.set_workspace(str(tmp_path))
+    try:
+        loop._verification_required = True
+        loop._recovery_mode = False
+
+        read_call = ToolCall(
+            name="read_file",
+            id="post-mutation-read",
+            valid=True,
+            args={"file_path": "app.py"},
+        )
+        allowed, blocked = loop._classify_calls([read_call])
+        assert allowed == []
+        assert blocked[0].content["error"]["type"] == "verification_required_first"
+
+        loop._recovery_mode = True
+        allowed, blocked = loop._classify_calls([read_call])
+        assert allowed == [0]
+        assert blocked == {}
+    finally:
+        loop.close()
