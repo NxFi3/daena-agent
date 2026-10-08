@@ -1380,6 +1380,28 @@ class Loop:
 
             current_response_keys.add(key)
 
+            if self._plan_required_this_run and not self._plan_active_this_run:
+                if not self._is_plan_call(call):
+                    blocked_results[index] = self._plan_gate_result(
+                        call,
+                        "plan_required_first",
+                        "This task has multiple execution phases. Create the high-level plan first; no repository tool is allowed before the plan.",
+                    )
+                    continue
+
+            if (
+                self._verification_required
+                and not self._recovery_mode
+                and self._is_observation_call(call)
+                and str(getattr(call, "name", "")).strip().lower() != "process_poll"
+            ):
+                blocked_results[index] = self._plan_gate_result(
+                    call,
+                    "verification_required_first",
+                    "A workspace mutation succeeded and verification is still required. Run the relevant test/check now before more read-only exploration.",
+                )
+                continue
+
             guard_decision = self._tool_loop_guard.before_call(call)
             if guard_decision.should_block:
                 blocked_results[index] = self._loop_guard_result(
@@ -1748,13 +1770,17 @@ class Loop:
             iteration=iteration,
         )
 
+        tool_name = str(getattr(call, "name", result.name)).strip().lower()
+
         self._plan_progress.record(
             tool_call=call,
             result=result,
             iteration=iteration,
         )
 
-        if result.success and changed:
+        workspace_mutated = changed and tool_name != "plan"
+
+        if result.success and workspace_mutated:
 
             self.workspace_revision += 1
             self._same_revision_read_count = 0
@@ -1786,16 +1812,27 @@ class Loop:
                 self.metrics.get("loop_guard_blocks", 0) + 1
             )
 
-        guard_decision = self._tool_loop_guard.after_call(
-            call=call,
-            result=result,
-            workspace_changed=changed,
-        )
-        if guard_decision.action == "warn":
-            self.metrics["loop_guard_warnings"] = (
-                self.metrics.get("loop_guard_warnings", 0) + 1
+        gate_block = (
+            isinstance(result.metadata, dict)
+            and (
+                result.metadata.get("plan_gate")
+                or result.metadata.get("runtime_gate")
+                or result.metadata.get("duplicate_action")
+                or result.metadata.get("loop_guard_block")
             )
-            self._store_nudge(guard_decision.message)
+        )
+
+        if not gate_block:
+            guard_decision = self._tool_loop_guard.after_call(
+                call=call,
+                result=result,
+                workspace_changed=changed,
+            )
+            if guard_decision.action == "warn":
+                self.metrics["loop_guard_warnings"] = (
+                    self.metrics.get("loop_guard_warnings", 0) + 1
+                )
+                self._store_nudge(guard_decision.message)
 
         if result.success:
             tool_name = str(getattr(call, "name", result.name)).strip().lower()
@@ -1834,7 +1871,7 @@ class Loop:
                     count,
                 )
 
-        if not result.success and status not in {"running"}:
+        if not result.success and status not in {"running"} and not gate_block:
             self._phase = "recover"
             failure_signature = self._failure_signature(call, result)
             self._semantic_failure_counts[failure_signature] = (
