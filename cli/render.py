@@ -8,6 +8,7 @@ with rose-red (#FB7185) reserved for failures and the run-end footer accent.
 
 from __future__ import annotations
 
+import html
 import sys
 import time
 from dataclasses import dataclass, field
@@ -342,6 +343,14 @@ class StreamRenderer:
         else:
             label = self.status
 
+        # Dynamic values must be escaped before being interpolated into
+        # Prompt Toolkit's HTML formatter. Tool/status text can legitimately
+        # contain characters such as '<', '>' or '&' (for example shell args).
+        # Passing those raw turns ordinary status text into malformed XML and
+        # can crash the CLI's worker thread.
+        label = html.escape(label, quote=False)
+        model = html.escape(str(self.model), quote=False)
+
         itr = f"{self.iteration}/{self.max_iterations}" if self.max_iterations else str(self.iteration)
         think = str(self.think_enabled).lower()
         ctx = self._ctx_str()
@@ -358,7 +367,7 @@ class StreamRenderer:
             f"  <ansibrightgreen>✓{self.success_count}</ansibrightgreen>"
             f" <ansired>✗{self.failure_count}</ansired>"
             f"  <ansibrightblack>·</ansibrightblack>"
-            f"  <ansibrightblack>{self.model}  think={think}</ansibrightblack>"
+            f"  <ansibrightblack>{model}  think={think}</ansibrightblack>"
             f"  "
         )
 
