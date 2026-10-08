@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import queue
 import re
+import shlex
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -384,6 +385,21 @@ class Loop:
             executable = executable[:-4]
 
         args = tokens[1:]
+
+        if (
+            executable in {"bash", "sh", "dash", "zsh"}
+            and args[:1] in (["-c"], ["-lc"], ["-ic"])
+            and len(args) >= 2
+        ):
+            try:
+                nested = shlex.split(args[1])
+            except ValueError:
+                nested = []
+            if nested:
+                executable = nested[0].rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+                if executable.endswith(".exe"):
+                    executable = executable[:-4]
+                args = nested[1:]
 
         def pytest_args_are_global(pytest_args: list[str]) -> bool:
             return not any(

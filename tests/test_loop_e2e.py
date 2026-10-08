@@ -858,6 +858,7 @@ def test_final_verification_supports_common_project_runners():
             "go_all": (["go", "test", "./..."], True),
             "go_targeted": (["go", "test", "./pkg/foo"], False),
             "gradle": (["./gradlew", "test"], True),
+            "bash_pytest": (["bash", "-lc", "python -m pytest -q"], True),
         }
         for _, (command, expected) in commands.items():
             call = ToolCall(
