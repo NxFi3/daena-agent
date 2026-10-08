@@ -76,7 +76,10 @@ class Loop:
 
         self.llm = llm
 
-        self.stm = STM(db_path="data/stm.db")
+        memory_config = self.config.get("memory") or {}
+        self.stm = STM(
+            db_path=memory_config.get("stm_db_path", "data/stm.db")
+        )
 
         self.session_id: UUID | None = None
 
@@ -84,6 +87,7 @@ class Loop:
         self._workspace_root: Path | None = None
 
         self.tool = ToolManager(config=self.config)
+        self.tool.set_llm_provider(self.llm)
 
         self._run_started_at: float | None = None
         self.metrics: dict[str, Any] = {}
@@ -119,7 +123,15 @@ class Loop:
         self._verification_required = False
         self._final_verification_satisfied = False
 
-        self._tool_loop_guard = ToolLoopGuard()
+        guard_level = str(
+            self.config.get("guard_level")
+            or (self.config.get("agent") or {}).get("guard_level")
+            or "strict"
+        ).strip().lower()
+        if guard_level not in {"strict", "light"}:
+            guard_level = "strict"
+        self.guard_level = guard_level
+        self._tool_loop_guard = ToolLoopGuard(guard_level=guard_level)
 
         # Per-tool semantic failure evidence. Unrelated successful tools must
         # not erase a different tool's recovery history.
@@ -311,7 +323,7 @@ class Loop:
     def _is_observation_call(cls, call) -> bool:
         name = str(getattr(call, "name", "")).strip().lower()
 
-        if name == "read_file":
+        if name in {"read_file", "grep", "glob", "list_dir", "explore"}:
             return True
 
         if name == "command_exec":
@@ -369,17 +381,8 @@ class Loop:
             executable = executable[:-4]
 
         args = tokens[1:]
-        if executable == "pytest":
-            return not any(
-                token.endswith((".py", ".ini", ".toml"))
-                or "/" in token
-                or "\\" in token
-                for token in args
-                if not token.startswith("-")
-            )
 
-        if executable == "python" and len(args) >= 2 and args[0] == "-m" and args[1] == "pytest":
-            pytest_args = args[2:]
+        def pytest_args_are_global(pytest_args: list[str]) -> bool:
             return not any(
                 token.endswith((".py", ".ini", ".toml"))
                 or "/" in token
@@ -387,6 +390,49 @@ class Loop:
                 for token in pytest_args
                 if not token.startswith("-")
             )
+
+        if executable == "pytest":
+            return pytest_args_are_global(args)
+
+        if executable in {"python", "python3"} and len(args) >= 2 and args[0] == "-m" and args[1] == "pytest":
+            return pytest_args_are_global(args[2:])
+
+        if executable in {"uv", "poetry", "pipenv", "pdm"} and "pytest" in args:
+            index = args.index("pytest")
+            return pytest_args_are_global(args[index + 1:])
+
+        if executable in {"npm", "yarn", "pnpm", "bun"}:
+            if args[:1] == ["test"] or args[:2] == ["run", "test"]:
+                return True
+
+        if executable == "cargo":
+            return "test" in args and not any(
+                not token.startswith("-")
+                and token not in {"test", "all", "workspace"}
+                and "::" not in token
+                for token in args
+            )
+
+        if executable == "go":
+            return (
+                args[:1] == ["test"]
+                and (
+                    len(args) == 1
+                    or all(
+                        token.startswith("-") or token == "./..."
+                        for token in args[1:]
+                    )
+                )
+            )
+
+        if executable in {"dotnet", "mvn", "gradle", "mix", "tox", "nox"}:
+            return "test" in args or executable in {"tox", "nox"}
+
+        if executable.endswith("gradlew") or executable.endswith("gradlew.bat"):
+            return "test" in args
+
+        if executable == "make":
+            return args[:1] == ["test"]
 
         return False
 
@@ -1023,6 +1069,8 @@ class Loop:
             return "blocked"
         if action == "add":
             return "add"
+        if action == "update":
+            return "update"
 
         return None
 
@@ -1178,6 +1226,14 @@ class Loop:
                 return (
                     "plan_missing",
                     "No plan exists. Create the plan before adding steps.",
+                )
+            return None
+
+        if transition == "update":
+            if not state.exists:
+                return (
+                    "plan_missing",
+                    "No plan exists. Create the plan before updating it.",
                 )
             return None
 
@@ -2432,14 +2488,18 @@ class Loop:
         working_context["available_tools"] = sorted(available_tool_names)
         working_context["workspace_guidance"] = (
             "Workspace inventory is authoritative. Do not guess filenames. "
-            "Use read_file only for a known file; use command_exec for directory "
-            "inspection when the inventory is insufficient. Do not repeat an "
-            "identical successful observation."
+            "Use read_file for a known file/range, grep to locate symbols, "
+            "glob/list_dir to discover paths, explore for broad read-only investigation, "
+            "and command_exec for tests/builds or inspection that the read-only tools cannot do."
         )
         working_context["tool_choice"] = {
-            "read_file": "read a known file or a narrow line range",
+            "read_file": "read a known file or a narrow line range with line numbers",
+            "grep": "locate symbols/usages and return file:line:snippet matches",
+            "glob": "discover files and paths by pattern",
+            "list_dir": "inspect one workspace directory",
+            "explore": "delegate broad read-only repository exploration to a separate context",
             "apply_patch": "create or modify files",
-            "command_exec": "run tests, builds, or necessary commands",
+            "command_exec": "run tests, builds, linters, or necessary commands",
         }
 
         context = self.context.get_context(

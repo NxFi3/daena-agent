@@ -88,6 +88,9 @@ def test_plan_public_validation_is_minimal():
     assert tool.validate({"action": "complete"}) is True
     assert tool.validate({"action": "block", "reason": "dependency unavailable"}) is True
     assert tool.validate({"action": "add", "step": "Run tests"}) is True
+    assert tool.validate({"action": "update", "goal": "Ship safely"}) is True
+    assert tool.validate({"action": "update", "step_number": 1, "description": "Implement carefully"}) is True
+    assert tool.validate({"action": "update", "step_number": 1, "status": "blocked"}) is True
 
     assert tool.validate({"action": "complete", "step": 2}) is False
     assert tool.validate({"operation": "update", "step": 2, "status": "completed"}) is False
@@ -110,3 +113,28 @@ def test_plan_create_is_rejected_when_plan_already_exists(tmp_path, monkeypatch)
     )
     assert second.success is False
     assert second.content["error"]["type"] == "plan_exists"
+
+
+
+def test_plan_update_edits_goal_and_step_description(tmp_path, monkeypatch):
+    tool, plan_path = make_tool(tmp_path, monkeypatch)
+    tool.execute(
+        action="create",
+        goal="Ship",
+        steps=["Implement", "Verify"],
+    )
+
+    result = tool.execute(action="update", goal="Ship reliably")
+    assert result.success is True
+
+    result = tool.execute(
+        action="update",
+        step_number=2,
+        description="Run the complete test suite",
+    )
+    assert result.success is True
+
+    content = plan_path.read_text(encoding="utf-8")
+    assert "# Plan" in content
+    assert "Ship reliably" in content
+    assert "2. [pending] Run the complete test suite" in content

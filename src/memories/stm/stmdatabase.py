@@ -317,11 +317,84 @@ class STMDatabase:
 
         return [self._row_to_event(row) for row in rows]
 
+    def get_after_step(
+        self,
+        session_id: UUID | str,
+        after_step: int,
+        limit: int | None = None,
+    ) -> list[ContextEvent]:
+        """Return events strictly newer than after_step in chronological order."""
+        params: list[Any] = [str(session_id), int(after_step)]
+        limit_sql = ""
+        if limit is not None:
+            limit_sql = "LIMIT ?"
+            params.append(max(1, int(limit)))
+
+        rows = self.connection.execute(
+            f"""
+            SELECT
+                id, session_id, role, type, content, priority,
+                step, timestamp, metadata
+            FROM context_events
+            WHERE session_id = ? AND step > ?
+            ORDER BY step ASC, timestamp ASC
+            {limit_sql}
+            """,
+            tuple(params),
+        ).fetchall()
+
+        return [self._row_to_event(row) for row in rows]
+
+    def get_recent_after_step(
+        self,
+        session_id: UUID | str,
+        after_step: int,
+        limit: int = 10,
+    ) -> list[ContextEvent]:
+        """Return the newest events after a checkpoint boundary."""
+        rows = self.connection.execute(
+            """
+            SELECT
+                id, session_id, role, type, content, priority,
+                step, timestamp, metadata
+            FROM context_events
+            WHERE session_id = ? AND step > ?
+            ORDER BY step DESC, timestamp DESC
+            LIMIT ?
+            """,
+            (str(session_id), int(after_step), max(1, int(limit))),
+        ).fetchall()
+        rows = list(reversed(rows))
+        return [self._row_to_event(row) for row in rows]
+
+    def get_latest_checkpoint(
+        self,
+        session_id: UUID | str,
+    ) -> ContextEvent | None:
+        """Return the newest persisted compaction checkpoint, if any."""
+        row = self.connection.execute(
+            """
+            SELECT
+                id, session_id, role, type, content, priority,
+                step, timestamp, metadata
+            FROM context_events
+            WHERE session_id = ?
+              AND type = 'event'
+              AND json_extract(metadata, '$.checkpoint') = 1
+            ORDER BY step DESC, timestamp DESC
+            LIMIT 1
+            """,
+            (str(session_id),),
+        ).fetchone()
+
+        return self._row_to_event(row) if row is not None else None
+
     def search(
         self,
         session_id: UUID | str,
         query: str,
         top_k: int = 3,
+        min_step: int | None = None,
     ) -> list[ContextEvent]:
         """
         Lexical retrieval using SQLite FTS5 + BM25.
@@ -380,6 +453,7 @@ class STMDatabase:
                 f.session_id = ?
                 AND e.type = 'message'
                 AND e.role IN ('user', 'assistant')
+                AND (? IS NULL OR e.step > ?)
                 AND f.context_events_fts MATCH ?
 
             ORDER BY
@@ -397,6 +471,8 @@ class STMDatabase:
             select_sql,
             (
                 str(session_id),
+                min_step,
+                min_step,
                 fts_query,
                 top_k,
             ),
@@ -409,6 +485,8 @@ class STMDatabase:
                 select_sql,
                 (
                     str(session_id),
+                    min_step,
+                    min_step,
                     fts_query,
                     top_k,
                 ),
@@ -596,6 +674,12 @@ class STMDatabase:
 
         if self.connection is not None:
             self.connection.close()
+
+    def GetAllEvents(self):
+        """
+        Get MemoryEvents for Experience/Memory System.
+        """
+
 
     def __enter__(self) -> "STMDatabase":
         return self

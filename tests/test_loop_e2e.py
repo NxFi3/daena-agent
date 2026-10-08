@@ -836,3 +836,41 @@ def test_final_verification_state_resets_between_runs(tmp_path):
         assert loop._final_verification_satisfied is False
     finally:
         loop.close()
+
+
+
+def test_final_verification_supports_common_project_runners():
+    loop = Loop(
+        {
+            "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
+            "context": {"safe_margin": 0, "compaction_enabled": False},
+            "retrieval": {"top_k": 1},
+            "security": {"workspace_only": True, "force_approve": True},
+            "max_agent_iterations": 3,
+            "experience": {"enabled": False},
+        },
+        FakeLLM(),
+    )
+    try:
+        commands = {
+            "npm": (["npm", "test"], True),
+            "cargo": (["cargo", "test"], True),
+            "go_all": (["go", "test", "./..."], True),
+            "go_targeted": (["go", "test", "./pkg/foo"], False),
+            "gradle": (["./gradlew", "test"], True),
+        }
+        for _, (command, expected) in commands.items():
+            call = ToolCall(
+                name="command_exec",
+                id="verify-" + command[0],
+                valid=True,
+                args={"command": command, "workdir": "."},
+            )
+            result = ToolResult(
+                success=True,
+                name="command_exec",
+                content={"command": command, "exit_code": 0},
+            )
+            assert loop._is_final_verification_call(call, result) is expected
+    finally:
+        loop.close()

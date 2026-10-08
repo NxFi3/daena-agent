@@ -32,6 +32,10 @@ DEFAULT_BLOCKED_COMMANDS = {
 DEFAULT_ALLOWED_TOOLS = {
     "plan",
     "read_file",
+    "grep",
+    "glob",
+    "list_dir",
+    "explore",
     "apply_patch",
     "command_exec",
     "process_poll",

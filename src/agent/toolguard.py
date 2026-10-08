@@ -74,7 +74,20 @@ class ToolLoopGuard:
         "pid",
     })
 
-    def __init__(self) -> None:
+    def __init__(self, guard_level: str = "strict") -> None:
+        self.guard_level = (
+            str(guard_level or "strict").strip().lower()
+            if str(guard_level or "strict").strip().lower() in {"strict", "light"}
+            else "strict"
+        )
+        self._thresholds = {
+            "identical_warn": 2 if self.guard_level == "strict" else 4,
+            "identical_block": 4 if self.guard_level == "strict" else 8,
+            "cycle_warn": 2 if self.guard_level == "strict" else 4,
+            "cycle_block": 4 if self.guard_level == "strict" else 8,
+            "mutation_warn": 4 if self.guard_level == "strict" else 6,
+            "mutation_block": 7 if self.guard_level == "strict" else 12,
+        }
         self.reset()
 
     def reset(self) -> None:
@@ -195,7 +208,7 @@ class ToolLoopGuard:
         if (
             name not in self.REPEATABLE_TOOLS
             and signature == self._last_signature
-            and self._identical_count >= self.IDENTICAL_BLOCK_AFTER
+            and self._identical_count >= self._thresholds["identical_block"]
         ):
             return GuardDecision(
                 action="block",
@@ -213,7 +226,7 @@ class ToolLoopGuard:
             self._verification_failed
             and targets
             and any(
-                self._mutation_attempts[target] >= self.MUTATION_BLOCK_AFTER
+                self._mutation_attempts[target] >= self._thresholds["mutation_block"]
                 for target in targets
             )
         ):
@@ -297,7 +310,7 @@ class ToolLoopGuard:
         if (
             name not in self.REPEATABLE_TOOLS
             and signature == self._last_signature
-            and self._identical_count >= self.IDENTICAL_BLOCK_AFTER
+            and self._identical_count >= self._thresholds["identical_block"]
         ):
             return GuardDecision(
                 action="block",
@@ -312,7 +325,7 @@ class ToolLoopGuard:
 
         if (
             name not in self.REPEATABLE_TOOLS
-            and self._identical_count >= self.IDENTICAL_WARN_AFTER
+            and self._identical_count >= self._thresholds["identical_warn"]
         ):
             return GuardDecision(
                 action="warn",
@@ -328,7 +341,7 @@ class ToolLoopGuard:
         if name in self._MUTATING_TOOLS and workspace_changed and self._verification_failed:
             targets = self._mutation_targets(call)
             count = max((self._mutation_attempts[target] for target in targets), default=0)
-            if count >= self.MUTATION_WARN_AFTER:
+            if count >= self._thresholds["mutation_warn"]:
                 return GuardDecision(
                     action="warn",
                     code="mutation_no_progress",
@@ -356,7 +369,7 @@ class ToolLoopGuard:
                     break
                 laps += 1
 
-            if laps >= self.CYCLE_BLOCK_AFTER:
+            if laps >= self._thresholds["cycle_block"]:
                 return GuardDecision(
                     action="block",
                     code="repeating_cycle",
@@ -368,7 +381,7 @@ class ToolLoopGuard:
                     ),
                 )
 
-            if laps >= self.CYCLE_WARN_AFTER:
+            if laps >= self._thresholds["cycle_warn"]:
                 return GuardDecision(
                     action="warn",
                     code="repeating_cycle",

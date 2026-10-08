@@ -66,7 +66,9 @@ def test_current_task_is_not_duplicated():
     )
 
     user_messages = [
-        m for m in messages if m.get("role") == "user"
+        m for m in messages
+        if m.get("role") == "user"
+        and not str(m.get("content", "")).startswith("<runtime_state>")
     ]
     assert [m["content"] for m in user_messages] == ["fix the parser"]
 
@@ -403,9 +405,19 @@ def test_execution_state_is_visible_and_compact():
     )
 
     system = messages[0]["content"]
-    assert "<execution_state>" in system
-    assert "server.js" in system
-    assert "Read server.js" in system
+    assert "<execution_state>" not in system
+    assert "server.js" not in system
+
+    dynamic = next(
+        m["content"]
+        for m in messages
+        if m.get("role") == "user"
+        and str(m.get("content", "")).startswith("<runtime_state>")
+    )
+    assert "<execution_state>" in dynamic
+    assert "server.js" in dynamic
+    assert "Read server.js" in dynamic
+    assert messages[-1] == {"role": "user", "content": "continue implementation"}
 
 
 def test_last_failed_verification_survives_unrelated_command_and_clears_on_success():
@@ -501,9 +513,17 @@ def test_failed_verification_evidence_is_visible_to_model():
     )
 
     system = messages[0]["content"]
-    assert "last_failed_verification" in system
-    assert "Expected: 200" in system
-    assert "Received: 500" in system
+    assert "last_failed_verification" not in system
+
+    dynamic = next(
+        m["content"]
+        for m in messages
+        if m.get("role") == "user"
+        and str(m.get("content", "")).startswith("<runtime_state>")
+    )
+    assert "last_failed_verification" in dynamic
+    assert "Expected: 200" in dynamic
+    assert "Received: 500" in dynamic
 
 
 def test_tool_result_keeps_compact_diagnostic_evidence():
@@ -556,8 +576,16 @@ def test_workspace_inventory_is_visible_even_without_old_creation_events(tmp_pat
 
     system = messages[0]["content"]
     assert "workspace" in system
-    assert "public/index.html" in system
-    assert "src/server.js" in system
+    assert "public/index.html" not in system
+
+    dynamic = next(
+        m["content"]
+        for m in messages
+        if m.get("role") == "user"
+        and str(m.get("content", "")).startswith("<runtime_state>")
+    )
+    assert "public/index.html" in dynamic
+    assert "src/server.js" in dynamic
 
 
 def test_workspace_inventory_refresh_detects_external_changes(tmp_path):

@@ -58,17 +58,49 @@ class STM:
             limit=limit,
         )
 
+    def get_after_step(
+        self,
+        session_id: UUID | str,
+        after_step: int,
+        limit: int | None = None,
+    ) -> list[ContextEvent]:
+        return self.db.get_after_step(
+            session_id=session_id,
+            after_step=after_step,
+            limit=limit,
+        )
+
+    def get_recent_after_step(
+        self,
+        session_id: UUID | str,
+        after_step: int,
+        limit: int = 10,
+    ) -> list[ContextEvent]:
+        return self.db.get_recent_after_step(
+            session_id=session_id,
+            after_step=after_step,
+            limit=limit,
+        )
+
+    def get_latest_checkpoint(
+        self,
+        session_id: UUID | str,
+    ) -> ContextEvent | None:
+        return self.db.get_latest_checkpoint(session_id)
+
     def search(
         self,
         session_id: UUID | str,
         query: str,
         top_k: int = 3,
+        min_step: int | None = None,
     ) -> list[ContextEvent]:
 
         return self.db.search(
             session_id=session_id,
             query=query,
             top_k=top_k,
+            min_step=min_step,
         )
 
     def list_sessions(

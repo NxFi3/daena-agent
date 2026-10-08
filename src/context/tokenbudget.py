@@ -228,6 +228,17 @@ class TokenBudget:
         if actual_prompt_tokens <= 0:
             return
 
+        estimated_tokens = self.estimate_messages_tokens(messages)
+
+        # Ollama can report only the newly evaluated suffix on a KV-cache hit.
+        # Treat a dramatically smaller count as a cache-hit observation rather
+        # than recalibrating chars/token upward toward the hard maximum.
+        if (
+            estimated_tokens >= 128
+            and actual_prompt_tokens < int(estimated_tokens * 0.65)
+        ):
+            return
+
         measured_chars = sum(
             self._message_character_count(message) for message in messages
         )

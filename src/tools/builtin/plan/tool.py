@@ -44,8 +44,10 @@ class Plan(Tool):
         '- complete: finish the current step after its work actually succeeded. {"action":"complete"}\n'
         '- block: mark the current step blocked when it cannot be completed. {"action":"block","reason":"..."}\n'
         '- add: append newly discovered required work. {"action":"add","step":"..."}\n'
+        '- update: edit the goal or an existing step without manually controlling lifecycle. {"action":"update","step_number":2,"description":"..."}\n'
         "Completing or blocking a step automatically advances the next pending step. "
-        "Never try to choose a step number or manually set a status. "
+        "Lifecycle actions operate on the current step automatically; update may edit "
+        "a named step's description/status when the task genuinely changes. "
         "Use exactly one action per plan call. Include verification work in the plan. "
         "Before the final answer, every step must be completed or blocked."
     )
@@ -55,7 +57,7 @@ class Plan(Tool):
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["create", "complete", "block", "add"],
+                "enum": ["create", "complete", "block", "add", "update"],
                 "description": "What to do with the current execution plan.",
             },
             "goal": {
@@ -74,6 +76,20 @@ class Plan(Tool):
             "step": {
                 "type": "string",
                 "description": "New step to append with add.",
+            },
+            "step_number": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Existing 1-based step number for update.",
+            },
+            "status": {
+                "type": "string",
+                "enum": ["pending", "in_progress", "completed", "blocked"],
+                "description": "New status for update when a lifecycle change is explicitly required.",
+            },
+            "description": {
+                "type": "string",
+                "description": "Replacement description for an existing step.",
             },
         },
         "required": ["action"],
@@ -155,6 +171,23 @@ class Plan(Tool):
                 and self._valid_text(arguments.get("step"), self.MAX_STEP_CHARS)
             )
 
+        if action == "update":
+            keys = set(arguments)
+            if "goal" in keys:
+                return keys == {"action", "goal"} and self._valid_text(
+                    arguments.get("goal"), self.MAX_GOAL_CHARS
+                )
+            if "step_number" not in keys:
+                return False
+            editable = keys - {"action", "step_number"}
+            if editable not in ({"description"}, {"status"}):
+                return False
+            if "description" in editable:
+                return self._valid_text(
+                    arguments.get("description"), self.MAX_STEP_CHARS
+                )
+            return arguments.get("status") in self._STATUSES
+
         return False
 
     def describe_call(
@@ -214,6 +247,7 @@ class Plan(Tool):
         steps: list[str] | None = None,
         reason: str | None = None,
         step: str | None = None,
+        step_number: int | None = None,
         # Legacy direct-call compatibility. These fields are not exposed in the
         # model schema, but keeping them here avoids breaking existing callers/tests.
         operation: str | None = None,
@@ -257,9 +291,19 @@ class Plan(Tool):
         if action == "add":
             return self._add_step(step)
 
+        if action == "update":
+            return self._update(
+                goal=goal,
+                step=step_number,
+                status=status,
+                description=description,
+                add_step=None,
+                remove_step=None,
+            )
+
         return self._error(
             "invalid_action",
-            "action must be create, complete, block, or add.",
+            "action must be create, complete, block, add, or update.",
         )
 
     def _set_current_status(

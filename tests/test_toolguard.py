@@ -214,3 +214,25 @@ def test_repeating_two_call_cycle_is_detected():
     decision = guard.cycle_decision()
     assert decision.action == "block"
     assert decision.code == "repeating_cycle"
+
+
+
+def test_light_guard_allows_more_identical_retries_than_strict():
+    strict = ToolLoopGuard(guard_level="strict")
+    light = ToolLoopGuard(guard_level="light")
+    tool_call = call("read_file", {"file_path": "notes.txt"})
+
+    for _ in range(4):
+        strict.after_call(
+            tool_call,
+            result("read_file", content={"success": True, "path": "notes.txt", "content": "same"}),
+            workspace_changed=False,
+        )
+        light.after_call(
+            tool_call,
+            result("read_file", content={"success": True, "path": "notes.txt", "content": "same"}),
+            workspace_changed=False,
+        )
+
+    assert strict.before_call(tool_call).action == "block"
+    assert light.before_call(tool_call).action in {"allow", "warn"}

@@ -28,8 +28,15 @@ class ToolManager:
         self.security = SecurityService(self.config.get("security"))
         self._definitions: list[dict] | None = None
         self.process_manager = ProcessManager()
+        self._workspace_root: Path | None = None
+        self._llm_provider = None
+
+    def set_llm_provider(self, llm_provider) -> None:
+        self._llm_provider = llm_provider
+        self._bind_runtime_services()
 
     def set_workspace(self, directory: str) -> None:
+        self._workspace_root = Path(directory).expanduser().resolve()
         self.security.set_workspace(directory)
 
         # Plan state is task-scoped workspace state. Keep the plan tool on the
@@ -77,6 +84,14 @@ class ToolManager:
                 setter(self.process_manager)
             elif hasattr(tool, "process_manager"):
                 tool.process_manager = self.process_manager
+
+            workspace_setter = getattr(tool, "set_workspace", None)
+            if callable(workspace_setter) and self._workspace_root is not None:
+                workspace_setter(self._workspace_root)
+
+            llm_setter = getattr(tool, "set_llm_provider", None)
+            if callable(llm_setter) and self._llm_provider is not None:
+                llm_setter(self._llm_provider)
 
     def get_tools(self) -> list[dict]:
         if self._definitions is None:
