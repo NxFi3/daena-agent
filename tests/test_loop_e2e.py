@@ -940,7 +940,7 @@ def test_strict_observation_repeat_is_bounded_after_one_success(tmp_path):
         loop._successful_tool_calls[loop._tool_call_key(call)] = loop.workspace_revision
         loop._same_revision_call_counts[loop._tool_call_key(call)] = (
             loop.workspace_revision,
-            1,
+            2,
         )
 
         allowed, blocked = loop._classify_calls([call])

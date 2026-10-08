@@ -5,6 +5,7 @@ import errno
 import os
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -505,6 +506,15 @@ class ProcessManager:
         stdout,
         stderr,
     ) -> subprocess.Popen:
+        runtime_env = os.environ.copy()
+        runtime_bin = str(Path(sys.executable).resolve().parent)
+        path_entries = runtime_env.get("PATH", "").split(os.pathsep)
+        if runtime_bin not in path_entries:
+            runtime_env["PATH"] = (
+                runtime_bin
+                + (os.pathsep + runtime_env["PATH"] if runtime_env.get("PATH") else "")
+            )
+
         kwargs = {
             "args": command,
             "cwd": str(workdir) if workdir is not None else None,
@@ -512,6 +522,7 @@ class ProcessManager:
             "stdout": stdout,
             "stderr": stderr,
             "text": False,
+            "env": runtime_env,
         }
 
         if os.name == "nt":

@@ -133,7 +133,7 @@ class Loop:
         if guard_level not in {"strict", "light"}:
             guard_level = "strict"
         self.guard_level = guard_level
-        self._observation_repeat_limit = 1 if guard_level == "strict" else 2
+        self._observation_repeat_limit = 2 if guard_level == "strict" else 3
         self._tool_loop_guard = ToolLoopGuard(guard_level=guard_level)
 
         # Per-tool semantic failure evidence. Unrelated successful tools must
@@ -1407,21 +1407,22 @@ class Loop:
                     and previous_revision == self.workspace_revision
                 ):
                     if allow_same_revision_repeat:
-                        _, repeat_count = self._same_revision_call_counts.get(
-                            key,
-                            (self.workspace_revision, 0),
-                        )
-                        if repeat_count >= self._observation_repeat_limit:
-                            blocked_results[index] = self._duplicate_result(
-                                call,
-                                (
-                                    "This observation has already been performed "
-                                    f"{self._observation_repeat_limit} time(s) at the "
-                                    "same workspace revision. Inspect the returned "
-                                    "evidence and choose a different action."
-                                ),
+                        if str(getattr(call, "name", "")).strip().lower() != "process_poll":
+                            _, repeat_count = self._same_revision_call_counts.get(
+                                key,
+                                (self.workspace_revision, 0),
                             )
-                            continue
+                            if repeat_count >= self._observation_repeat_limit:
+                                blocked_results[index] = self._duplicate_result(
+                                    call,
+                                    (
+                                        "This observation has already been performed "
+                                        f"{self._observation_repeat_limit} time(s) at the "
+                                        "same workspace revision. Inspect the returned "
+                                        "evidence and choose a different action."
+                                    ),
+                                )
+                                continue
                     else:
                         blocked_results[index] = self._duplicate_result(
                             call,
@@ -2713,7 +2714,7 @@ class Loop:
         self._plan_active_this_run = False
         self._plan_required_this_run = False
         self._observation_repeat_limit = (
-            1 if self.guard_level == "strict" else 2
+            2 if self.guard_level == "strict" else 3
         )
 
         self._last_duplicate_key = None
