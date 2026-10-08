@@ -103,6 +103,8 @@ class Loop:
         self.working_set = WorkingSet()
 
         self._plan_progress = PlanProgressTracker()
+        self._plan_required_this_run = False
+        self._observation_repeat_limit = 3
 
         self.workspace_revision = 0
 
@@ -131,6 +133,7 @@ class Loop:
         if guard_level not in {"strict", "light"}:
             guard_level = "strict"
         self.guard_level = guard_level
+        self._observation_repeat_limit = 1 if guard_level == "strict" else 2
         self._tool_loop_guard = ToolLoopGuard(guard_level=guard_level)
 
         # Per-tool semantic failure evidence. Unrelated successful tools must
@@ -1044,6 +1047,30 @@ class Loop:
         return PlanState.empty()
 
     @staticmethod
+    def _task_requires_plan(text: str) -> bool:
+        """Detect tasks that contain multiple meaningful execution phases.
+
+        Keep simple requests lightweight; require explicit planning when the
+        request combines discovery/analysis, implementation, or verification.
+        """
+        value = str(text or "").strip().lower()
+        if not value:
+            return False
+
+        phase_markers = (
+            ("investigate", "inspect", "analy", "understand", "find", "locate"),
+            ("fix", "change", "modify", "implement", "refactor", "add", "remove", "update", "create"),
+            ("test", "verify", "validate", "run the test", "full test suite", "benchmark", "check"),
+        )
+        phase_hits = sum(
+            1
+            for group in phase_markers
+            if any(marker in value for marker in group)
+        )
+
+        return phase_hits >= 2 or len(value.split()) >= 55
+
+    @staticmethod
     def _is_plan_call(
         call,
     ) -> bool:
@@ -1146,6 +1173,11 @@ class Loop:
             )
 
         if not state.exists:
+            if self._plan_required_this_run:
+                return (
+                    "plan_required_first",
+                    "This task has multiple execution phases. Create a high-level plan first, then continue with repository work on the next turn.",
+                )
             return None
 
         return None
@@ -1379,12 +1411,12 @@ class Loop:
                             key,
                             (self.workspace_revision, 0),
                         )
-                        if repeat_count >= self.OBSERVATION_REPEAT_LIMIT:
+                        if repeat_count >= self._observation_repeat_limit:
                             blocked_results[index] = self._duplicate_result(
                                 call,
                                 (
                                     "This observation has already been performed "
-                                    f"{self.OBSERVATION_REPEAT_LIMIT} times at the "
+                                    f"{self._observation_repeat_limit} time(s) at the "
                                     "same workspace revision. Inspect the returned "
                                     "evidence and choose a different action."
                                 ),
@@ -2160,6 +2192,10 @@ class Loop:
         )
 
         user_task.step = self._next_step()
+        self._plan_required_this_run = self._task_requires_plan(
+            str(user_task.content or "")
+        )
+        self.metrics["plan_required"] = self._plan_required_this_run
 
         # Persist the task immediately.
         self._store_event(user_task)
@@ -2488,8 +2524,8 @@ class Loop:
         working_context["available_tools"] = sorted(available_tool_names)
         working_context["workspace_guidance"] = (
             "Workspace inventory is authoritative. Do not guess filenames. "
-            "Use read_file for a known file/range, grep to locate symbols, "
-            "glob/list_dir to discover paths, explore for broad read-only investigation, "
+            "Prefer grep to locate symbols/usages, glob/list_dir to discover paths, "
+            "read_file for a known file/range, explore for broad read-only investigation, "
             "and command_exec for tests/builds or inspection that the read-only tools cannot do."
         )
         working_context["tool_choice"] = {
@@ -2664,6 +2700,10 @@ class Loop:
 
         self._plan_progress.reset()
         self._plan_active_this_run = False
+        self._plan_required_this_run = False
+        self._observation_repeat_limit = (
+            1 if self.guard_level == "strict" else 2
+        )
 
         self._last_duplicate_key = None
 
@@ -2696,6 +2736,7 @@ class Loop:
             "tool_blocks": 0,
             "plan_blocks": 0,
             "plan_final_blocks": 0,
+            "plan_required": False,
             "loop_guard_warnings": 0,
             "loop_guard_blocks": 0,
             "active_processes": 0,

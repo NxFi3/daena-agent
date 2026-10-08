@@ -874,3 +874,77 @@ def test_final_verification_supports_common_project_runners():
             assert loop._is_final_verification_call(call, result) is expected
     finally:
         loop.close()
+
+
+def test_multiphase_task_requires_plan_before_repository_work(tmp_path):
+    config = {
+        "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
+        "context": {"safe_margin": 0, "compaction_enabled": False},
+        "retrieval": {"top_k": 1},
+        "security": {"workspace_only": True, "force_approve": True},
+        "max_agent_iterations": 3,
+        "experience": {"enabled": False},
+    }
+    loop = Loop(config, FakeLLM())
+    loop.session_id = uuid4()
+    loop.set_workspace(str(tmp_path))
+    try:
+        loop._plan_required_this_run = True
+
+        read_call = ToolCall(
+            name="read_file",
+            id="read-before-plan",
+            valid=True,
+            args={"file_path": "app.py"},
+        )
+        allowed, blocked = loop._classify_calls([read_call])
+        assert allowed == []
+        assert blocked[0].content["error"]["type"] == "plan_required_first"
+
+        plan_call = ToolCall(
+            name="plan",
+            id="plan-first",
+            valid=True,
+            args={
+                "action": "create",
+                "goal": "Fix and verify",
+                "steps": ["Inspect", "Implement", "Verify"],
+            },
+        )
+        allowed, blocked = loop._classify_calls([plan_call])
+        assert allowed == [0]
+        assert blocked == {}
+    finally:
+        loop.close()
+
+
+def test_strict_observation_repeat_is_bounded_after_one_success(tmp_path):
+    config = {
+        "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
+        "context": {"safe_margin": 0, "compaction_enabled": False},
+        "retrieval": {"top_k": 1},
+        "security": {"workspace_only": True, "force_approve": True},
+        "max_agent_iterations": 3,
+        "experience": {"enabled": False},
+    }
+    loop = Loop(config, FakeLLM())
+    loop.session_id = uuid4()
+    loop.set_workspace(str(tmp_path))
+    try:
+        call = ToolCall(
+            name="grep",
+            id="grep-1",
+            valid=True,
+            args={"pattern": "class Foo"},
+        )
+        loop._successful_tool_calls[loop._tool_call_key(call)] = loop.workspace_revision
+        loop._same_revision_call_counts[loop._tool_call_key(call)] = (
+            loop.workspace_revision,
+            1,
+        )
+
+        allowed, blocked = loop._classify_calls([call])
+        assert allowed == []
+        assert blocked[0].content["error"]["type"] == "duplicate_action"
+    finally:
+        loop.close()
