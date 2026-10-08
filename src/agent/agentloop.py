@@ -1716,6 +1716,48 @@ class Loop:
 
         return None
 
+    def _auto_finalize_verified_plan(self, iteration: int) -> bool:
+        """Complete any active plan step whose execution evidence is already successful."""
+        if not self._final_verification_satisfied or self._verification_required:
+            return False
+        if self._active_process_ids or not self._plan_active_this_run:
+            return False
+
+        plan_tool = self.tool.get_tool("plan")
+        if plan_tool is None:
+            return False
+
+        state = self._read_plan_state()
+        guard = 0
+        while state.exists and not state.is_complete and state.current_step is not None:
+            self._plan_progress.sync(
+                state,
+                iteration=iteration,
+                workspace_revision=self.workspace_revision,
+            )
+            step_number = state.current_step.number
+            can_complete_from_work = self._plan_progress.can_complete(step_number)
+            can_complete_from_verification = self._final_verification_satisfied
+            if not (can_complete_from_work or can_complete_from_verification):
+                break
+
+            completion = plan_tool.execute(action="complete")
+            if not completion.success:
+                break
+
+            guard += 1
+            if guard > 32:
+                break
+
+            state = self._read_plan_state()
+            self._plan_progress.sync(
+                state,
+                iteration=iteration,
+                workspace_revision=self.workspace_revision,
+            )
+
+        return bool(state.exists and state.is_complete)
+
     def _apply_result(
         self,
         call,
@@ -2420,33 +2462,33 @@ class Loop:
                     and not self._active_process_ids
                     and self._plan_active_this_run
                 ):
-                    final_state = self._read_plan_state()
-                    if final_state.is_complete:
-                        response = str(llmresult.response or "").strip()
-                        if not response:
-                            response = "Task completed and final verification passed."
+                    self._auto_finalize_verified_plan(iteration_number)
 
-                        self._store_event(self._assistant_event(
-                            llmresult,
-                            normalized_tool_calls=parsed_calls,
-                        ))
-                        self.agent_state.complete()
-                        self.metrics["completed"] = True
-                        self.metrics["stop_reason"] = ""
-                        self.metrics["duration_ms"] = self._duration_ms()
-                        self._emit_event(
-                            "final_response",
-                            text=response,
-                            usage=int(getattr(llmresult, "usage", 0) or 0),
-                        )
-                        self._emit_event(
-                            "run_end",
-                            completed=True,
-                            stop_reason="",
-                            metrics=self.get_metrics(),
-                        )
-                        self.tool.close()
-                        return llmresult
+                    response = str(llmresult.response or "").strip()
+                    if not response:
+                        response = "Task completed and final verification passed."
+
+                    self._store_event(self._assistant_event(
+                        llmresult,
+                        normalized_tool_calls=parsed_calls,
+                    ))
+                    self.agent_state.complete()
+                    self.metrics["completed"] = True
+                    self.metrics["stop_reason"] = ""
+                    self.metrics["duration_ms"] = self._duration_ms()
+                    self._emit_event(
+                        "final_response",
+                        text=response,
+                        usage=int(getattr(llmresult, "usage", 0) or 0),
+                    )
+                    self._emit_event(
+                        "run_end",
+                        completed=True,
+                        stop_reason="",
+                        metrics=self.get_metrics(),
+                    )
+                    self.tool.close()
+                    return llmresult
 
                 continue
 

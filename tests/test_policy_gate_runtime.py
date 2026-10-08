@@ -125,3 +125,60 @@ def test_verification_gate_allows_recovery_after_failed_verification(tmp_path):
         assert blocked == {}
     finally:
         loop.close()
+from pathlib import Path
+
+from src.tools.builtin.plan.tool import Plan
+
+
+def test_verified_active_plan_step_is_finalized_without_extra_llm_turn(tmp_path, monkeypatch):
+    from src.agent.agentloop import Loop
+    from src.models.ToolCall import ToolCall
+    from src.models.ToolResult import ToolResult
+
+    plan_path = tmp_path / "AgentInstruction" / "plan.md"
+    monkeypatch.setattr(Plan, "PLAN_PATH", plan_path)
+
+    loop = make_loop(tmp_path)
+    try:
+        plan_call = ToolCall(
+            name="plan",
+            id="plan-create",
+            valid=True,
+            args={
+                "action": "create",
+                "goal": "Fix and verify",
+                "steps": ["Run verification"],
+            },
+        )
+        plan_tool = loop.tool.get_tool("plan")
+        plan_result = plan_tool.execute(
+            action="create",
+            goal="Fix and verify",
+            steps=["Run verification"],
+        )
+        loop._apply_result(plan_call, plan_result, 1)
+
+        verification_call = ToolCall(
+            name="command_exec",
+            id="verify",
+            valid=True,
+            args={"command": ["python", "-m", "pytest", "-q"]},
+        )
+        verification_result = ToolResult(
+            success=True,
+            name="command_exec",
+            content={
+                "command": ["python", "-m", "pytest", "-q"],
+                "status": "exited",
+                "exit_code": 0,
+            },
+            metadata={},
+        )
+        loop._apply_result(verification_call, verification_result, 2)
+
+        assert loop._final_verification_satisfied is True
+        assert loop._verification_required is False
+        assert loop._auto_finalize_verified_plan(3) is True
+        assert loop._read_plan_state().is_complete is True
+    finally:
+        loop.close()
