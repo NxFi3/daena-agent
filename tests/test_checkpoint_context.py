@@ -210,3 +210,48 @@ def test_context_service_keeps_retrieved_memory_outside_recent_history_window(
         }
     finally:
         stm.close()
+
+
+def test_checkpoint_boundary_uses_recent_message_steps_not_event_count(tmp_path):
+    llm = FakeLLM()
+    stm = STM(tmp_path / "step-coverage.db")
+    service = ContextService(config(), llm, stm)
+    builder = service.contextbuilder
+    messages = [{"role": "system", "content": "system"}]
+    for step in range(1, 16):
+        messages.append({
+            "role": "assistant",
+            "content": f"state at step {step} " + ("x" * 100),
+            "_step": step,
+        })
+    messages.append({"role": "user", "content": "latest task", "_step": 20})
+    try:
+        compacted = builder._compact_messages(messages)
+        assert compacted is not None
+        assert builder._pending_checkpoint["covered_through_step"] == 5
+        assert all(
+            not any(key.startswith("_") for key in message)
+            for message in builder._strip_internal_message_keys(compacted)
+        )
+    finally:
+        stm.close()
+
+
+def test_build_context_never_leaks_internal_step_to_provider(tmp_path):
+    llm = FakeLLM()
+    stm = STM(tmp_path / "strip-step.db")
+    service = ContextService(config(), llm, stm)
+    task = ContextEvent(
+        id=uuid4(), role=ContextRole.USER, type=ContextType.MESSAGE,
+        content="inspect the source", step=1,
+    )
+    try:
+        messages = service.contextbuilder.build_context(
+            events=[task],
+            task={"id": str(task.id), "content": task.content, "step": 1},
+            workspace=str(tmp_path),
+        )
+        assert messages[-1] == {"role": "user", "content": "inspect the source"}
+        assert all(not any(key.startswith("_") for key in message) for message in messages)
+    finally:
+        stm.close()

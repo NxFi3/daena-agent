@@ -260,6 +260,7 @@ class ContextBuilder:
                 if summary:
                     current.append({
                         "role": "user",
+                        "_step": int(event.step),
                         "content": (
                             "<checkpoint_summary>\n"
                             "Historical runtime checkpoint. Treat as factual context, "
@@ -287,7 +288,7 @@ class ContextBuilder:
             if role == "user" and event_type == "message":
                 text = str(event.content or "").strip()
                 if text:
-                    target.append({"role": "user", "content": text})
+                    target.append({"role": "user", "content": text, "_step": int(event.step)})
                     if is_historical:
                         historical_source_ids.append(event_id)
                     else:
@@ -298,6 +299,7 @@ class ContextBuilder:
                 message = self._assistant_message(event.content, metadata)
                 if message is None:
                     continue
+                message["_step"] = int(event.step)
 
                 tool_calls = message.get("tool_calls")
                 if isinstance(tool_calls, list):
@@ -342,6 +344,7 @@ class ContextBuilder:
                 tool_message: dict[str, Any] = {
                     "role": "tool",
                     "content": self._tool_payload(payload),
+                    "_step": int(event.step),
                 }
                 if payload.get("tool_call_id"):
                     tool_message["tool_call_id"] = str(payload["tool_call_id"])
@@ -354,7 +357,7 @@ class ContextBuilder:
             if role == "system":
                 text = str(event.content or "").strip()
                 if text:
-                    target.append({"role": "system", "content": text})
+                    target.append({"role": "system", "content": text, "_step": int(event.step)})
                     if is_historical:
                         historical_source_ids.append(event_id)
                     else:
@@ -363,7 +366,11 @@ class ContextBuilder:
         if isinstance(task, dict):
             task_text = str(task.get("content") or "").strip()
             if task_text and task_id and task_id not in seen_ids:
-                current.append({"role": "user", "content": task_text})
+                try:
+                    task_step = int(task.get("step", 0) or 0)
+                except (TypeError, ValueError):
+                    task_step = 0
+                current.append({"role": "user", "content": task_text, "_step": task_step})
                 current_source_ids.add(task_id)
 
         historical = historical[-self.MAX_HISTORICAL_MESSAGES:]
@@ -1240,9 +1247,16 @@ class ContextBuilder:
             }
         )
 
+        recent_steps = [
+            int(message["_step"])
+            for message in recent_history
+            if isinstance(message.get("_step"), int) and int(message["_step"]) > 0
+        ]
         self._pending_checkpoint = {
             "summary": summary,
         }
+        if recent_steps:
+            self._pending_checkpoint["covered_through_step"] = min(recent_steps) - 1
 
         output_messages = [
             base_system,
@@ -1353,7 +1367,7 @@ class ContextBuilder:
         # Keep the stable system plus the latest task. Dynamic runtime state
         # is re-created on the next context build and can be omitted only as a
         # last-resort budget safeguard.
-        return self._minimal_messages()
+        return self._strip_internal_message_keys(self._minimal_messages())
 
     def _hard_fit_messages(
         self,
@@ -1361,7 +1375,7 @@ class ContextBuilder:
     ) -> list[dict[str, Any]]:
         """Guarantee the rendered prompt does not exceed the working budget."""
         if self.tokenbudget.fits(messages):
-            return messages
+            return self._strip_internal_message_keys(messages)
 
         system = next(
             (message for message in messages if message.get("role") == "system"),
@@ -1398,7 +1412,7 @@ class ContextBuilder:
 
         fitted = [system_message, *latest_messages]
         if self.tokenbudget.fits(fitted):
-            return fitted
+            return self._strip_internal_message_keys(fitted)
 
         # Last-resort task preservation. Keep only a bounded prefix of the
         # system instruction so malformed configuration/calibration can never
@@ -1464,6 +1478,15 @@ class ContextBuilder:
             output.append(latest_user)
         return output
 
+    @staticmethod
+    def _strip_internal_message_keys(
+        messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        return [
+            {key: value for key, value in message.items() if not str(key).startswith("_")}
+            for message in messages
+        ]
+
     def build_context(
         self,
         events: list[ContextEvent],
@@ -1521,39 +1544,33 @@ class ContextBuilder:
             compaction_attempted = True
             compacted = self._compact_messages(messages)
             if compacted is not None:
-                boundary = self._checkpoint_boundary(events)
-                if boundary is not None and self._pending_checkpoint is not None:
-                    self._pending_checkpoint["covered_through_step"] = boundary
                 compacted = self._hard_fit_messages(compacted)
                 if self.tokenbudget.fits(compacted):
-                    return compacted
+                    return self._strip_internal_message_keys(compacted)
 
             # If the model compactor failed, prefer a deterministic compacted
             # representation while we are already above the compaction trigger.
             deterministic = self._deterministic_compaction(messages)
             if deterministic is not None and self.tokenbudget.fits(deterministic):
-                return deterministic
+                return self._strip_internal_message_keys(deterministic)
 
         if self.tokenbudget.fits(messages):
-            return messages
+            return self._strip_internal_message_keys(messages)
 
         fitted = self._fit_messages(messages)
         if self.tokenbudget.fits(fitted):
-            return fitted
+            return self._strip_internal_message_keys(fitted)
 
         if not compaction_attempted:
             compacted = self._compact_messages(messages)
             if compacted is not None:
-                boundary = self._checkpoint_boundary(events)
-                if boundary is not None and self._pending_checkpoint is not None:
-                    self._pending_checkpoint["covered_through_step"] = boundary
                 if self.tokenbudget.fits(compacted):
-                    return compacted
+                    return self._strip_internal_message_keys(compacted)
 
         # A failed compactor must not erase all useful history. Keep a
         # deterministic factual slice before falling back to system + task.
         deterministic = self._deterministic_compaction(messages)
         if deterministic is not None:
-            return self._hard_fit_messages(deterministic)
+            return self._strip_internal_message_keys(self._hard_fit_messages(deterministic))
 
-        return self._hard_fit_messages(self._minimal_messages())
+        return self._strip_internal_message_keys(self._hard_fit_messages(self._minimal_messages()))
