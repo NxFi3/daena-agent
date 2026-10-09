@@ -1,0 +1,8 @@
+{
+  "base_url": "http://127.0.0.1:43967",
+  "endpoint": "/api/items",
+  "page_size": 25,
+  "total_pages": 40,
+  "total_records": 1000,
+  "request_interval_ms": 5
+}

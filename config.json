@@ -43,10 +43,12 @@
       "model_name": "BAAI/bge-reranker-v2-m3"
     }
   },
-  "max_agent_iterations": 50,
+  "max_agent_iterations": 300,
+  "max_auto_continuations": 4,
+  "max_no_progress_segments": 2,
   "completion_review": {
     "enabled": true,
-    "max_retries": 3,
+    "max_retries": 5,
     "recovery_interval": 3,
     "max_recovery_checks": 4
   },

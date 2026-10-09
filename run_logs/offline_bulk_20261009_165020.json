@@ -1,0 +1,97 @@
+{
+  "harness": "daena-baseline",
+  "version": 2,
+  "config": "config.json",
+  "provider": "ollama",
+  "model": "gpt-oss:20b",
+  "artifacts_dir": "run_artifacts/offline_bulk_20261009_165020",
+  "duration_ms": 343093.23,
+  "summary": {
+    "runs": 1,
+    "completed_runs": 1,
+    "verified_runs": 1,
+    "completion_rate": 1.0,
+    "verification_rate": 1.0,
+    "average_iterations": 20.0,
+    "average_llm_calls": 25.0,
+    "average_tokens": 297493.0,
+    "average_tool_calls": 19.0,
+    "average_tool_failures": 7.0,
+    "tool_failures_by_error_type": {
+      "old_string_not_found": 1,
+      "patch_context_mismatch": 4,
+      "security_denied": 1,
+      "unknown_error": 1
+    },
+    "average_duplicate_cache_hits": 2.0,
+    "average_tool_blocks": 0.0,
+    "average_duration_ms": 342720.49
+  },
+  "records": [
+    {
+      "case": "offline_bulk_collection_1000",
+      "repetition": 1,
+      "verified": true,
+      "verification_note": "1,000 source records verified; header, uniqueness, source fidelity, missing values, timezone-aware timestamps and documentation passed",
+      "response": "The script has been fixed, re‑run, and all artifacts were generated successfully.\n\n**Artifacts produced**\n\n| File | Description |\n|------|-------------|\n| `raw_pages/page_001.json` … `raw_pages/page_040.json` | Raw JSON responses for each page |\n| `collected_items.csv` | CSV with 1000 rows and the required columns |\n| `data_dictionary.md` | Column documentation |\n| `collection_report.md` | Summary of the collection |\n| `collection.log` | Progress log |\n\nAll validation checks (HTTP 200, JSON structure, unique `record_id`, row count, empty‑cell policy, UTC timestamps) passed. The dataset is ready for use.",
+      "elapsed_ms": 342720.49,
+      "artifacts_dir": "run_artifacts/offline_bulk_20261009_165020/offline_bulk_collection_1000-rep-1",
+      "metrics": {
+        "iterations": 20,
+        "llm_calls": 25,
+        "tokens": 297493,
+        "completion_review_calls": 1,
+        "completion_review_retries": 0,
+        "completion_review_failures": 0,
+        "recovery_review_calls": 4,
+        "recovery_review_count": 4,
+        "recovery_review_failures": 0,
+        "context_estimated_tokens": 19956,
+        "context_messages": 45,
+        "context_tool_results": 19,
+        "context_read_results": 5,
+        "generation_failures": 0,
+        "same_revision_read_count": 1,
+        "observation_action_count": 1,
+        "execution_phase": "implement",
+        "tool_call_attempts": 19,
+        "tool_successes": 12,
+        "tool_failures": 7,
+        "tool_failures_by_error_type": {
+          "unknown_error": 1,
+          "patch_context_mismatch": 4,
+          "old_string_not_found": 1,
+          "security_denied": 1
+        },
+        "duplicate_observation_cache_hits": 2,
+        "duplicate_observation_blocks": 0,
+        "duplicate_mutation_blocks": 0,
+        "repeated_command_failure_blocks": 0,
+        "active_processes": 0,
+        "plan_required": false,
+        "completed": true,
+        "stop_reason": "",
+        "duration_ms": 342720.45
+      },
+      "run_metrics": {
+        "iterations": 20,
+        "tool_failures_by_error_type": {
+          "unknown_error": 1,
+          "patch_context_mismatch": 4,
+          "old_string_not_found": 1,
+          "security_denied": 1
+        },
+        "duplicate_cache_hits": 2,
+        "tokens": 297493,
+        "wall_time_ms": 342720.49,
+        "completed": true
+      },
+      "tags": [
+        "offline",
+        "bulk_collection",
+        "data_quality",
+        "tool_use"
+      ]
+    }
+  ]
+}

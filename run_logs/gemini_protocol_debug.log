@@ -1,0 +1,30 @@
+[38;2;79;64;124m────────────────────────────────────────────────────────────────────[0m
+  [38;2;71;85;105mctx 2.8k/65.5k (4%)[0m
+GEMINI_CONTENT_SEQUENCE=[{"i": 0, "role": "user", "parts": [{"kind": "text", "prefix": "<runtime_state>\nThis is current runtime state"}]}, {"i": 1, "role": "user", "parts": [{"kind": "text", "prefix": "In the current workspace, call list_dir with "}]}]
+[19:42:45] [ERROR] [[GEMINI]] → Streaming generation failed: ServerError: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}
+GEMINI_GENERATE_ERROR=RuntimeError("Gemini streaming failed: ServerError: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}")
+[19:42:45] [ERROR] [[LOOP]] → LLM generation failed: Gemini streaming failed: ServerError: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}
+  [38;2;71;85;105mctx 2.9k/65.5k (4%)[0m
+GEMINI_CONTENT_SEQUENCE=[{"i": 0, "role": "user", "parts": [{"kind": "text", "prefix": "Your last request failed: Gemini streaming fa"}]}, {"i": 1, "role": "user", "parts": [{"kind": "text", "prefix": "<runtime_state>\nThis is current runtime state"}]}, {"i": 2, "role": "user", "parts": [{"kind": "text", "prefix": "In the current workspace, call list_dir with "}]}]
+
+  [38;2;96;165;250m[1m↳[0m  [38;2;99;179;237mlist_dir                  [0m  [38;2;107;114;128mpath='.'[0m
+  [38;2;74;222;128m✓[0m  [38;2;74;222;128mlist_dir                  [0m  [38;2;107;114;128m─  Listed 37 workspace entrie(s).[0m
+  [38;2;71;85;105mctx 3.7k/65.5k (6%)[0m
+GEMINI_CONTENT_SEQUENCE=[{"i": 0, "role": "user", "parts": [{"kind": "text", "prefix": "Your last request failed: Gemini streaming fa"}]}, {"i": 1, "role": "model", "parts": [{"kind": "function_call", "name": "list_dir", "id": "call_1030452", "signature_present": true}]}, {"i": 2, "role": "user", "parts": [{"kind": "text", "prefix": "<runtime_state>\nThis is current runtime state"}]}, {"i": 3, "role": "user", "parts": [{"kind": "text", "prefix": "In the current workspace, call list_dir with "}]}]
+
+  [38;2;96;165;250m[1m↳[0m  [38;2;99;179;237mlist_dir                  [0m  [38;2;107;114;128mpath='.'[0m
+  [38;2;74;222;128m✓[0m  [38;2;74;222;128mlist_dir                  [0m  [38;2;107;114;128m─  (cached: identical earlier call, workspace unchanged) Listed 37 workspace entrie(s).[0m
+  [38;2;71;85;105mctx 4.6k/65.5k (7%)[0m
+GEMINI_CONTENT_SEQUENCE=[{"i": 0, "role": "user", "parts": [{"kind": "text", "prefix": "Your last request failed: Gemini streaming fa"}]}, {"i": 1, "role": "model", "parts": [{"kind": "function_call", "name": "list_dir", "id": "call_1030452", "signature_present": true}]}, {"i": 2, "role": "model", "parts": [{"kind": "function_call", "name": "list_dir", "id": "call_220257", "signature_present": true}]}, {"i": 3, "role": "user", "parts": [{"kind": "text", "prefix": "<runtime_state>\nThis is current runtime state"}]}, {"i": 4, "role": "user", "parts": [{"kind": "text", "prefix": "In the current workspace, call list_dir with "}]}]
+
+  [38;2;96;165;250m[1m↳[0m  [38;2;99;179;237mlist_dir                  [0m  [38;2;107;114;128mpath='.'[0m
+  [38;2;74;222;128m✓[0m  [38;2;74;222;128mlist_dir                  [0m  [38;2;107;114;128m─  (cached: identical earlier call, workspace unchanged) Listed 37 workspace entrie(s).[0m
+
+  [38;2;251;113;133m[1m■ stopped[0m  [38;2;107;114;128mMaximum automatic continuation segments reached (0); task is not verified complete.[0m
+
+  [38;2;139;92;246m[1m◆[0m  [38;2;167;139;250m[1mdaena[0m  [38;2;79;64;124m────────────────────────────────────────[0m  [38;2;107;114;128mgemini-3.8-flash[0m
+  [38;2;219;234;254mI stopped before finishing the task. Reason: Maximum automatic continuation segments reached (0); task is not verified complete.[0m
+
+[38;2;79;64;124m────────────────────────────────────────────────────────────────────[0m
+  [38;2;251;113;133m[1m■ stopped[0m  [38;2;107;114;128miter 4  ·  tools [0m[38;2;74;222;128m✓3[0m  [38;2;107;114;128m·  6.7k tok  ·  ctx 4.6k/65.5k (7%)  ·  103.8s[0m
+DEBUG_METRICS={"iterations": 4, "continuation_segments": 0, "no_progress_segments": 1, "llm_calls": 4, "tokens": 19897, "completion_review_calls": 0, "completion_review_retries": 0, "completion_review_failures": 0, "recovery_review_calls": 0, "recovery_review_count": 0, "recovery_review_failures": 0, "context_estimated_tokens": 4555, "context_messages": 8, "context_tool_results": 2, "context_read_results": 0, "generation_failures": 1, "same_revision_read_count": 0, "observation_action_count": 2, "execution_phase": "explore", "tool_call_attempts": 3, "tool_successes": 3, "tool_failures": 0, "tool_failures_by_error_type": {}, "duplicate_observation_cache_hits": 2, "duplicate_observation_blocks": 0, "duplicate_mutation_blocks": 0, "repeated_command_failure_blocks": 0, "active_processes": 0, "plan_required": false, "completed": false, "stop_reason": "Maximum automatic continuation segments reached (0); task is not verified complete.", "duration_ms": 103757.69}

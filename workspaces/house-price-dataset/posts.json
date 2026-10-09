@@ -1,0 +1,2341 @@
+[
+  {
+    "widgetType": "POST_ROW",
+    "visibilityConditions": [],
+    "uid": "3c59b26d-e04e-436b-9f15-83b33f1181d0",
+    "normalizerId": "d4a42012-e96f-4a8b-8587-903d74469d2f",
+    "dto": {
+      "widget_type": "POST_ROW",
+      "data": {
+        "@type": "type.googleapis.com/widgets.PostRowData",
+        "title": "رفیعی/66متر/تکواحدی/ق ی م ت مناسب",
+        "action": {
+          "type": "VIEW_POST",
+          "payload": {
+            "@type": "type.googleapis.com/widgets.ViewPostPayload",
+            "token": "gaIPfNI9",
+            "web_info": {
+              "title": "رفیعی/66متر/تکواحدی/ق ی م ت مناسب",
+              "district_persian": "خلیج فارس",
+              "city_persian": "تهران"
+            },
+            "ad_instance_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaIPfNI9_N"
+          }
+        },
+        "image_url": "https://s100.divarcdn.com/static/photo/neda/webp_thumbnail/xvOEIToey9PkM4XxYtq_lQ/147958d1-f4e7-4627-b171-580e664496b7.webp",
+        "bottom_description_text": "آژانس املاک امیرشعبه یک در خلیج فارس",
+        "middle_description_text": "۷,۱۵۰,۰۰۰,۰۰۰ تومان",
+        "has_divider": true,
+        "image_count": 1,
+        "image_top_left_tag": {
+          "text": "۱",
+          "icon": {
+            "image_url_dark": "https://s100.divarcdn.com/static/imgs/widget-icons/dark/white_primary/v1/camera.png",
+            "image_url_light": "https://s100.divarcdn.com/static/imgs/widget-icons/light/white_primary/v1/camera.png",
+            "icon_name": "CAMERA",
+            "icon_color": "WHITE_PRIMARY"
+          },
+          "is_icon_left": true
+        },
+        "token": "gaIPfNI9",
+        "should_indicate_seen_status": true,
+        "tracker_session_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaIPfNI9_N",
+        "layout_type": "GRID_ITEM"
+      },
+      "action_log": {
+        "server_side_info": {
+          "info": {
+            "@type": "type.googleapis.com/action_log.PostItemInfo",
+            "post_token": "gaIPfNI9",
+            "index": 0,
+            "post_type": "SEARCH",
+            "list_type": "PAGE",
+            "source_page": "POST_LIST_PAGE",
+            "extra_data": {
+              "@type": "type.googleapis.com/action_log.PostItemInfo.SearchExtraData",
+              "jli": {
+                "category": {
+                  "value": "residential-sell"
+                },
+                "places": {
+                  "value": [
+                    "1"
+                  ]
+                },
+                "cities": [
+                  "1"
+                ]
+              },
+              "search_uid": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a",
+              "search_data": {
+                "form_data_json": "{\"data\":{\"category\":{\"str\":{\"value\":\"residential-sell\"}}}}",
+                "cities": [
+                  "1"
+                ],
+                "query_input_type": "TEXT",
+                "user_selected_location": {
+                  "@type": "type.googleapis.com/widgets.UserSelectedLocation",
+                  "places": [
+                    {
+                      "place_id": "1"
+                    }
+                  ]
+                }
+              },
+              "page": 1
+            },
+            "sort_date": "2026-10-09T14:24:35.966037Z"
+          },
+          "item_type": {
+            "type": "POST_ITEM"
+          }
+        },
+        "enabled": true
+      }
+    },
+    "KEY_PROP_NAME": "3c59b26d-e04e-436b-9f15-83b33f1181d0",
+    "__NORMALIZED_WIDGET_V2__": true
+  },
+  {
+    "widgetType": "POST_ROW",
+    "visibilityConditions": [],
+    "uid": "6d36843e-1084-415f-ad74-093ba6a86db8",
+    "normalizerId": "aadf4d59-1f95-4097-a367-963e87a08bc1",
+    "dto": {
+      "widget_type": "POST_ROW",
+      "data": {
+        "@type": "type.googleapis.com/widgets.PostRowData",
+        "title": "80 متر، تک واحدی ۳ طبقه",
+        "action": {
+          "type": "VIEW_POST",
+          "payload": {
+            "@type": "type.googleapis.com/widgets.ViewPostPayload",
+            "token": "gaBbLT5r",
+            "web_info": {
+              "title": "80 متر، تک واحدی ۳ طبقه",
+              "district_persian": "صد دستگاه",
+              "city_persian": "تهران"
+            },
+            "ad_instance_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaBbLT5r_N"
+          }
+        },
+        "image_url": "https://s100.divarcdn.com/static/photo/neda/webp_thumbnail/qRY9zaGn-k22WjlgB84meA/90634c16-68b4-4567-a7b1-c6b31d29b566.webp",
+        "bottom_description_text": "در صد دستگاه",
+        "red_text": "نردبان شده",
+        "middle_description_text": "۱۳,۴۰۰,۰۰۰,۰۰۰ تومان",
+        "has_divider": true,
+        "image_count": 12,
+        "image_top_left_tag": {
+          "text": "۱۲",
+          "icon": {
+            "image_url_dark": "https://s100.divarcdn.com/static/imgs/widget-icons/dark/white_primary/v1/camera.png",
+            "image_url_light": "https://s100.divarcdn.com/static/imgs/widget-icons/light/white_primary/v1/camera.png",
+            "icon_name": "CAMERA",
+            "icon_color": "WHITE_PRIMARY"
+          },
+          "is_icon_left": true
+        },
+        "token": "gaBbLT5r",
+        "should_indicate_seen_status": true,
+        "tracker_session_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaBbLT5r_N",
+        "layout_type": "GRID_ITEM"
+      },
+      "action_log": {
+        "server_side_info": {
+          "info": {
+            "@type": "type.googleapis.com/action_log.PostItemInfo",
+            "post_token": "gaBbLT5r",
+            "index": 1,
+            "post_type": "SEARCH",
+            "list_type": "PAGE",
+            "source_page": "POST_LIST_PAGE",
+            "extra_data": {
+              "@type": "type.googleapis.com/action_log.PostItemInfo.SearchExtraData",
+              "jli": {
+                "cities": [
+                  "1"
+                ],
+                "category": {
+                  "value": "residential-sell"
+                },
+                "places": {
+                  "value": [
+                    "1"
+                  ]
+                }
+              },
+              "search_uid": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a",
+              "search_data": {
+                "form_data_json": "{\"data\":{\"category\":{\"str\":{\"value\":\"residential-sell\"}}}}",
+                "cities": [
+                  "1"
+                ],
+                "query_input_type": "TEXT",
+                "user_selected_location": {
+                  "@type": "type.googleapis.com/widgets.UserSelectedLocation",
+                  "places": [
+                    {
+                      "place_id": "1"
+                    }
+                  ]
+                }
+              },
+              "page": 1
+            },
+            "sort_date": "2026-10-09T14:24:27.682385Z"
+          },
+          "item_type": {
+            "type": "POST_ITEM"
+          }
+        },
+        "enabled": true
+      }
+    },
+    "KEY_PROP_NAME": "6d36843e-1084-415f-ad74-093ba6a86db8",
+    "__NORMALIZED_WIDGET_V2__": true
+  },
+  {
+    "widgetType": "POST_ROW",
+    "visibilityConditions": [],
+    "uid": "05cd3d29-74a7-4780-986d-22382e0fd2ea",
+    "normalizerId": "7608618f-29ec-4013-b36c-96e9f54d58b0",
+    "dto": {
+      "widget_type": "POST_ROW",
+      "data": {
+        "@type": "type.googleapis.com/widgets.PostRowData",
+        "title": "آپارتمان نوساز کلید نخورده",
+        "action": {
+          "type": "VIEW_POST",
+          "payload": {
+            "@type": "type.googleapis.com/widgets.ViewPostPayload",
+            "token": "gaIjvRAk",
+            "web_info": {
+              "title": "آپارتمان نوساز کلید نخورده",
+              "district_persian": "سلیمانی",
+              "city_persian": "تهران"
+            },
+            "ad_instance_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaIjvRAk_N"
+          }
+        },
+        "image_url": "https://s100.divarcdn.com/static/photo/neda/webp_thumbnail/Rc_vV-zAG4LK7ph7Pq8ouQ/63701288-ce5f-4988-a7d3-6856d594f549.webp",
+        "bottom_description_text": "لحظاتی پیش در سلیمانی",
+        "middle_description_text": "۱۶,۸۰۰,۰۰۰,۰۰۰ تومان",
+        "has_divider": true,
+        "image_count": 1,
+        "image_top_left_tag": {
+          "text": "۱",
+          "icon": {
+            "image_url_dark": "https://s100.divarcdn.com/static/imgs/widget-icons/dark/white_primary/v1/camera.png",
+            "image_url_light": "https://s100.divarcdn.com/static/imgs/widget-icons/light/white_primary/v1/camera.png",
+            "icon_name": "CAMERA",
+            "icon_color": "WHITE_PRIMARY"
+          },
+          "is_icon_left": true
+        },
+        "token": "gaIjvRAk",
+        "should_indicate_seen_status": true,
+        "tracker_session_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaIjvRAk_N",
+        "layout_type": "GRID_ITEM"
+      },
+      "action_log": {
+        "server_side_info": {
+          "info": {
+            "@type": "type.googleapis.com/action_log.PostItemInfo",
+            "post_token": "gaIjvRAk",
+            "index": 2,
+            "post_type": "SEARCH",
+            "list_type": "PAGE",
+            "source_page": "POST_LIST_PAGE",
+            "extra_data": {
+              "@type": "type.googleapis.com/action_log.PostItemInfo.SearchExtraData",
+              "jli": {
+                "category": {
+                  "value": "residential-sell"
+                },
+                "places": {
+                  "value": [
+                    "1"
+                  ]
+                },
+                "cities": [
+                  "1"
+                ]
+              },
+              "search_uid": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a",
+              "search_data": {
+                "form_data_json": "{\"data\":{\"category\":{\"str\":{\"value\":\"residential-sell\"}}}}",
+                "cities": [
+                  "1"
+                ],
+                "query_input_type": "TEXT",
+                "user_selected_location": {
+                  "@type": "type.googleapis.com/widgets.UserSelectedLocation",
+                  "places": [
+                    {
+                      "place_id": "1"
+                    }
+                  ]
+                }
+              },
+              "page": 1
+            },
+            "sort_date": "2026-10-09T14:24:22.855404Z"
+          },
+          "item_type": {
+            "type": "POST_ITEM"
+          }
+        },
+        "enabled": true
+      }
+    },
+    "KEY_PROP_NAME": "05cd3d29-74a7-4780-986d-22382e0fd2ea",
+    "__NORMALIZED_WIDGET_V2__": true
+  },
+  {
+    "widgetType": "POST_ROW",
+    "visibilityConditions": [],
+    "uid": "7566d404-ebb8-4026-b654-6d5a22ccc93d",
+    "normalizerId": "51a7ab02-528e-48d5-80fb-5398911a03ed",
+    "dto": {
+      "widget_type": "POST_ROW",
+      "data": {
+        "@type": "type.googleapis.com/widgets.PostRowData",
+        "title": "۴۵ متر تک واحدی ، پارکینگ دار ، طبقه اول",
+        "action": {
+          "type": "VIEW_POST",
+          "payload": {
+            "@type": "type.googleapis.com/widgets.ViewPostPayload",
+            "token": "gaInvC9T",
+            "web_info": {
+              "title": "۴۵ متر تک واحدی ، پارکینگ دار ، طبقه اول",
+              "district_persian": "جیحون",
+              "city_persian": "تهران"
+            },
+            "ad_instance_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaInvC9T_N"
+          }
+        },
+        "image_url": "https://s100.divarcdn.com/static/photo/neda/webp_thumbnail/hmFSIvpKD9s_AB2cZ5zWGQ/4f14989e-b29b-45d5-81ac-b96657f2afa8.webp",
+        "bottom_description_text": "املاک آراز در جیحون",
+        "middle_description_text": "۷,۵۰۰,۰۰۰,۰۰۰ تومان",
+        "has_divider": true,
+        "image_count": 1,
+        "image_top_left_tag": {
+          "text": "۱",
+          "icon": {
+            "image_url_dark": "https://s100.divarcdn.com/static/imgs/widget-icons/dark/white_primary/v1/camera.png",
+            "image_url_light": "https://s100.divarcdn.com/static/imgs/widget-icons/light/white_primary/v1/camera.png",
+            "icon_name": "CAMERA",
+            "icon_color": "WHITE_PRIMARY"
+          },
+          "is_icon_left": true
+        },
+        "token": "gaInvC9T",
+        "should_indicate_seen_status": true,
+        "tracker_session_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaInvC9T_N",
+        "layout_type": "GRID_ITEM"
+      },
+      "action_log": {
+        "server_side_info": {
+          "info": {
+            "@type": "type.googleapis.com/action_log.PostItemInfo",
+            "post_token": "gaInvC9T",
+            "index": 3,
+            "post_type": "SEARCH",
+            "list_type": "PAGE",
+            "source_page": "POST_LIST_PAGE",
+            "extra_data": {
+              "@type": "type.googleapis.com/action_log.PostItemInfo.SearchExtraData",
+              "jli": {
+                "category": {
+                  "value": "residential-sell"
+                },
+                "places": {
+                  "value": [
+                    "1"
+                  ]
+                },
+                "cities": [
+                  "1"
+                ]
+              },
+              "search_uid": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a",
+              "search_data": {
+                "form_data_json": "{\"data\":{\"category\":{\"str\":{\"value\":\"residential-sell\"}}}}",
+                "cities": [
+                  "1"
+                ],
+                "query_input_type": "TEXT",
+                "user_selected_location": {
+                  "@type": "type.googleapis.com/widgets.UserSelectedLocation",
+                  "places": [
+                    {
+                      "place_id": "1"
+                    }
+                  ]
+                }
+              },
+              "page": 1
+            },
+            "sort_date": "2026-10-09T14:24:20.281146Z"
+          },
+          "item_type": {
+            "type": "POST_ITEM"
+          }
+        },
+        "enabled": true
+      }
+    },
+    "KEY_PROP_NAME": "7566d404-ebb8-4026-b654-6d5a22ccc93d",
+    "__NORMALIZED_WIDGET_V2__": true
+  },
+  {
+    "widgetType": "POST_ROW",
+    "visibilityConditions": [],
+    "uid": "b3326122-78f4-483a-8971-4e86a54e5916",
+    "normalizerId": "17bc0435-4cf5-4a07-b61f-d1826fa054dc",
+    "dto": {
+      "widget_type": "POST_ROW",
+      "data": {
+        "@type": "type.googleapis.com/widgets.PostRowData",
+        "title": "۱۰۵ متر/دو خواب/فروزش/تکواحد/دونبش",
+        "action": {
+          "type": "VIEW_POST",
+          "payload": {
+            "@type": "type.googleapis.com/widgets.ViewPostPayload",
+            "token": "gaBLhBPH",
+            "web_info": {
+              "title": "۱۰۵ متر/دو خواب/فروزش/تکواحد/دونبش",
+              "district_persian": "امیر بهادر",
+              "city_persian": "تهران"
+            },
+            "ad_instance_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaBLhBPH_N"
+          }
+        },
+        "image_url": "https://s100.divarcdn.com/static/photo/neda/webp_thumbnail/XU3xUlmPZXbAMhTEskU_yQ/c1318502-08fd-41c8-b79c-67bd26152f29.webp",
+        "bottom_description_text": "در امیر بهادر",
+        "red_text": "نردبان شده",
+        "middle_description_text": "۲۱,۵۰۰,۰۰۰,۰۰۰ تومان",
+        "has_divider": true,
+        "image_count": 9,
+        "image_top_left_tag": {
+          "text": "۹",
+          "icon": {
+            "image_url_dark": "https://s100.divarcdn.com/static/imgs/widget-icons/dark/white_primary/v1/camera.png",
+            "image_url_light": "https://s100.divarcdn.com/static/imgs/widget-icons/light/white_primary/v1/camera.png",
+            "icon_name": "CAMERA",
+            "icon_color": "WHITE_PRIMARY"
+          },
+          "is_icon_left": true
+        },
+        "token": "gaBLhBPH",
+        "should_indicate_seen_status": true,
+        "tracker_session_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaBLhBPH_N",
+        "layout_type": "GRID_ITEM"
+      },
+      "action_log": {
+        "server_side_info": {
+          "info": {
+            "@type": "type.googleapis.com/action_log.PostItemInfo",
+            "post_token": "gaBLhBPH",
+            "index": 4,
+            "post_type": "SEARCH",
+            "list_type": "PAGE",
+            "source_page": "POST_LIST_PAGE",
+            "extra_data": {
+              "@type": "type.googleapis.com/action_log.PostItemInfo.SearchExtraData",
+              "jli": {
+                "category": {
+                  "value": "residential-sell"
+                },
+                "places": {
+                  "value": [
+                    "1"
+                  ]
+                },
+                "cities": [
+                  "1"
+                ]
+              },
+              "search_uid": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a",
+              "search_data": {
+                "form_data_json": "{\"data\":{\"category\":{\"str\":{\"value\":\"residential-sell\"}}}}",
+                "cities": [
+                  "1"
+                ],
+                "query_input_type": "TEXT",
+                "user_selected_location": {
+                  "@type": "type.googleapis.com/widgets.UserSelectedLocation",
+                  "places": [
+                    {
+                      "place_id": "1"
+                    }
+                  ]
+                }
+              },
+              "page": 1
+            },
+            "sort_date": "2026-10-09T14:24:10.611575Z"
+          },
+          "item_type": {
+            "type": "POST_ITEM"
+          }
+        },
+        "enabled": true
+      }
+    },
+    "KEY_PROP_NAME": "b3326122-78f4-483a-8971-4e86a54e5916",
+    "__NORMALIZED_WIDGET_V2__": true
+  },
+  {
+    "widgetType": "POST_ROW",
+    "visibilityConditions": [],
+    "uid": "18592e2b-32d5-4bf9-87e8-b7062a6a9f29",
+    "normalizerId": "68f183be-0fdf-4f92-9d40-c53b6acb491b",
+    "dto": {
+      "widget_type": "POST_ROW",
+      "data": {
+        "@type": "type.googleapis.com/widgets.PostRowData",
+        "title": "۷۳متر ۱خواب(فرجام غربی)",
+        "action": {
+          "type": "VIEW_POST",
+          "payload": {
+            "@type": "type.googleapis.com/widgets.ViewPostPayload",
+            "token": "gaDL46Ki",
+            "web_info": {
+              "title": "۷۳متر ۱خواب(فرجام غربی)",
+              "district_persian": "نیروی دریایی",
+              "city_persian": "تهران"
+            },
+            "ad_instance_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaDL46Ki_N"
+          }
+        },
+        "image_url": "https://s100.divarcdn.com/static/photo/neda/webp_thumbnail/jRWfbLQPIYtLNijB34Zlwg/95835595-e814-4030-ab1b-a302dd7e7421.webp",
+        "bottom_description_text": "دپارتمان کیان تهرانپارس در نیروی دریایی",
+        "red_text": "نردبان شده",
+        "middle_description_text": "۱۷,۳۵۰,۰۰۰,۰۰۰ تومان",
+        "has_divider": true,
+        "image_count": 11,
+        "image_top_left_tag": {
+          "text": "۱۱",
+          "icon": {
+            "image_url_dark": "https://s100.divarcdn.com/static/imgs/widget-icons/dark/white_primary/v1/camera.png",
+            "image_url_light": "https://s100.divarcdn.com/static/imgs/widget-icons/light/white_primary/v1/camera.png",
+            "icon_name": "CAMERA",
+            "icon_color": "WHITE_PRIMARY"
+          },
+          "is_icon_left": true
+        },
+        "token": "gaDL46Ki",
+        "should_indicate_seen_status": true,
+        "tracker_session_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaDL46Ki_N",
+        "layout_type": "GRID_ITEM"
+      },
+      "action_log": {
+        "server_side_info": {
+          "info": {
+            "@type": "type.googleapis.com/action_log.PostItemInfo",
+            "post_token": "gaDL46Ki",
+            "index": 5,
+            "post_type": "SEARCH",
+            "list_type": "PAGE",
+            "source_page": "POST_LIST_PAGE",
+            "extra_data": {
+              "@type": "type.googleapis.com/action_log.PostItemInfo.SearchExtraData",
+              "jli": {
+                "category": {
+                  "value": "residential-sell"
+                },
+                "places": {
+                  "value": [
+                    "1"
+                  ]
+                },
+                "cities": [
+                  "1"
+                ]
+              },
+              "search_uid": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a",
+              "search_data": {
+                "form_data_json": "{\"data\":{\"category\":{\"str\":{\"value\":\"residential-sell\"}}}}",
+                "cities": [
+                  "1"
+                ],
+                "query_input_type": "TEXT",
+                "user_selected_location": {
+                  "@type": "type.googleapis.com/widgets.UserSelectedLocation",
+                  "places": [
+                    {
+                      "place_id": "1"
+                    }
+                  ]
+                }
+              },
+              "page": 1
+            },
+            "sort_date": "2026-10-09T14:23:48.437452Z"
+          },
+          "item_type": {
+            "type": "POST_ITEM"
+          }
+        },
+        "enabled": true
+      }
+    },
+    "KEY_PROP_NAME": "18592e2b-32d5-4bf9-87e8-b7062a6a9f29",
+    "__NORMALIZED_WIDGET_V2__": true
+  },
+  {
+    "widgetType": "POST_ROW",
+    "visibilityConditions": [],
+    "uid": "7e4d1508-525c-4026-b684-cb7cee4cdc61",
+    "normalizerId": "edc94f6b-3660-4a05-89ed-a26e7b223dc5",
+    "dto": {
+      "widget_type": "POST_ROW",
+      "data": {
+        "@type": "type.googleapis.com/widgets.PostRowData",
+        "title": "۸۰متر تک واحدی تاپ لوکیشن دامپزشکی",
+        "action": {
+          "type": "VIEW_POST",
+          "payload": {
+            "@type": "type.googleapis.com/widgets.ViewPostPayload",
+            "token": "gaYSDU6Z",
+            "web_info": {
+              "title": "۸۰متر تک واحدی تاپ لوکیشن دامپزشکی",
+              "district_persian": "جیحون",
+              "city_persian": "تهران"
+            },
+            "ad_instance_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaYSDU6Z_N"
+          }
+        },
+        "image_url": "https://s100.divarcdn.com/static/photo/neda/webp_thumbnail/twwkinsySI-21aMWwPlWUQ/89a4ca1a-eab7-4d13-b67d-b5eb68f1ab03.webp",
+        "bottom_description_text": "مشاور املاک سلطانی در جیحون",
+        "red_text": "نردبان شده",
+        "middle_description_text": "۱۵,۵۰۰,۰۰۰,۰۰۰ تومان",
+        "has_divider": true,
+        "image_count": 1,
+        "image_top_left_tag": {
+          "text": "۱",
+          "icon": {
+            "image_url_dark": "https://s100.divarcdn.com/static/imgs/widget-icons/dark/white_primary/v1/camera.png",
+            "image_url_light": "https://s100.divarcdn.com/static/imgs/widget-icons/light/white_primary/v1/camera.png",
+            "icon_name": "CAMERA",
+            "icon_color": "WHITE_PRIMARY"
+          },
+          "is_icon_left": true
+        },
+        "token": "gaYSDU6Z",
+        "should_indicate_seen_status": true,
+        "tracker_session_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaYSDU6Z_N",
+        "layout_type": "GRID_ITEM"
+      },
+      "action_log": {
+        "server_side_info": {
+          "info": {
+            "@type": "type.googleapis.com/action_log.PostItemInfo",
+            "post_token": "gaYSDU6Z",
+            "index": 6,
+            "post_type": "SEARCH",
+            "list_type": "PAGE",
+            "source_page": "POST_LIST_PAGE",
+            "extra_data": {
+              "@type": "type.googleapis.com/action_log.PostItemInfo.SearchExtraData",
+              "jli": {
+                "category": {
+                  "value": "residential-sell"
+                },
+                "places": {
+                  "value": [
+                    "1"
+                  ]
+                },
+                "cities": [
+                  "1"
+                ]
+              },
+              "search_uid": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a",
+              "search_data": {
+                "form_data_json": "{\"data\":{\"category\":{\"str\":{\"value\":\"residential-sell\"}}}}",
+                "cities": [
+                  "1"
+                ],
+                "query_input_type": "TEXT",
+                "user_selected_location": {
+                  "@type": "type.googleapis.com/widgets.UserSelectedLocation",
+                  "places": [
+                    {
+                      "place_id": "1"
+                    }
+                  ]
+                }
+              },
+              "page": 1
+            },
+            "sort_date": "2026-10-09T14:23:47.214234Z"
+          },
+          "item_type": {
+            "type": "POST_ITEM"
+          }
+        },
+        "enabled": true
+      }
+    },
+    "KEY_PROP_NAME": "7e4d1508-525c-4026-b684-cb7cee4cdc61",
+    "__NORMALIZED_WIDGET_V2__": true
+  },
+  {
+    "widgetType": "POST_ROW",
+    "visibilityConditions": [],
+    "uid": "1634ebd2-5014-47c9-ad04-a24824c3f142",
+    "normalizerId": "9fe4252d-9f4d-4b6b-84f5-89307f6eac64",
+    "dto": {
+      "widget_type": "POST_ROW",
+      "data": {
+        "@type": "type.googleapis.com/widgets.PostRowData",
+        "title": "۱۰۰ متر ۲ خواب تهران ویلا",
+        "action": {
+          "type": "VIEW_POST",
+          "payload": {
+            "@type": "type.googleapis.com/widgets.ViewPostPayload",
+            "token": "gaHPHU8T",
+            "web_info": {
+              "title": "۱۰۰ متر ۲ خواب تهران ویلا",
+              "district_persian": "تهران‌ویلا",
+              "city_persian": "تهران"
+            },
+            "ad_instance_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaHPHU8T_N"
+          }
+        },
+        "image_url": "https://s100.divarcdn.com/static/photo/neda/webp_thumbnail/cMaNAfFq6BTxLWRzEw6F5A/ce3ccd5d-9e43-4af0-8eff-06b9b06a01f1.webp",
+        "bottom_description_text": "املاک پرواز در تهران‌ویلا",
+        "red_text": "نردبان شده",
+        "middle_description_text": "۲۷,۵۰۰,۰۰۰,۰۰۰ تومان",
+        "has_divider": true,
+        "image_count": 1,
+        "image_top_left_tag": {
+          "text": "۱",
+          "icon": {
+            "image_url_dark": "https://s100.divarcdn.com/static/imgs/widget-icons/dark/white_primary/v1/camera.png",
+            "image_url_light": "https://s100.divarcdn.com/static/imgs/widget-icons/light/white_primary/v1/camera.png",
+            "icon_name": "CAMERA",
+            "icon_color": "WHITE_PRIMARY"
+          },
+          "is_icon_left": true
+        },
+        "token": "gaHPHU8T",
+        "should_indicate_seen_status": true,
+        "tracker_session_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaHPHU8T_N",
+        "layout_type": "GRID_ITEM"
+      },
+      "action_log": {
+        "server_side_info": {
+          "info": {
+            "@type": "type.googleapis.com/action_log.PostItemInfo",
+            "post_token": "gaHPHU8T",
+            "index": 7,
+            "post_type": "SEARCH",
+            "list_type": "PAGE",
+            "source_page": "POST_LIST_PAGE",
+            "extra_data": {
+              "@type": "type.googleapis.com/action_log.PostItemInfo.SearchExtraData",
+              "jli": {
+                "category": {
+                  "value": "residential-sell"
+                },
+                "places": {
+                  "value": [
+                    "1"
+                  ]
+                },
+                "cities": [
+                  "1"
+                ]
+              },
+              "search_uid": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a",
+              "search_data": {
+                "form_data_json": "{\"data\":{\"category\":{\"str\":{\"value\":\"residential-sell\"}}}}",
+                "cities": [
+                  "1"
+                ],
+                "query_input_type": "TEXT",
+                "user_selected_location": {
+                  "@type": "type.googleapis.com/widgets.UserSelectedLocation",
+                  "places": [
+                    {
+                      "place_id": "1"
+                    }
+                  ]
+                }
+              },
+              "page": 1
+            },
+            "sort_date": "2026-10-09T14:23:21.813032Z"
+          },
+          "item_type": {
+            "type": "POST_ITEM"
+          }
+        },
+        "enabled": true
+      }
+    },
+    "KEY_PROP_NAME": "1634ebd2-5014-47c9-ad04-a24824c3f142",
+    "__NORMALIZED_WIDGET_V2__": true
+  },
+  {
+    "widgetType": "POST_ROW",
+    "visibilityConditions": [],
+    "uid": "b21eb20c-3227-49ce-9f0a-05ba9ddbefb7",
+    "normalizerId": "4f84b814-c3e4-40bb-8c6c-8eb10a8e6e76",
+    "dto": {
+      "widget_type": "POST_ROW",
+      "data": {
+        "@type": "type.googleapis.com/widgets.PostRowData",
+        "title": "78متر/2خواب/تک واحدی/طبقه چهارم",
+        "action": {
+          "type": "VIEW_POST",
+          "payload": {
+            "@type": "type.googleapis.com/widgets.ViewPostPayload",
+            "token": "gaIjPzMO",
+            "web_info": {
+              "title": "78متر/2خواب/تک واحدی/طبقه چهارم",
+              "district_persian": "مسعودیه",
+              "city_persian": "تهران"
+            },
+            "ad_instance_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaIjPzMO_N"
+          }
+        },
+        "image_url": "https://s100.divarcdn.com/static/photo/neda/webp_thumbnail/gQy-vYTyCgx-iPeShmmj4A/60051fd9-bd6e-46fe-89b4-c0d69cbb1b29.webp",
+        "bottom_description_text": "املاک امیرانی در مسعودیه",
+        "middle_description_text": "۱۱,۵۰۰,۰۰۰,۰۰۰ تومان",
+        "has_divider": true,
+        "image_count": 1,
+        "image_top_left_tag": {
+          "text": "۱",
+          "icon": {
+            "image_url_dark": "https://s100.divarcdn.com/static/imgs/widget-icons/dark/white_primary/v1/camera.png",
+            "image_url_light": "https://s100.divarcdn.com/static/imgs/widget-icons/light/white_primary/v1/camera.png",
+            "icon_name": "CAMERA",
+            "icon_color": "WHITE_PRIMARY"
+          },
+          "is_icon_left": true
+        },
+        "token": "gaIjPzMO",
+        "should_indicate_seen_status": true,
+        "tracker_session_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaIjPzMO_N",
+        "layout_type": "GRID_ITEM"
+      },
+      "action_log": {
+        "server_side_info": {
+          "info": {
+            "@type": "type.googleapis.com/action_log.PostItemInfo",
+            "post_token": "gaIjPzMO",
+            "index": 8,
+            "post_type": "SEARCH",
+            "list_type": "PAGE",
+            "source_page": "POST_LIST_PAGE",
+            "extra_data": {
+              "@type": "type.googleapis.com/action_log.PostItemInfo.SearchExtraData",
+              "jli": {
+                "category": {
+                  "value": "residential-sell"
+                },
+                "places": {
+                  "value": [
+                    "1"
+                  ]
+                },
+                "cities": [
+                  "1"
+                ]
+              },
+              "search_uid": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a",
+              "search_data": {
+                "form_data_json": "{\"data\":{\"category\":{\"str\":{\"value\":\"residential-sell\"}}}}",
+                "cities": [
+                  "1"
+                ],
+                "query_input_type": "TEXT",
+                "user_selected_location": {
+                  "@type": "type.googleapis.com/widgets.UserSelectedLocation",
+                  "places": [
+                    {
+                      "place_id": "1"
+                    }
+                  ]
+                }
+              },
+              "page": 1
+            },
+            "sort_date": "2026-10-09T14:23:19.210318Z"
+          },
+          "item_type": {
+            "type": "POST_ITEM"
+          }
+        },
+        "enabled": true
+      }
+    },
+    "KEY_PROP_NAME": "b21eb20c-3227-49ce-9f0a-05ba9ddbefb7",
+    "__NORMALIZED_WIDGET_V2__": true
+  },
+  {
+    "widgetType": "POST_ROW",
+    "visibilityConditions": [],
+    "uid": "27fe2f3d-5bb9-4cae-87c2-852afe2c62d6",
+    "normalizerId": "2960b4e2-8d11-487b-b148-57ac8d8e8a64",
+    "dto": {
+      "widget_type": "POST_ROW",
+      "data": {
+        "@type": "type.googleapis.com/widgets.PostRowData",
+        "title": "130 متر 3 خواب بازسازی شده پاسداران زمرد",
+        "action": {
+          "type": "VIEW_POST",
+          "payload": {
+            "@type": "type.googleapis.com/widgets.ViewPostPayload",
+            "token": "gaIjfpOo",
+            "web_info": {
+              "title": "130 متر 3 خواب بازسازی شده پاسداران زمرد",
+              "district_persian": "قبا",
+              "city_persian": "تهران"
+            },
+            "ad_instance_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaIjfpOo_N"
+          }
+        },
+        "image_url": "https://s100.divarcdn.com/static/photo/neda/webp_thumbnail/g9aIBqVlegoRz9-wL4p18A/7516196a-7282-4d1e-b5a5-e14a5ddf90d1.webp",
+        "bottom_description_text": "دقایقی پیش در قبا",
+        "middle_description_text": "۵۴,۰۰۰,۰۰۰,۰۰۰ تومان",
+        "has_divider": true,
+        "image_count": 1,
+        "image_top_left_tag": {
+          "text": "۱",
+          "icon": {
+            "image_url_dark": "https://s100.divarcdn.com/static/imgs/widget-icons/dark/white_primary/v1/camera.png",
+            "image_url_light": "https://s100.divarcdn.com/static/imgs/widget-icons/light/white_primary/v1/camera.png",
+            "icon_name": "CAMERA",
+            "icon_color": "WHITE_PRIMARY"
+          },
+          "is_icon_left": true
+        },
+        "token": "gaIjfpOo",
+        "should_indicate_seen_status": true,
+        "tracker_session_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaIjfpOo_N",
+        "layout_type": "GRID_ITEM"
+      },
+      "action_log": {
+        "server_side_info": {
+          "info": {
+            "@type": "type.googleapis.com/action_log.PostItemInfo",
+            "post_token": "gaIjfpOo",
+            "index": 9,
+            "post_type": "SEARCH",
+            "list_type": "PAGE",
+            "source_page": "POST_LIST_PAGE",
+            "extra_data": {
+              "@type": "type.googleapis.com/action_log.PostItemInfo.SearchExtraData",
+              "jli": {
+                "places": {
+                  "value": [
+                    "1"
+                  ]
+                },
+                "cities": [
+                  "1"
+                ],
+                "category": {
+                  "value": "residential-sell"
+                }
+              },
+              "search_uid": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a",
+              "search_data": {
+                "form_data_json": "{\"data\":{\"category\":{\"str\":{\"value\":\"residential-sell\"}}}}",
+                "cities": [
+                  "1"
+                ],
+                "query_input_type": "TEXT",
+                "user_selected_location": {
+                  "@type": "type.googleapis.com/widgets.UserSelectedLocation",
+                  "places": [
+                    {
+                      "place_id": "1"
+                    }
+                  ]
+                }
+              },
+              "page": 1
+            },
+            "sort_date": "2026-10-09T14:23:06.632304Z"
+          },
+          "item_type": {
+            "type": "POST_ITEM"
+          }
+        },
+        "enabled": true
+      }
+    },
+    "KEY_PROP_NAME": "27fe2f3d-5bb9-4cae-87c2-852afe2c62d6",
+    "__NORMALIZED_WIDGET_V2__": true
+  },
+  {
+    "widgetType": "POST_ROW",
+    "visibilityConditions": [],
+    "uid": "6820c6bb-cb37-4a64-8980-f890469b8b1e",
+    "normalizerId": "b46c67d7-4a40-4492-abd4-1a4539c6b654",
+    "dto": {
+      "widget_type": "POST_ROW",
+      "data": {
+        "@type": "type.googleapis.com/widgets.PostRowData",
+        "title": "ولنجک۱۴۹متر/۵سال ساخت/۲پارکینگ/ویوشهر",
+        "action": {
+          "type": "VIEW_POST",
+          "payload": {
+            "@type": "type.googleapis.com/widgets.ViewPostPayload",
+            "token": "gaIjPueG",
+            "web_info": {
+              "title": "ولنجک۱۴۹متر/۵سال ساخت/۲پارکینگ/ویوشهر",
+              "district_persian": "ولنجک",
+              "city_persian": "تهران"
+            },
+            "ad_instance_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaIjPueG_N"
+          }
+        },
+        "image_url": "https://s100.divarcdn.com/static/photo/neda/webp_thumbnail/l7x_et7QEwv33vLa7TcHAg/4f834139-a4d4-455e-b687-c0de5f0df98d.webp",
+        "bottom_description_text": "گروه مشاورین املاک شریف در ولنجک",
+        "middle_description_text": "۹۳,۰۰۰,۰۰۰,۰۰۰ تومان",
+        "has_divider": true,
+        "image_count": 5,
+        "image_top_left_tag": {
+          "text": "۵",
+          "icon": {
+            "image_url_dark": "https://s100.divarcdn.com/static/imgs/widget-icons/dark/white_primary/v1/camera.png",
+            "image_url_light": "https://s100.divarcdn.com/static/imgs/widget-icons/light/white_primary/v1/camera.png",
+            "icon_name": "CAMERA",
+            "icon_color": "WHITE_PRIMARY"
+          },
+          "is_icon_left": true
+        },
+        "token": "gaIjPueG",
+        "should_indicate_seen_status": true,
+        "tracker_session_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaIjPueG_N",
+        "layout_type": "GRID_ITEM"
+      },
+      "action_log": {
+        "server_side_info": {
+          "info": {
+            "@type": "type.googleapis.com/action_log.PostItemInfo",
+            "post_token": "gaIjPueG",
+            "index": 10,
+            "post_type": "SEARCH",
+            "list_type": "PAGE",
+            "source_page": "POST_LIST_PAGE",
+            "extra_data": {
+              "@type": "type.googleapis.com/action_log.PostItemInfo.SearchExtraData",
+              "jli": {
+                "category": {
+                  "value": "residential-sell"
+                },
+                "places": {
+                  "value": [
+                    "1"
+                  ]
+                },
+                "cities": [
+                  "1"
+                ]
+              },
+              "search_uid": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a",
+              "search_data": {
+                "form_data_json": "{\"data\":{\"category\":{\"str\":{\"value\":\"residential-sell\"}}}}",
+                "cities": [
+                  "1"
+                ],
+                "query_input_type": "TEXT",
+                "user_selected_location": {
+                  "@type": "type.googleapis.com/widgets.UserSelectedLocation",
+                  "places": [
+                    {
+                      "place_id": "1"
+                    }
+                  ]
+                }
+              },
+              "page": 1
+            },
+            "sort_date": "2026-10-09T14:22:59.606728Z"
+          },
+          "item_type": {
+            "type": "POST_ITEM"
+          }
+        },
+        "enabled": true
+      }
+    },
+    "KEY_PROP_NAME": "6820c6bb-cb37-4a64-8980-f890469b8b1e",
+    "__NORMALIZED_WIDGET_V2__": true
+  },
+  {
+    "widgetType": "POST_ROW",
+    "visibilityConditions": [],
+    "uid": "f80ab1a5-453f-4d21-86f3-2b9db14fe887",
+    "normalizerId": "3aeab1eb-595d-4a3c-a5a8-f21b5b074fe7",
+    "dto": {
+      "widget_type": "POST_ROW",
+      "data": {
+        "@type": "type.googleapis.com/widgets.PostRowData",
+        "title": "فروش فوری آپارتمان درنارمک /خوش‌نقشه و آماده سکونت",
+        "action": {
+          "type": "VIEW_POST",
+          "payload": {
+            "@type": "type.googleapis.com/widgets.ViewPostPayload",
+            "token": "gav2OKDc",
+            "web_info": {
+              "title": "فروش فوری آپارتمان درنارمک /خوش‌نقشه و آماده سکونت",
+              "district_persian": "هفت حوض",
+              "city_persian": "تهران"
+            },
+            "ad_instance_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gav2OKDc_N"
+          }
+        },
+        "image_url": "https://s100.divarcdn.com/static/photo/neda/webp_thumbnail/krs7xO4htaMbMS37KV7d0g/4b8195ab-4220-4a70-9ec6-ed7955e2635b.webp",
+        "bottom_description_text": "آژانس ایساتیس در هفت حوض",
+        "red_text": "نردبان شده",
+        "middle_description_text": "۳۶,۰۰۰,۰۰۰,۰۰۰ تومان",
+        "has_divider": true,
+        "image_count": 6,
+        "image_top_left_tag": {
+          "text": "۶",
+          "icon": {
+            "image_url_dark": "https://s100.divarcdn.com/static/imgs/widget-icons/dark/white_primary/v1/camera.png",
+            "image_url_light": "https://s100.divarcdn.com/static/imgs/widget-icons/light/white_primary/v1/camera.png",
+            "icon_name": "CAMERA",
+            "icon_color": "WHITE_PRIMARY"
+          },
+          "is_icon_left": true
+        },
+        "token": "gav2OKDc",
+        "should_indicate_seen_status": true,
+        "tracker_session_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gav2OKDc_N",
+        "layout_type": "GRID_ITEM"
+      },
+      "action_log": {
+        "server_side_info": {
+          "info": {
+            "@type": "type.googleapis.com/action_log.PostItemInfo",
+            "post_token": "gav2OKDc",
+            "index": 11,
+            "post_type": "SEARCH",
+            "list_type": "PAGE",
+            "source_page": "POST_LIST_PAGE",
+            "extra_data": {
+              "@type": "type.googleapis.com/action_log.PostItemInfo.SearchExtraData",
+              "jli": {
+                "places": {
+                  "value": [
+                    "1"
+                  ]
+                },
+                "cities": [
+                  "1"
+                ],
+                "category": {
+                  "value": "residential-sell"
+                }
+              },
+              "search_uid": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a",
+              "search_data": {
+                "form_data_json": "{\"data\":{\"category\":{\"str\":{\"value\":\"residential-sell\"}}}}",
+                "cities": [
+                  "1"
+                ],
+                "query_input_type": "TEXT",
+                "user_selected_location": {
+                  "@type": "type.googleapis.com/widgets.UserSelectedLocation",
+                  "places": [
+                    {
+                      "place_id": "1"
+                    }
+                  ]
+                }
+              },
+              "page": 1
+            },
+            "sort_date": "2026-10-09T14:22:50.717965Z"
+          },
+          "item_type": {
+            "type": "POST_ITEM"
+          }
+        },
+        "enabled": true
+      }
+    },
+    "KEY_PROP_NAME": "f80ab1a5-453f-4d21-86f3-2b9db14fe887",
+    "__NORMALIZED_WIDGET_V2__": true
+  },
+  {
+    "widgetType": "POST_ROW",
+    "visibilityConditions": [],
+    "uid": "7df6d95a-fd3c-4277-a051-99ff994c50bf",
+    "normalizerId": "8cf9dcf4-9ade-4e08-a259-224c11c3c4b5",
+    "dto": {
+      "widget_type": "POST_ROW",
+      "data": {
+        "@type": "type.googleapis.com/widgets.PostRowData",
+        "title": "آپارتمان نوساز کلید نخورده نصبیات کامل",
+        "action": {
+          "type": "VIEW_POST",
+          "payload": {
+            "@type": "type.googleapis.com/widgets.ViewPostPayload",
+            "token": "gaDfaPuW",
+            "web_info": {
+              "title": "آپارتمان نوساز کلید نخورده نصبیات کامل",
+              "district_persian": "شوش",
+              "city_persian": "تهران"
+            },
+            "ad_instance_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaDfaPuW_N"
+          }
+        },
+        "image_url": "https://s100.divarcdn.com/static/photo/neda/webp_thumbnail/Ez8SN78-OS9H1d7MR25aOg/582c7aa0-a4d4-49d7-8e30-f45c4e7289b6.webp",
+        "bottom_description_text": "دفتر املاک بزرگ حداد در شوش",
+        "red_text": "نردبان شده",
+        "middle_description_text": "۱۲,۵۰۰,۰۰۰,۰۰۰ تومان",
+        "has_divider": true,
+        "image_count": 10,
+        "image_top_left_tag": {
+          "text": "۱۰",
+          "icon": {
+            "image_url_dark": "https://s100.divarcdn.com/static/imgs/widget-icons/dark/white_primary/v1/camera.png",
+            "image_url_light": "https://s100.divarcdn.com/static/imgs/widget-icons/light/white_primary/v1/camera.png",
+            "icon_name": "CAMERA",
+            "icon_color": "WHITE_PRIMARY"
+          },
+          "is_icon_left": true
+        },
+        "token": "gaDfaPuW",
+        "should_indicate_seen_status": true,
+        "tracker_session_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaDfaPuW_N",
+        "layout_type": "GRID_ITEM"
+      },
+      "action_log": {
+        "server_side_info": {
+          "info": {
+            "@type": "type.googleapis.com/action_log.PostItemInfo",
+            "post_token": "gaDfaPuW",
+            "index": 12,
+            "post_type": "SEARCH",
+            "list_type": "PAGE",
+            "source_page": "POST_LIST_PAGE",
+            "extra_data": {
+              "@type": "type.googleapis.com/action_log.PostItemInfo.SearchExtraData",
+              "jli": {
+                "category": {
+                  "value": "residential-sell"
+                },
+                "places": {
+                  "value": [
+                    "1"
+                  ]
+                },
+                "cities": [
+                  "1"
+                ]
+              },
+              "search_uid": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a",
+              "search_data": {
+                "form_data_json": "{\"data\":{\"category\":{\"str\":{\"value\":\"residential-sell\"}}}}",
+                "cities": [
+                  "1"
+                ],
+                "query_input_type": "TEXT",
+                "user_selected_location": {
+                  "@type": "type.googleapis.com/widgets.UserSelectedLocation",
+                  "places": [
+                    {
+                      "place_id": "1"
+                    }
+                  ]
+                }
+              },
+              "page": 1
+            },
+            "sort_date": "2026-10-09T14:22:16.529614Z"
+          },
+          "item_type": {
+            "type": "POST_ITEM"
+          }
+        },
+        "enabled": true
+      }
+    },
+    "KEY_PROP_NAME": "7df6d95a-fd3c-4277-a051-99ff994c50bf",
+    "__NORMALIZED_WIDGET_V2__": true
+  },
+  {
+    "widgetType": "POST_ROW",
+    "visibilityConditions": [],
+    "uid": "74f97524-3f37-465b-99a7-42fb419f15d6",
+    "normalizerId": "1bc40d82-01f0-4c81-b712-3d84491bdde8",
+    "dto": {
+      "widget_type": "POST_ROW",
+      "data": {
+        "@type": "type.googleapis.com/widgets.PostRowData",
+        "title": "70متر نوساز سندآماده خیابان هاشمی",
+        "action": {
+          "type": "VIEW_POST",
+          "payload": {
+            "@type": "type.googleapis.com/widgets.ViewPostPayload",
+            "token": "gaIjPUh1",
+            "web_info": {
+              "title": "70متر نوساز سندآماده خیابان هاشمی",
+              "district_persian": "جیحون",
+              "city_persian": "تهران"
+            },
+            "ad_instance_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaIjPUh1_N"
+          }
+        },
+        "image_url": "https://s100.divarcdn.com/static/photo/neda/webp_thumbnail/qW_R9D8Xs39_C-EYWb16oA/4a053693-92ce-48b4-91c8-d5f050913a32.webp",
+        "bottom_description_text": "آژانس دهقان در جیحون",
+        "middle_description_text": "۱۱,۴۰۰,۰۰۰,۰۰۰ تومان",
+        "has_divider": true,
+        "image_count": 1,
+        "image_top_left_tag": {
+          "text": "۱",
+          "icon": {
+            "image_url_dark": "https://s100.divarcdn.com/static/imgs/widget-icons/dark/white_primary/v1/camera.png",
+            "image_url_light": "https://s100.divarcdn.com/static/imgs/widget-icons/light/white_primary/v1/camera.png",
+            "icon_name": "CAMERA",
+            "icon_color": "WHITE_PRIMARY"
+          },
+          "is_icon_left": true
+        },
+        "token": "gaIjPUh1",
+        "should_indicate_seen_status": true,
+        "tracker_session_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaIjPUh1_N",
+        "layout_type": "GRID_ITEM"
+      },
+      "action_log": {
+        "server_side_info": {
+          "info": {
+            "@type": "type.googleapis.com/action_log.PostItemInfo",
+            "post_token": "gaIjPUh1",
+            "index": 13,
+            "post_type": "SEARCH",
+            "list_type": "PAGE",
+            "source_page": "POST_LIST_PAGE",
+            "extra_data": {
+              "@type": "type.googleapis.com/action_log.PostItemInfo.SearchExtraData",
+              "jli": {
+                "category": {
+                  "value": "residential-sell"
+                },
+                "places": {
+                  "value": [
+                    "1"
+                  ]
+                },
+                "cities": [
+                  "1"
+                ]
+              },
+              "search_uid": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a",
+              "search_data": {
+                "form_data_json": "{\"data\":{\"category\":{\"str\":{\"value\":\"residential-sell\"}}}}",
+                "cities": [
+                  "1"
+                ],
+                "query_input_type": "TEXT",
+                "user_selected_location": {
+                  "@type": "type.googleapis.com/widgets.UserSelectedLocation",
+                  "places": [
+                    {
+                      "place_id": "1"
+                    }
+                  ]
+                }
+              },
+              "page": 1
+            },
+            "sort_date": "2026-10-09T14:21:57.778028Z"
+          },
+          "item_type": {
+            "type": "POST_ITEM"
+          }
+        },
+        "enabled": true
+      }
+    },
+    "KEY_PROP_NAME": "74f97524-3f37-465b-99a7-42fb419f15d6",
+    "__NORMALIZED_WIDGET_V2__": true
+  },
+  {
+    "widgetType": "POST_ROW",
+    "visibilityConditions": [],
+    "uid": "14d3b51d-8eac-4381-9306-98cf1e72c7cd",
+    "normalizerId": "b3aaf4c2-3355-491f-a03c-616ce78296d1",
+    "dto": {
+      "widget_type": "POST_ROW",
+      "data": {
+        "@type": "type.googleapis.com/widgets.PostRowData",
+        "title": "۷۵ متر دو خواب خوش نقش",
+        "action": {
+          "type": "VIEW_POST",
+          "payload": {
+            "@type": "type.googleapis.com/widgets.ViewPostPayload",
+            "token": "wZSvLo8c",
+            "web_info": {
+              "title": "۷۵ متر دو خواب خوش نقش",
+              "district_persian": "تقی آباد",
+              "city_persian": "تهران"
+            },
+            "ad_instance_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_wZSvLo8c_N"
+          }
+        },
+        "image_url": "https://s100.divarcdn.com/static/photo/neda/webp_thumbnail/ExzRq-ux0B5I3wBmDo0PCw/6702c20d-24bd-4bea-99b5-00f89154c4c8.jpg.webp",
+        "bottom_description_text": "(((آژانس مهدی کهریزک))) در تقی آباد",
+        "red_text": "نردبان شده",
+        "middle_description_text": "۵,۲۵۰,۰۰۰,۰۰۰ تومان",
+        "has_divider": true,
+        "image_count": 5,
+        "image_top_left_tag": {
+          "text": "۵",
+          "icon": {
+            "image_url_dark": "https://s100.divarcdn.com/static/imgs/widget-icons/dark/white_primary/v1/camera.png",
+            "image_url_light": "https://s100.divarcdn.com/static/imgs/widget-icons/light/white_primary/v1/camera.png",
+            "icon_name": "CAMERA",
+            "icon_color": "WHITE_PRIMARY"
+          },
+          "is_icon_left": true
+        },
+        "token": "wZSvLo8c",
+        "should_indicate_seen_status": true,
+        "tracker_session_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_wZSvLo8c_N",
+        "layout_type": "GRID_ITEM"
+      },
+      "action_log": {
+        "server_side_info": {
+          "info": {
+            "@type": "type.googleapis.com/action_log.PostItemInfo",
+            "post_token": "wZSvLo8c",
+            "index": 14,
+            "post_type": "SEARCH",
+            "list_type": "PAGE",
+            "source_page": "POST_LIST_PAGE",
+            "extra_data": {
+              "@type": "type.googleapis.com/action_log.PostItemInfo.SearchExtraData",
+              "jli": {
+                "category": {
+                  "value": "residential-sell"
+                },
+                "places": {
+                  "value": [
+                    "1"
+                  ]
+                },
+                "cities": [
+                  "1"
+                ]
+              },
+              "search_uid": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a",
+              "search_data": {
+                "form_data_json": "{\"data\":{\"category\":{\"str\":{\"value\":\"residential-sell\"}}}}",
+                "cities": [
+                  "1"
+                ],
+                "query_input_type": "TEXT",
+                "user_selected_location": {
+                  "@type": "type.googleapis.com/widgets.UserSelectedLocation",
+                  "places": [
+                    {
+                      "place_id": "1"
+                    }
+                  ]
+                }
+              },
+              "page": 1
+            },
+            "sort_date": "2026-10-09T14:21:45.224445Z"
+          },
+          "item_type": {
+            "type": "POST_ITEM"
+          }
+        },
+        "enabled": true
+      }
+    },
+    "KEY_PROP_NAME": "14d3b51d-8eac-4381-9306-98cf1e72c7cd",
+    "__NORMALIZED_WIDGET_V2__": true
+  },
+  {
+    "widgetType": "POST_ROW",
+    "visibilityConditions": [],
+    "uid": "0565477e-69c3-46bc-a649-99b077f529a2",
+    "normalizerId": "8fb14527-2ebb-458b-a298-b117c7aabc45",
+    "dto": {
+      "widget_type": "POST_ROW",
+      "data": {
+        "@type": "type.googleapis.com/widgets.PostRowData",
+        "title": "فروش ۱۰۴متری ۲خواب نوساز خوش نقشه دریاچه رزمال",
+        "action": {
+          "type": "VIEW_POST",
+          "payload": {
+            "@type": "type.googleapis.com/widgets.ViewPostPayload",
+            "token": "gaFLjoc3",
+            "web_info": {
+              "title": "فروش ۱۰۴متری ۲خواب نوساز خوش نقشه دریاچه رزمال",
+              "district_persian": "آبشار تهران (دریاچه)",
+              "city_persian": "تهران"
+            },
+            "ad_instance_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaFLjoc3_N"
+          }
+        },
+        "image_url": "https://s100.divarcdn.com/static/photo/neda/webp_thumbnail/6q3xvd48RYwY_vuzeZlOXg/2db7a560-fb4c-4389-ba03-37180667540f.webp",
+        "bottom_description_text": "گروه سرمایه گذاری بزرگ امین در آبشار تهران (دریاچه)",
+        "middle_description_text": "۲۱,۵۰۰,۰۰۰,۰۰۰ تومان",
+        "has_divider": true,
+        "image_count": 4,
+        "image_top_left_tag": {
+          "text": "۴",
+          "icon": {
+            "image_url_dark": "https://s100.divarcdn.com/static/imgs/widget-icons/dark/white_primary/v1/camera.png",
+            "image_url_light": "https://s100.divarcdn.com/static/imgs/widget-icons/light/white_primary/v1/camera.png",
+            "icon_name": "CAMERA",
+            "icon_color": "WHITE_PRIMARY"
+          },
+          "is_icon_left": true
+        },
+        "token": "gaFLjoc3",
+        "should_indicate_seen_status": true,
+        "tracker_session_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaFLjoc3_N",
+        "layout_type": "GRID_ITEM"
+      },
+      "action_log": {
+        "server_side_info": {
+          "info": {
+            "@type": "type.googleapis.com/action_log.PostItemInfo",
+            "post_token": "gaFLjoc3",
+            "index": 15,
+            "post_type": "SEARCH",
+            "list_type": "PAGE",
+            "source_page": "POST_LIST_PAGE",
+            "extra_data": {
+              "@type": "type.googleapis.com/action_log.PostItemInfo.SearchExtraData",
+              "jli": {
+                "category": {
+                  "value": "residential-sell"
+                },
+                "places": {
+                  "value": [
+                    "1"
+                  ]
+                },
+                "cities": [
+                  "1"
+                ]
+              },
+              "search_uid": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a",
+              "search_data": {
+                "form_data_json": "{\"data\":{\"category\":{\"str\":{\"value\":\"residential-sell\"}}}}",
+                "cities": [
+                  "1"
+                ],
+                "query_input_type": "TEXT",
+                "user_selected_location": {
+                  "@type": "type.googleapis.com/widgets.UserSelectedLocation",
+                  "places": [
+                    {
+                      "place_id": "1"
+                    }
+                  ]
+                }
+              },
+              "page": 1
+            },
+            "sort_date": "2026-10-09T14:21:33.083797Z"
+          },
+          "item_type": {
+            "type": "POST_ITEM"
+          }
+        },
+        "enabled": true
+      }
+    },
+    "KEY_PROP_NAME": "0565477e-69c3-46bc-a649-99b077f529a2",
+    "__NORMALIZED_WIDGET_V2__": true
+  },
+  {
+    "widgetType": "POST_ROW",
+    "visibilityConditions": [],
+    "uid": "6a53ee4a-fdbe-4393-b121-c8f308926aa9",
+    "normalizerId": "028ead33-ebab-4291-be2c-4a6ef244950e",
+    "dto": {
+      "widget_type": "POST_ROW",
+      "data": {
+        "@type": "type.googleapis.com/widgets.PostRowData",
+        "title": "۶۵ متر ۲ خواب سلمان فارسی",
+        "action": {
+          "type": "VIEW_POST",
+          "payload": {
+            "@type": "type.googleapis.com/widgets.ViewPostPayload",
+            "token": "gaIjvSDQ",
+            "web_info": {
+              "title": "۶۵ متر ۲ خواب سلمان فارسی",
+              "district_persian": "گرگان",
+              "city_persian": "تهران"
+            },
+            "ad_instance_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaIjvSDQ_N"
+          }
+        },
+        "image_url": "https://s100.divarcdn.com/static/photo/neda/webp_thumbnail/TGjEXminADXvtjG5yBINOg/b9f5183c-2205-4bb2-bcf5-99cf7723101b.webp",
+        "bottom_description_text": "املاک ممتاز شعبه۲ در گرگان",
+        "middle_description_text": "۱۰,۲۰۰,۰۰۰,۰۰۰ تومان",
+        "has_divider": true,
+        "image_count": 6,
+        "image_top_left_tag": {
+          "text": "۶",
+          "icon": {
+            "image_url_dark": "https://s100.divarcdn.com/static/imgs/widget-icons/dark/white_primary/v1/camera.png",
+            "image_url_light": "https://s100.divarcdn.com/static/imgs/widget-icons/light/white_primary/v1/camera.png",
+            "icon_name": "CAMERA",
+            "icon_color": "WHITE_PRIMARY"
+          },
+          "is_icon_left": true
+        },
+        "token": "gaIjvSDQ",
+        "should_indicate_seen_status": true,
+        "tracker_session_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaIjvSDQ_N",
+        "layout_type": "GRID_ITEM"
+      },
+      "action_log": {
+        "server_side_info": {
+          "info": {
+            "@type": "type.googleapis.com/action_log.PostItemInfo",
+            "post_token": "gaIjvSDQ",
+            "index": 16,
+            "post_type": "SEARCH",
+            "list_type": "PAGE",
+            "source_page": "POST_LIST_PAGE",
+            "extra_data": {
+              "@type": "type.googleapis.com/action_log.PostItemInfo.SearchExtraData",
+              "jli": {
+                "category": {
+                  "value": "residential-sell"
+                },
+                "places": {
+                  "value": [
+                    "1"
+                  ]
+                },
+                "cities": [
+                  "1"
+                ]
+              },
+              "search_uid": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a",
+              "search_data": {
+                "form_data_json": "{\"data\":{\"category\":{\"str\":{\"value\":\"residential-sell\"}}}}",
+                "cities": [
+                  "1"
+                ],
+                "query_input_type": "TEXT",
+                "user_selected_location": {
+                  "@type": "type.googleapis.com/widgets.UserSelectedLocation",
+                  "places": [
+                    {
+                      "place_id": "1"
+                    }
+                  ]
+                }
+              },
+              "page": 1
+            },
+            "sort_date": "2026-10-09T14:21:12.359840Z"
+          },
+          "item_type": {
+            "type": "POST_ITEM"
+          }
+        },
+        "enabled": true
+      }
+    },
+    "KEY_PROP_NAME": "6a53ee4a-fdbe-4393-b121-c8f308926aa9",
+    "__NORMALIZED_WIDGET_V2__": true
+  },
+  {
+    "widgetType": "POST_ROW",
+    "visibilityConditions": [],
+    "uid": "4e18e8d8-c423-47ab-9b78-3693204f2e1f",
+    "normalizerId": "982b0a16-8add-4283-b8f9-f57f88089e40",
+    "dto": {
+      "widget_type": "POST_ROW",
+      "data": {
+        "@type": "type.googleapis.com/widgets.PostRowData",
+        "title": "۶۸متری دو خواب کلید نخورده نفیس بر خیابان اصلی",
+        "action": {
+          "type": "VIEW_POST",
+          "payload": {
+            "@type": "type.googleapis.com/widgets.ViewPostPayload",
+            "token": "gaIz8K-u",
+            "web_info": {
+              "title": "۶۸متری دو خواب کلید نخورده نفیس بر خیابان اصلی",
+              "district_persian": "مینابی",
+              "city_persian": "تهران"
+            },
+            "ad_instance_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaIz8K-u_N"
+          }
+        },
+        "image_url": "https://s100.divarcdn.com/static/photo/neda/webp_thumbnail/12FiUGCIaIpxpHqVWnJolg/17388a00-e81b-4ae6-9072-f35e46e5c1a8.webp",
+        "bottom_description_text": "در مینابی",
+        "red_text": "نردبان شده",
+        "middle_description_text": "۷,۸۰۰,۰۰۰,۰۰۰ تومان",
+        "has_divider": true,
+        "image_count": 1,
+        "image_top_left_tag": {
+          "text": "۱",
+          "icon": {
+            "image_url_dark": "https://s100.divarcdn.com/static/imgs/widget-icons/dark/white_primary/v1/camera.png",
+            "image_url_light": "https://s100.divarcdn.com/static/imgs/widget-icons/light/white_primary/v1/camera.png",
+            "icon_name": "CAMERA",
+            "icon_color": "WHITE_PRIMARY"
+          },
+          "is_icon_left": true
+        },
+        "token": "gaIz8K-u",
+        "should_indicate_seen_status": true,
+        "tracker_session_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaIz8K-u_N",
+        "layout_type": "GRID_ITEM"
+      },
+      "action_log": {
+        "server_side_info": {
+          "info": {
+            "@type": "type.googleapis.com/action_log.PostItemInfo",
+            "post_token": "gaIz8K-u",
+            "index": 17,
+            "post_type": "SEARCH",
+            "list_type": "PAGE",
+            "source_page": "POST_LIST_PAGE",
+            "extra_data": {
+              "@type": "type.googleapis.com/action_log.PostItemInfo.SearchExtraData",
+              "jli": {
+                "category": {
+                  "value": "residential-sell"
+                },
+                "places": {
+                  "value": [
+                    "1"
+                  ]
+                },
+                "cities": [
+                  "1"
+                ]
+              },
+              "search_uid": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a",
+              "search_data": {
+                "form_data_json": "{\"data\":{\"category\":{\"str\":{\"value\":\"residential-sell\"}}}}",
+                "cities": [
+                  "1"
+                ],
+                "query_input_type": "TEXT",
+                "user_selected_location": {
+                  "@type": "type.googleapis.com/widgets.UserSelectedLocation",
+                  "places": [
+                    {
+                      "place_id": "1"
+                    }
+                  ]
+                }
+              },
+              "page": 1
+            },
+            "sort_date": "2026-10-09T14:20:46.997275Z"
+          },
+          "item_type": {
+            "type": "POST_ITEM"
+          }
+        },
+        "enabled": true
+      }
+    },
+    "KEY_PROP_NAME": "4e18e8d8-c423-47ab-9b78-3693204f2e1f",
+    "__NORMALIZED_WIDGET_V2__": true
+  },
+  {
+    "widgetType": "POST_ROW",
+    "visibilityConditions": [],
+    "uid": "0a3fc93e-b2ae-4d82-a7ef-a2f89cd8788a",
+    "normalizerId": "5b6d8c1c-2a38-49ea-a770-55057be2cd31",
+    "dto": {
+      "widget_type": "POST_ROW",
+      "data": {
+        "@type": "type.googleapis.com/widgets.PostRowData",
+        "title": "۱۲۳متر۳خواب یا۲خواب ،مشاعات ابی فعال ،نیاوران",
+        "action": {
+          "type": "VIEW_POST",
+          "payload": {
+            "@type": "type.googleapis.com/widgets.ViewPostPayload",
+            "token": "gauuFDRz",
+            "web_info": {
+              "title": "۱۲۳متر۳خواب یا۲خواب ،مشاعات ابی فعال ،نیاوران",
+              "district_persian": "دزاشیب",
+              "city_persian": "تهران"
+            },
+            "ad_instance_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gauuFDRz_N"
+          }
+        },
+        "image_url": "https://s100.divarcdn.com/static/photo/neda/webp_thumbnail/DmUMhkRr5XUGEMfBCKr-Qw/44be5d6e-b7c6-4d8c-872b-fd644376cfe0.webp",
+        "bottom_description_text": "آژانس املاک فرداسازه در دزاشیب",
+        "red_text": "نردبان شده",
+        "middle_description_text": "۶۱,۰۰۰,۰۰۰,۰۰۰ تومان",
+        "has_divider": true,
+        "image_count": 15,
+        "image_top_left_tag": {
+          "icon": {
+            "image_url_dark": "https://s100.divarcdn.com/static/imgs/widget-icons/dark/white_primary/v1/videocam.png",
+            "image_url_light": "https://s100.divarcdn.com/static/imgs/widget-icons/light/white_primary/v1/videocam.png",
+            "icon_name": "VIDEOCAM",
+            "icon_color": "WHITE_PRIMARY"
+          }
+        },
+        "token": "gauuFDRz",
+        "should_indicate_seen_status": true,
+        "tracker_session_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gauuFDRz_N",
+        "layout_type": "GRID_ITEM"
+      },
+      "action_log": {
+        "server_side_info": {
+          "info": {
+            "@type": "type.googleapis.com/action_log.PostItemInfo",
+            "post_token": "gauuFDRz",
+            "index": 18,
+            "post_type": "SEARCH",
+            "list_type": "PAGE",
+            "source_page": "POST_LIST_PAGE",
+            "extra_data": {
+              "@type": "type.googleapis.com/action_log.PostItemInfo.SearchExtraData",
+              "jli": {
+                "category": {
+                  "value": "residential-sell"
+                },
+                "places": {
+                  "value": [
+                    "1"
+                  ]
+                },
+                "cities": [
+                  "1"
+                ]
+              },
+              "search_uid": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a",
+              "search_data": {
+                "form_data_json": "{\"data\":{\"category\":{\"str\":{\"value\":\"residential-sell\"}}}}",
+                "cities": [
+                  "1"
+                ],
+                "query_input_type": "TEXT",
+                "user_selected_location": {
+                  "@type": "type.googleapis.com/widgets.UserSelectedLocation",
+                  "places": [
+                    {
+                      "place_id": "1"
+                    }
+                  ]
+                }
+              },
+              "page": 1
+            },
+            "sort_date": "2026-10-09T14:20:28.348560Z"
+          },
+          "item_type": {
+            "type": "POST_ITEM"
+          }
+        },
+        "enabled": true
+      }
+    },
+    "KEY_PROP_NAME": "0a3fc93e-b2ae-4d82-a7ef-a2f89cd8788a",
+    "__NORMALIZED_WIDGET_V2__": true
+  },
+  {
+    "widgetType": "POST_ROW",
+    "visibilityConditions": [],
+    "uid": "e004623b-e919-457e-96ef-be0f9f229f15",
+    "normalizerId": "95da4127-1bc1-49cf-bbd3-37abf760f636",
+    "dto": {
+      "widget_type": "POST_ROW",
+      "data": {
+        "@type": "type.googleapis.com/widgets.PostRowData",
+        "title": "۹۰ متر فول امکانات کمالی شرقی",
+        "action": {
+          "type": "VIEW_POST",
+          "payload": {
+            "@type": "type.googleapis.com/widgets.ViewPostPayload",
+            "token": "ga1ijLLs",
+            "web_info": {
+              "title": "۹۰ متر فول امکانات کمالی شرقی",
+              "district_persian": "پونک",
+              "city_persian": "تهران"
+            },
+            "ad_instance_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_ga1ijLLs_N"
+          }
+        },
+        "image_url": "https://s100.divarcdn.com/static/photo/neda/webp_thumbnail/OzSa0aMeEKZ7ehIKb-Tvvw/daaa1432-f2ef-405a-a7eb-745fc27d3f79.webp",
+        "bottom_description_text": "خانم رامش در پونک",
+        "red_text": "نردبان شده",
+        "middle_description_text": "۴۱,۰۰۰,۰۰۰,۰۰۰ تومان",
+        "has_divider": true,
+        "image_count": 1,
+        "image_top_left_tag": {
+          "text": "۱",
+          "icon": {
+            "image_url_dark": "https://s100.divarcdn.com/static/imgs/widget-icons/dark/white_primary/v1/camera.png",
+            "image_url_light": "https://s100.divarcdn.com/static/imgs/widget-icons/light/white_primary/v1/camera.png",
+            "icon_name": "CAMERA",
+            "icon_color": "WHITE_PRIMARY"
+          },
+          "is_icon_left": true
+        },
+        "token": "ga1ijLLs",
+        "should_indicate_seen_status": true,
+        "tracker_session_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_ga1ijLLs_N",
+        "layout_type": "GRID_ITEM"
+      },
+      "action_log": {
+        "server_side_info": {
+          "info": {
+            "@type": "type.googleapis.com/action_log.PostItemInfo",
+            "post_token": "ga1ijLLs",
+            "index": 19,
+            "post_type": "SEARCH",
+            "list_type": "PAGE",
+            "source_page": "POST_LIST_PAGE",
+            "extra_data": {
+              "@type": "type.googleapis.com/action_log.PostItemInfo.SearchExtraData",
+              "jli": {
+                "category": {
+                  "value": "residential-sell"
+                },
+                "places": {
+                  "value": [
+                    "1"
+                  ]
+                },
+                "cities": [
+                  "1"
+                ]
+              },
+              "search_uid": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a",
+              "search_data": {
+                "form_data_json": "{\"data\":{\"category\":{\"str\":{\"value\":\"residential-sell\"}}}}",
+                "cities": [
+                  "1"
+                ],
+                "query_input_type": "TEXT",
+                "user_selected_location": {
+                  "@type": "type.googleapis.com/widgets.UserSelectedLocation",
+                  "places": [
+                    {
+                      "place_id": "1"
+                    }
+                  ]
+                }
+              },
+              "page": 1
+            },
+            "sort_date": "2026-10-09T14:20:06.566920Z"
+          },
+          "item_type": {
+            "type": "POST_ITEM"
+          }
+        },
+        "enabled": true
+      }
+    },
+    "KEY_PROP_NAME": "e004623b-e919-457e-96ef-be0f9f229f15",
+    "__NORMALIZED_WIDGET_V2__": true
+  },
+  {
+    "widgetType": "POST_ROW",
+    "visibilityConditions": [],
+    "uid": "ba1f0252-04dc-4cfd-88d8-e1fbd3bb50e2",
+    "normalizerId": "906cedaa-1fbd-4adf-b641-aff024b116fe",
+    "dto": {
+      "widget_type": "POST_ROW",
+      "data": {
+        "@type": "type.googleapis.com/widgets.PostRowData",
+        "title": "120متر 10واحدی روبه آفتاب بلوار فردوس",
+        "action": {
+          "type": "VIEW_POST",
+          "payload": {
+            "@type": "type.googleapis.com/widgets.ViewPostPayload",
+            "token": "ga7COFLa",
+            "web_info": {
+              "title": "120متر 10واحدی روبه آفتاب بلوار فردوس",
+              "district_persian": "ارم",
+              "city_persian": "تهران"
+            },
+            "ad_instance_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_ga7COFLa_N"
+          }
+        },
+        "image_url": "https://s100.divarcdn.com/static/photo/neda/webp_thumbnail/EPpzavzb53Lenr2AJ32Z_Q/01e1418b-2794-42d2-a0ae-533f2eeef769.webp",
+        "bottom_description_text": "املاک نوید در ارم",
+        "red_text": "نردبان شده",
+        "middle_description_text": "۳۳,۰۰۰,۰۰۰,۰۰۰ تومان",
+        "has_divider": true,
+        "image_count": 7,
+        "image_top_left_tag": {
+          "text": "۷",
+          "icon": {
+            "image_url_dark": "https://s100.divarcdn.com/static/imgs/widget-icons/dark/white_primary/v1/camera.png",
+            "image_url_light": "https://s100.divarcdn.com/static/imgs/widget-icons/light/white_primary/v1/camera.png",
+            "icon_name": "CAMERA",
+            "icon_color": "WHITE_PRIMARY"
+          },
+          "is_icon_left": true
+        },
+        "token": "ga7COFLa",
+        "should_indicate_seen_status": true,
+        "tracker_session_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_ga7COFLa_N",
+        "layout_type": "GRID_ITEM"
+      },
+      "action_log": {
+        "server_side_info": {
+          "info": {
+            "@type": "type.googleapis.com/action_log.PostItemInfo",
+            "post_token": "ga7COFLa",
+            "index": 20,
+            "post_type": "SEARCH",
+            "list_type": "PAGE",
+            "source_page": "POST_LIST_PAGE",
+            "extra_data": {
+              "@type": "type.googleapis.com/action_log.PostItemInfo.SearchExtraData",
+              "jli": {
+                "category": {
+                  "value": "residential-sell"
+                },
+                "places": {
+                  "value": [
+                    "1"
+                  ]
+                },
+                "cities": [
+                  "1"
+                ]
+              },
+              "search_uid": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a",
+              "search_data": {
+                "form_data_json": "{\"data\":{\"category\":{\"str\":{\"value\":\"residential-sell\"}}}}",
+                "cities": [
+                  "1"
+                ],
+                "query_input_type": "TEXT",
+                "user_selected_location": {
+                  "@type": "type.googleapis.com/widgets.UserSelectedLocation",
+                  "places": [
+                    {
+                      "place_id": "1"
+                    }
+                  ]
+                }
+              },
+              "page": 1
+            },
+            "sort_date": "2026-10-09T14:20:03.526837Z"
+          },
+          "item_type": {
+            "type": "POST_ITEM"
+          }
+        },
+        "enabled": true
+      }
+    },
+    "KEY_PROP_NAME": "ba1f0252-04dc-4cfd-88d8-e1fbd3bb50e2",
+    "__NORMALIZED_WIDGET_V2__": true
+  },
+  {
+    "widgetType": "POST_ROW",
+    "visibilityConditions": [],
+    "uid": "f7af23cd-4d14-42db-8a82-989d8088f2b8",
+    "normalizerId": "c8dee7cd-7499-4a7a-a2ec-539cbdb6e5c3",
+    "dto": {
+      "widget_type": "POST_ROW",
+      "data": {
+        "@type": "type.googleapis.com/widgets.PostRowData",
+        "title": "اوین / ۹۰ متر / ویو ابدی",
+        "action": {
+          "type": "VIEW_POST",
+          "payload": {
+            "@type": "type.googleapis.com/widgets.ViewPostPayload",
+            "token": "gaIf_9PQ",
+            "web_info": {
+              "title": "اوین / ۹۰ متر / ویو ابدی",
+              "district_persian": "درکه",
+              "city_persian": "تهران"
+            },
+            "ad_instance_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaIf_9PQ_N"
+          }
+        },
+        "image_url": "https://s100.divarcdn.com/static/photo/neda/webp_thumbnail/JT6bjnwdIwVW5jbzL9dlKg/2eb92992-f964-4762-812e-514b862d91d2.webp",
+        "bottom_description_text": "مشاور اصلاني در درکه",
+        "middle_description_text": "۴۵,۰۰۰,۰۰۰,۰۰۰ تومان",
+        "has_divider": true,
+        "image_count": 5,
+        "image_top_left_tag": {
+          "text": "۵",
+          "icon": {
+            "image_url_dark": "https://s100.divarcdn.com/static/imgs/widget-icons/dark/white_primary/v1/camera.png",
+            "image_url_light": "https://s100.divarcdn.com/static/imgs/widget-icons/light/white_primary/v1/camera.png",
+            "icon_name": "CAMERA",
+            "icon_color": "WHITE_PRIMARY"
+          },
+          "is_icon_left": true
+        },
+        "token": "gaIf_9PQ",
+        "should_indicate_seen_status": true,
+        "tracker_session_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaIf_9PQ_N",
+        "layout_type": "GRID_ITEM"
+      },
+      "action_log": {
+        "server_side_info": {
+          "info": {
+            "@type": "type.googleapis.com/action_log.PostItemInfo",
+            "post_token": "gaIf_9PQ",
+            "index": 21,
+            "post_type": "SEARCH",
+            "list_type": "PAGE",
+            "source_page": "POST_LIST_PAGE",
+            "extra_data": {
+              "@type": "type.googleapis.com/action_log.PostItemInfo.SearchExtraData",
+              "jli": {
+                "category": {
+                  "value": "residential-sell"
+                },
+                "places": {
+                  "value": [
+                    "1"
+                  ]
+                },
+                "cities": [
+                  "1"
+                ]
+              },
+              "search_uid": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a",
+              "search_data": {
+                "form_data_json": "{\"data\":{\"category\":{\"str\":{\"value\":\"residential-sell\"}}}}",
+                "cities": [
+                  "1"
+                ],
+                "query_input_type": "TEXT",
+                "user_selected_location": {
+                  "@type": "type.googleapis.com/widgets.UserSelectedLocation",
+                  "places": [
+                    {
+                      "place_id": "1"
+                    }
+                  ]
+                }
+              },
+              "page": 1
+            },
+            "sort_date": "2026-10-09T14:19:45.286929Z"
+          },
+          "item_type": {
+            "type": "POST_ITEM"
+          }
+        },
+        "enabled": true
+      }
+    },
+    "KEY_PROP_NAME": "f7af23cd-4d14-42db-8a82-989d8088f2b8",
+    "__NORMALIZED_WIDGET_V2__": true
+  },
+  {
+    "widgetType": "POST_ROW",
+    "visibilityConditions": [],
+    "uid": "04b5902e-4831-4403-994e-db7580a7f6c5",
+    "normalizerId": "782cb0f2-0599-4967-b8c4-f38d3f63e73d",
+    "dto": {
+      "widget_type": "POST_ROW",
+      "data": {
+        "@type": "type.googleapis.com/widgets.PostRowData",
+        "title": "فروش آپارتمان80متر2خ علی اباد مترو",
+        "action": {
+          "type": "VIEW_POST",
+          "payload": {
+            "@type": "type.googleapis.com/widgets.ViewPostPayload",
+            "token": "gaIff2gz",
+            "web_info": {
+              "title": "فروش آپارتمان80متر2خ علی اباد مترو",
+              "district_persian": "علی‌آباد",
+              "city_persian": "تهران"
+            },
+            "ad_instance_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaIff2gz_N"
+          }
+        },
+        "image_url": "https://s100.divarcdn.com/static/photo/neda/webp_thumbnail/bH-1evhhapPSdXz62yzswg/8aaded56-6262-4296-af52-6f0f187ac49a.webp",
+        "bottom_description_text": "دقایقی پیش در علی‌آباد",
+        "middle_description_text": "۹,۶۰۰,۰۰۰,۰۰۰ تومان",
+        "has_divider": true,
+        "image_count": 8,
+        "image_top_left_tag": {
+          "text": "۸",
+          "icon": {
+            "image_url_dark": "https://s100.divarcdn.com/static/imgs/widget-icons/dark/white_primary/v1/camera.png",
+            "image_url_light": "https://s100.divarcdn.com/static/imgs/widget-icons/light/white_primary/v1/camera.png",
+            "icon_name": "CAMERA",
+            "icon_color": "WHITE_PRIMARY"
+          },
+          "is_icon_left": true
+        },
+        "token": "gaIff2gz",
+        "should_indicate_seen_status": true,
+        "tracker_session_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_gaIff2gz_N",
+        "layout_type": "GRID_ITEM"
+      },
+      "action_log": {
+        "server_side_info": {
+          "info": {
+            "@type": "type.googleapis.com/action_log.PostItemInfo",
+            "post_token": "gaIff2gz",
+            "index": 22,
+            "post_type": "SEARCH",
+            "list_type": "PAGE",
+            "source_page": "POST_LIST_PAGE",
+            "extra_data": {
+              "@type": "type.googleapis.com/action_log.PostItemInfo.SearchExtraData",
+              "jli": {
+                "cities": [
+                  "1"
+                ],
+                "category": {
+                  "value": "residential-sell"
+                },
+                "places": {
+                  "value": [
+                    "1"
+                  ]
+                }
+              },
+              "search_uid": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a",
+              "search_data": {
+                "form_data_json": "{\"data\":{\"category\":{\"str\":{\"value\":\"residential-sell\"}}}}",
+                "cities": [
+                  "1"
+                ],
+                "query_input_type": "TEXT",
+                "user_selected_location": {
+                  "@type": "type.googleapis.com/widgets.UserSelectedLocation",
+                  "places": [
+                    {
+                      "place_id": "1"
+                    }
+                  ]
+                }
+              },
+              "page": 1
+            },
+            "sort_date": "2026-10-09T14:19:37.389996Z"
+          },
+          "item_type": {
+            "type": "POST_ITEM"
+          }
+        },
+        "enabled": true
+      }
+    },
+    "KEY_PROP_NAME": "04b5902e-4831-4403-994e-db7580a7f6c5",
+    "__NORMALIZED_WIDGET_V2__": true
+  },
+  {
+    "widgetType": "POST_ROW",
+    "visibilityConditions": [],
+    "uid": "ff370245-5aaa-4e70-9919-b83d21a9d71e",
+    "normalizerId": "e461ee60-949d-4ede-923b-5746078b3805",
+    "dto": {
+      "widget_type": "POST_ROW",
+      "data": {
+        "@type": "type.googleapis.com/widgets.PostRowData",
+        "title": "اپارتمان 100متری / فول امکانات",
+        "action": {
+          "type": "VIEW_POST",
+          "payload": {
+            "@type": "type.googleapis.com/widgets.ViewPostPayload",
+            "token": "ga5yjm5y",
+            "web_info": {
+              "title": "اپارتمان 100متری / فول امکانات",
+              "district_persian": "باشگاه نفت",
+              "city_persian": "تهران"
+            },
+            "ad_instance_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_ga5yjm5y_N"
+          }
+        },
+        "image_url": "https://s100.divarcdn.com/static/photo/neda/webp_thumbnail/ecRlY3jY27PFowWHo1byRw/235e83c2-3b03-4921-9eb0-b84b5e9f298e.webp",
+        "bottom_description_text": "در باشگاه نفت",
+        "red_text": "نردبان شده",
+        "middle_description_text": "۲۰,۵۰۰,۰۰۰,۰۰۰ تومان",
+        "has_divider": true,
+        "image_count": 8,
+        "image_top_left_tag": {
+          "text": "۸",
+          "icon": {
+            "image_url_dark": "https://s100.divarcdn.com/static/imgs/widget-icons/dark/white_primary/v1/camera.png",
+            "image_url_light": "https://s100.divarcdn.com/static/imgs/widget-icons/light/white_primary/v1/camera.png",
+            "icon_name": "CAMERA",
+            "icon_color": "WHITE_PRIMARY"
+          },
+          "is_icon_left": true
+        },
+        "token": "ga5yjm5y",
+        "should_indicate_seen_status": true,
+        "tracker_session_id": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a_ga5yjm5y_N",
+        "layout_type": "GRID_ITEM"
+      },
+      "action_log": {
+        "server_side_info": {
+          "info": {
+            "@type": "type.googleapis.com/action_log.PostItemInfo",
+            "post_token": "ga5yjm5y",
+            "index": 23,
+            "post_type": "SEARCH",
+            "list_type": "PAGE",
+            "source_page": "POST_LIST_PAGE",
+            "extra_data": {
+              "@type": "type.googleapis.com/action_log.PostItemInfo.SearchExtraData",
+              "jli": {
+                "category": {
+                  "value": "residential-sell"
+                },
+                "places": {
+                  "value": [
+                    "1"
+                  ]
+                },
+                "cities": [
+                  "1"
+                ]
+              },
+              "search_uid": "6c132d3f-4588-45c3-b96b-2f0ef6acc43a",
+              "search_data": {
+                "form_data_json": "{\"data\":{\"category\":{\"str\":{\"value\":\"residential-sell\"}}}}",
+                "cities": [
+                  "1"
+                ],
+                "query_input_type": "TEXT",
+                "user_selected_location": {
+                  "@type": "type.googleapis.com/widgets.UserSelectedLocation",
+                  "places": [
+                    {
+                      "place_id": "1"
+                    }
+                  ]
+                }
+              },
+              "page": 1
+            },
+            "sort_date": "2026-10-09T14:19:04.786858Z"
+          },
+          "item_type": {
+            "type": "POST_ITEM"
+          }
+        },
+        "enabled": true
+      }
+    },
+    "KEY_PROP_NAME": "ff370245-5aaa-4e70-9919-b83d21a9d71e",
+    "__NORMALIZED_WIDGET_V2__": true
+  }
+]

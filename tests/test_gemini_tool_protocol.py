@@ -31,7 +31,7 @@ def test_gemini_function_response_turn_uses_user_role_and_signature_round_trips(
         {
             "role": "tool",
             "tool_call_id": "call-1",
-            "name": "read_file",
+            "tool_name": "read_file",
             "content": json.dumps({"success": True, "content": "ok"}),
         },
     ]
