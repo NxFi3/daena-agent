@@ -232,13 +232,13 @@ class SecurityPolicy:
         if executable_name in {"sh", "bash", "zsh", "dash"} and "-c" in lowered:
             return SecurityDecision(
                 False,
-                "Inline shell execution with -c is blocked; use argv-style commands.",
+                "command is executed as argv without a shell, so heredocs, pipes and redirection are not interpreted. Write the code to a .py file with write_file, then run ['python3', 'file.py'].",
                 "inline_shell_blocked",
             )
         if executable_name in {"node"} and any(flag in lowered for flag in {"-e", "--eval"}):
             return SecurityDecision(
                 False,
-                "Inline Node evaluation is blocked.",
+                "command is executed as argv without a shell, so heredocs, pipes and redirection are not interpreted. Write the code to a .py file with write_file, then run ['python3', 'file.py'].",
                 "inline_eval_blocked",
             )
         if executable_name in {"python", "python3", "pypy", "pypy3"} and any(
@@ -246,7 +246,7 @@ class SecurityPolicy:
         ):
             return SecurityDecision(
                 False,
-                "Inline Python evaluation is blocked; execute a workspace file instead.",
+                "command is executed as argv without a shell, so heredocs, pipes and redirection are not interpreted. Write the code to a .py file with write_file, then run ['python3', 'file.py'].",
                 "inline_eval_blocked",
             )
 

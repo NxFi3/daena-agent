@@ -236,6 +236,29 @@ class CommandExec(Tool):
                 message="The executable cannot be empty.",
             )
 
+        executable_name = command[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+        if executable_name.endswith(".exe"):
+            executable_name = executable_name[:-4]
+        if executable_name in {"python", "python3", "pypy", "pypy3", "node", "sh", "bash"}:
+            shell_operators = {"|", "&&", "||", ">", ">>", "2>&1"}
+            has_shell_syntax = any(
+                "<<" in argument
+                or "\\n" in argument
+                or "\\r" in argument
+                or argument.strip() == "-"
+                or argument.strip() in shell_operators
+                for argument in command[1:]
+            )
+            if has_shell_syntax:
+                return self._error(
+                    error_type="shell_syntax_not_supported",
+                    message=(
+                        "command is executed as argv without a shell, so heredocs, pipes and "
+                        "redirection are not interpreted. Write the code to a .py file with "
+                        "write_file, then run ['python3', 'file.py']."
+                    ),
+                )
+
         if isinstance(yield_time_ms, bool) or not isinstance(yield_time_ms, int):
             return self._error(
                 error_type="invalid_argument",
@@ -451,6 +474,13 @@ class CommandExec(Tool):
         ]
 
         selected: list[str] = []
+        stderr_text = stderr if isinstance(stderr, str) else ""
+        stderr_lines = [line.strip() for line in stderr_text.splitlines() if line.strip()]
+        if stderr_lines:
+            selected.append(stderr_lines[0])
+            if stderr_lines[-1] not in selected:
+                selected.append(stderr_lines[-1])
+
         for source in sources:
             for raw_line in source.splitlines():
                 line = raw_line.strip()
