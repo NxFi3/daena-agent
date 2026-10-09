@@ -6,6 +6,31 @@ from src.security.Sandbox import WorkspaceSandbox
 from src.security.securityService import SecurityService
 
 
+def test_web_save_policy_allows_workspace_path_and_blocks_escape(tmp_path):
+    policy = SecurityPolicy.from_config({"workspace_only": True})
+    sandbox = WorkspaceSandbox(tmp_path)
+
+    safe_call = ToolCall(
+        name="web_search",
+        id="web-save-safe",
+        valid=True,
+        args={"query": "divar real estate", "save_to": "search_results.txt", "save_format": "text"},
+    )
+    safe_decision = policy.evaluate(safe_call, sandbox)
+    assert safe_decision.allowed is True
+    assert safe_decision.rule == "workspace_write"
+
+    unsafe_call = ToolCall(
+        name="web_search",
+        id="web-save-unsafe",
+        valid=True,
+        args={"query": "divar real estate", "save_to": "../outside.txt", "save_format": "text"},
+    )
+    unsafe_decision = policy.evaluate(unsafe_call, sandbox)
+    assert unsafe_decision.allowed is False
+    assert unsafe_decision.rule == "workspace_boundary"
+
+
 def make_service(tmp_path):
     service = SecurityService({})
     service.set_workspace(str(tmp_path))
