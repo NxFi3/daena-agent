@@ -13,7 +13,7 @@ from harness.cases import (
     _setup_offline_bulk_collection,
     _verify_offline_bulk_collection,
 )
-from harness.runner import summarize
+from harness.runner import _preserve_workspace, summarize
 
 
 def _materialize_correct_dataset(root: Path) -> None:
@@ -134,3 +134,18 @@ def test_harness_summary_reports_per_run_failures_and_duplicate_cache_hits():
         "shell_syntax_not_supported": 1,
     }
     assert summary["average_duplicate_cache_hits"] == 3
+
+
+def test_harness_can_preserve_workspace_artifacts(tmp_path):
+    workspace = tmp_path / "workspace"
+    raw_pages = workspace / "raw_pages"
+    raw_pages.mkdir(parents=True)
+    (workspace / "collection.log").write_text("fetched page 1", encoding="utf-8")
+    (raw_pages / "page_001.json").write_text('{"page":1}', encoding="utf-8")
+
+    preserved = _preserve_workspace(
+        workspace, tmp_path / "artifacts", "offline_bulk_collection_1000", 1
+    )
+
+    assert (preserved / "collection.log").read_text(encoding="utf-8") == "fetched page 1"
+    assert json.loads((preserved / "raw_pages" / "page_001.json").read_text(encoding="utf-8")) == {"page": 1}

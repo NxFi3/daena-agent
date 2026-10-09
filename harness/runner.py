@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import shutil
 import tempfile
 import time
 from pathlib import Path
@@ -50,10 +51,23 @@ def load_config(path: str) -> dict[str, Any]:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+def _preserve_workspace(
+    workspace: Path,
+    artifacts_dir: Path,
+    case_name: str,
+    repetition: int,
+) -> Path:
+    target = artifacts_dir / f"{case_name}-rep-{repetition}"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(workspace, target, dirs_exist_ok=True)
+    return target
+
+
 def run_case(
     case: BenchmarkCase,
     config: dict[str, Any],
     repetitions: int,
+    artifacts_dir: Path | None = None,
 ) -> list[dict[str, Any]]:
     results = []
 
@@ -105,6 +119,12 @@ def run_case(
                 if case.cleanup is not None:
                     case.cleanup(workspace)
 
+            preserved_artifacts = (
+                _preserve_workspace(workspace, artifacts_dir, case.name, repetition)
+                if artifacts_dir is not None
+                else None
+            )
+
             metrics = metrics if isinstance(metrics, dict) else {}
             grouped_failures = metrics.get("tool_failures_by_error_type", {})
             if not isinstance(grouped_failures, dict):
@@ -129,6 +149,7 @@ def run_case(
                         getattr(response, "response", "") if response is not None else ""
                     ),
                     "elapsed_ms": elapsed_ms,
+                    "artifacts_dir": str(preserved_artifacts) if preserved_artifacts else None,
                     "metrics": metrics,
                     "run_metrics": run_metrics,
                     "tags": list(case.tags),
@@ -193,6 +214,10 @@ def main() -> int:
     parser.add_argument("--repetitions", type=int, default=1)
     parser.add_argument("--output", default="baseline-results.json")
     parser.add_argument(
+        "--artifacts-dir",
+        help="Copy the completed case workspace here before its temporary directory is removed.",
+    )
+    parser.add_argument(
         "--case",
         action="append",
         dest="case_names",
@@ -215,9 +240,17 @@ def main() -> int:
     model_name = provider_config.get("model_name", "")
 
     records: list[dict[str, Any]] = []
+    artifacts_dir = Path(args.artifacts_dir) if args.artifacts_dir else None
     started = time.perf_counter()
     for case in selected:
-        records.extend(run_case(case, config, max(1, args.repetitions)))
+        records.extend(
+            run_case(
+                case,
+                config,
+                max(1, args.repetitions),
+                artifacts_dir=artifacts_dir,
+            )
+        )
 
     report = {
         "harness": "daena-baseline",
@@ -225,6 +258,7 @@ def main() -> int:
         "config": args.config,
         "provider": provider_name,
         "model": model_name,
+        "artifacts_dir": str(artifacts_dir) if artifacts_dir else None,
         "duration_ms": round((time.perf_counter() - started) * 1000.0, 2),
         "summary": summarize(records),
         "records": records,

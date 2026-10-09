@@ -32,6 +32,18 @@ Ollama num_predict=1024 value is removed from the shared config.
 The JSON report records provider/model, independent verification, completion
 rate, latency, iterations, LLM calls, tokens, tool calls and failures.
 
+For tasks whose generated files and execution logs need post-run inspection, use
+`--artifacts-dir` to preserve the temporary workspace before cleanup. For example:
+
+    mkdir -p run_logs run_artifacts
+    python -m harness.runner --case offline_bulk_collection_1000 \
+        --output run_logs/offline-bulk-results.json \
+        --artifacts-dir run_artifacts/offline-bulk
+
+The preserved case directory includes `collection.log`, raw page responses,
+the generated script, CSV, data dictionary and collection report. Without
+`--artifacts-dir`, the temporary workspace is deleted after verification.
+
 For a fair Experience experiment, keep this directory and the baseline
 configuration immutable, run the same cases with Experience disabled/enabled,
 and compare the per-case distributions rather than only one aggregate number.
