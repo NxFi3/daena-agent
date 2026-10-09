@@ -75,7 +75,7 @@ class ContextBuilder:
 
     OLD_RESULT_MARKER = (
         " ...[old result truncated to save context; "
-        "re-run the tool only if you still need it]"
+        "re-running the tool returns the full result if needed]"
     )
 
     MAX_EXPERIENCE_CHARS = 4000
@@ -691,12 +691,17 @@ class ContextBuilder:
 
         # Collapse older duplicate reads even when they are still inside the
         # recent tool window. Only the newest occurrence remains at full size.
+        # Compact structured failures are recovery instructions and should not
+        # be cut down to a prefix that loses their actionable error type.
         for index in duplicate_read_positions:
             content = messages[index].get("content", "")
-            if isinstance(content, str):
-                messages[index]["content"] = (
-                    content[: self.OLD_TOOL_CHARS] + self.OLD_RESULT_MARKER
-                )
+            if not isinstance(content, str):
+                continue
+            if content.lstrip().startswith('{"success": false') and len(content) <= 1500:
+                continue
+            messages[index]["content"] = (
+                content[: self.OLD_TOOL_CHARS] + self.OLD_RESULT_MARKER
+            )
 
         # Pin the newest distinct file reads that are about to age out, unless
         # the same range is still present in the recent window.
@@ -719,6 +724,8 @@ class ContextBuilder:
         for index in old_positions:
             content = messages[index].get("content", "")
             if not isinstance(content, str):
+                continue
+            if content.lstrip().startswith('{"success": false') and len(content) <= 1500:
                 continue
 
             if index in pinned:
@@ -834,6 +841,14 @@ class ContextBuilder:
                         "last_result_iteration",
                     )
                     if plan_progress.get(key) not in (None, "", [])
+                }
+
+            lessons = working_set.get("lessons")
+            if isinstance(lessons, dict) and lessons:
+                state["lessons"] = {
+                    str(key): self._truncate(str(value), 200)
+                    for key, value in list(lessons.items())[-8:]
+                    if str(key).strip() and str(value).strip()
                 }
 
             last_failed = working_set.get("last_failed_verification")

@@ -783,3 +783,32 @@ def test_retrieval_does_not_resurrect_old_high_priority_steering():
 
     rendered = "\\n".join(str(message.get("content", "")) for message in messages)
     assert "OUTDATED steering" not in rendered
+
+
+def test_compact_failed_tool_results_are_not_shrunk():
+    builder = ContextBuilder(base_config(), FakeLLM())
+    failure = '{"success": false, "error": {"type": "shell_syntax_not_supported", "message": "save a script"}}'
+    messages = [
+        {"role": "tool", "content": '{"success": true, "data": "' + ('x' * 800) + '"}'}
+        for _ in range(5)
+    ]
+    messages[0] = {"role": "tool", "content": failure}
+    builder._shrink_old_tool_results(messages)
+    assert messages[0]["content"] == failure
+
+
+def test_lessons_survive_context_compaction_and_reset():
+    from src.context.workingset import WorkingSet
+
+    ws = WorkingSet()
+    ws.lessons["command_exec:shell_syntax_not_supported"] = "write a script file instead"
+    state = ws.context()
+    builder = ContextBuilder(base_config(), FakeLLM())
+    rendered = builder._compact_execution_state(
+        agent_state=None, progress=None, working_set=state,
+        observation=None, recent_actions=None,
+    )
+    assert '"lessons"' in rendered
+    assert "write a script file instead" in rendered
+    ws.reset()
+    assert ws.context()["lessons"] == {}

@@ -1173,12 +1173,25 @@ class Loop:
             )
 
         error_type = ""
+        error_message = ""
         if isinstance(result.content, dict):
             error = result.content.get("error")
             if isinstance(error, dict):
                 error_type = str(error.get("type", "")).strip().lower()
+                error_message = str(error.get("message", "")).strip()
             elif error:
-                error_type = str(error).strip().lower()
+                error_message = str(error).strip()
+                error_type = error_message.lower()
+
+        if not result.success:
+            metadata = result.metadata if isinstance(result.metadata, dict) else {}
+            lesson = str(metadata.get("recovery_hint") or error_message or result.summary).strip()
+            if lesson:
+                lesson_key = f"{tool_name}:{error_type or 'unknown_error'}"
+                self.working_set.lessons.pop(lesson_key, None)
+                self.working_set.lessons[lesson_key] = lesson[:200]
+                while len(self.working_set.lessons) > 8:
+                    self.working_set.lessons.pop(next(iter(self.working_set.lessons)))
 
         # Schema/dispatcher failures are concrete evidence. Keep the result
         # in context and let the model decide how to recover; do not inject a

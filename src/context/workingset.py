@@ -92,6 +92,10 @@ class WorkingSet:
 
         self._unresolved_keys: dict[str, str] = {}
 
+        # Compact per-run recovery notes, keyed by tool and error class.
+        # Dict insertion order lets us evict the oldest lesson deterministically.
+        self.lessons: dict[str, str] = {}
+
         self.verification: dict[str, Any] = {}
 
         # Preserve the latest failed verification independently from the
@@ -820,6 +824,7 @@ class WorkingSet:
             "processes": dict(self.processes),
             "facts": list(self.facts),
             "unresolved": list(self.unresolved),
+            "lessons": dict(self.lessons),
         }
 
     def process_context(self) -> dict[str, Any]:
