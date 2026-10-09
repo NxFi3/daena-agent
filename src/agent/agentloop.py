@@ -165,6 +165,22 @@ class Loop:
             self.search_context_top_k = self.DEFAULT_SEARCH_CONTEXT_TOP_K
 
         self.max_iterations = self._read_max_iterations()
+        # Iteration budgets are work segments, not a demand for the user to
+        # resubmit the task. Continue in the same live session a bounded number
+        # of times, and stop if multiple complete segments make no verified
+        # workspace progress.
+        try:
+            self.max_auto_continuations = max(
+                0, min(10, int(self.config.get("max_auto_continuations", 4)))
+            )
+        except (TypeError, ValueError):
+            self.max_auto_continuations = 4
+        try:
+            self.max_no_progress_segments = max(
+                1, min(5, int(self.config.get("max_no_progress_segments", 2)))
+            )
+        except (TypeError, ValueError):
+            self.max_no_progress_segments = 2
 
         # Optional model-directed finalization review. It evaluates outcomes,
         # not a fixed workflow, and can send an unfinished task back to the loop.
@@ -2022,13 +2038,75 @@ class Loop:
         self._store_event(user_task)
 
         empty_streak = 0
+        segment_iteration = 0
+        total_iterations = 0
+        continuation_segments = 0
+        no_progress_segments = 0
+        segment_start_revision = self.workspace_revision
+        continuation_stop_reason = "Maximum iteration segments reached."
 
-        for iteration in range(self.max_iterations):
+        while True:
+            # The per-segment iteration budget is a checkpoint boundary, not
+            # the end of the user's task. Keep the same live session, STM,
+            # original user goal, and tool/context state while continuing.
+            if segment_iteration >= self.max_iterations:
+                made_workspace_progress = self.workspace_revision > segment_start_revision
+                if made_workspace_progress:
+                    no_progress_segments = 0
+                else:
+                    no_progress_segments += 1
+                self.metrics["no_progress_segments"] = no_progress_segments
 
-            iteration_number = iteration + 1
+                if no_progress_segments >= self.max_no_progress_segments:
+                    continuation_stop_reason = (
+                        "No verified workspace progress across "
+                        f"{no_progress_segments} consecutive iteration segments; "
+                        "stopped to avoid an unproductive loop."
+                    )
+                    break
 
-            self.agent_state.iteration = iteration_number
-            self.metrics["iterations"] = iteration_number
+                if continuation_segments >= self.max_auto_continuations:
+                    continuation_stop_reason = (
+                        "Maximum automatic continuation segments reached "
+                        f"({self.max_auto_continuations}); task is not verified complete."
+                    )
+                    break
+
+                continuation_segments += 1
+                self.metrics["continuation_segments"] = continuation_segments
+                self._store_nudge(
+                    "AUTOMATIC CONTINUATION: the previous iteration segment reached "
+                    f"its limit of {self.max_iterations} iterations. This is NOT a new "
+                    "task and the original user goal remains active in this session. "
+                    "Continue from the current verified workspace and tool evidence. "
+                    "Do not repeat completed steps without a concrete reason. Choose "
+                    "the next unfinished action, execute it, inspect its output, and "
+                    "verify the requested deliverables. Do not claim completion unless "
+                    "the artifacts and tests support it."
+                )
+                self._emit_event(
+                    "continuation",
+                    segment=continuation_segments + 1,
+                    max_continuations=self.max_auto_continuations,
+                    reason="iteration_budget_reached",
+                    no_progress_segments=no_progress_segments,
+                )
+                self.logger.info(
+                    "Automatic continuation | "
+                    f"segment={continuation_segments + 1} | "
+                    f"max_continuations={self.max_auto_continuations} | "
+                    f"total_iterations={total_iterations}"
+                )
+                segment_iteration = 0
+                segment_start_revision = self.workspace_revision
+                continue
+
+            segment_iteration += 1
+            total_iterations += 1
+            iteration_number = total_iterations
+
+            self.agent_state.iteration = total_iterations
+            self.metrics["iterations"] = total_iterations
 
             if self._stop_event is not None and self._stop_event.is_set():
                 self.agent_state.stop("Interrupted by user.")
@@ -2039,12 +2117,16 @@ class Loop:
 
             self._emit_event(
                 "iteration_start",
-                iteration=iteration_number,
+                iteration=segment_iteration,
+                total_iterations=total_iterations,
+                segment=continuation_segments + 1,
                 max_iterations=self.max_iterations,
             )
 
             self.logger.info(
-                f"Iteration " f"{iteration_number}/" f"{self.max_iterations}"
+                f"Iteration {segment_iteration}/{self.max_iterations} | "
+                f"segment={continuation_segments + 1} | "
+                f"total={total_iterations}"
             )
 
             llmresult = self._generate_next_action(
@@ -2342,11 +2424,12 @@ class Loop:
 
             self._store_nudge(nudge)
 
-        reason = "Maximum iterations reached."
+        reason = continuation_stop_reason
 
         self.agent_state.stop(reason)
         self.metrics["completed"] = False
         self.metrics["stop_reason"] = reason
+        self._emit_event("run_stopped", reason=reason)
 
         return self._stopped_result(reason)
 
@@ -2617,6 +2700,8 @@ class Loop:
         self._run_started_at = None
         self.metrics = {
             "iterations": 0,
+            "continuation_segments": 0,
+            "no_progress_segments": 0,
             "llm_calls": 0,
             "tokens": 0,
             "completion_review_calls": 0,

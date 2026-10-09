@@ -74,6 +74,7 @@ class StreamRenderer:
     think_enabled: Any = "medium"
 
     iteration: int = 0
+    total_iterations: int = 0
     max_iterations: int = 0
     status: str = "ready"
     tool_count: int = 0
@@ -112,8 +113,22 @@ class StreamRenderer:
             self._close_thinking()
             self._close_response()
             self.iteration = int(event.get("iteration") or 0)
+            self.total_iterations = int(
+                event.get("total_iterations") or self.iteration
+            )
             self.max_iterations = int(event.get("max_iterations") or self.max_iterations)
             self.status = "thinking"
+
+        elif t == "continuation":
+            self._close_thinking()
+            self._close_response()
+            segment = int(event.get("segment") or 0)
+            maximum = int(event.get("max_continuations") or 0)
+            self.status = "auto-continuing"
+            self._print(
+                f"\n  {_P}↻ auto-continuing task · segment {segment}"
+                f"{('/' + str(maximum + 1)) if maximum else ''}{_R}"
+            )
 
         elif t == "context":
             self.context_tokens = int(event.get("estimated_tokens") or 0)
@@ -339,7 +354,7 @@ class StreamRenderer:
         self._print(f"\n{_sep()}")
         self._print(
             f"  {badge}  "
-            f"{_DIM}iter {self.iteration}  ·  tools {_R}"
+            f"{_DIM}iter {self.total_iterations or self.iteration}  ·  tools {_R}"
             f"{tools_str}  "
             f"{_DIM}·  {tok} tok  ·  ctx {self._ctx_str()}  ·  {elapsed}{_R}"
         )
