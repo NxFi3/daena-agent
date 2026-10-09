@@ -140,6 +140,8 @@ class SecurityPolicy:
                     f"Network tool '{name}' is disabled by policy.",
                     "network_disabled",
                 )
+            if args.get("save_to") is not None:
+                return self._check_web_save(args, sandbox)
 
         return SecurityDecision(True, "Allowed by policy.", "default_allow")
 
@@ -188,6 +190,21 @@ class SecurityPolicy:
                 return SecurityDecision(False, str(exc), "workspace_boundary")
 
         return SecurityDecision(True, "Write target is permitted by policy.", "workspace_write")
+
+    def _check_web_save(self, args: dict[str, Any], sandbox) -> SecurityDecision:
+        path = args.get("save_to")
+        save_format = args.get("save_format", "text")
+        if not isinstance(path, str) or not path.strip():
+            return SecurityDecision(False, "save_to must be a non-empty workspace-relative path.", "path_required")
+        if Path(path).is_absolute():
+            return SecurityDecision(False, "save_to must be workspace-relative.", "workspace_boundary")
+        if save_format not in {"text", "json"}:
+            return SecurityDecision(False, "save_format must be 'text' or 'json'.", "save_format")
+        try:
+            sandbox.resolve(path)
+        except (PermissionError, ValueError) as exc:
+            return SecurityDecision(False, str(exc), "workspace_boundary")
+        return SecurityDecision(True, "Web output path is inside the workspace.", "workspace_write")
 
     def _check_command(self, args: dict[str, Any], sandbox) -> SecurityDecision:
         command = args.get("command")

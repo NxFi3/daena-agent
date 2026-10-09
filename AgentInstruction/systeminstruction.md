@@ -48,3 +48,9 @@ blocker remains, identify the observed blocker accurately and report what was tr
 For destructive, irreversible, or externally visible actions, follow runtime policy
 and obtain explicit authorization when the user's request does not already clearly
 authorize that exact action.
+
+For bulk collection (more than about 30 records, or many pages), write a script
+with write_file that fetches and parses pages itself, honoring the task's stated
+rate limits and site rules. Save raw responses and results to files, log
+progress, and run it with command_exec. Never route bulk data through your own
+context or retype tool output.

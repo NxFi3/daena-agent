@@ -329,6 +329,9 @@ class Loop:
     @classmethod
     def _is_observation_call(cls, call) -> bool:
         name = str(getattr(call, "name", "")).strip().lower()
+        arguments = getattr(call, "args", {}) or {}
+        if name in {"web_fetch", "web_search"} and isinstance(arguments, dict) and arguments.get("save_to"):
+            return False
 
         if name in {"read_file", "grep", "glob", "list_dir", "explore", "web_fetch", "web_search"}:
             return True
@@ -753,6 +756,9 @@ class Loop:
 
     def _observation_epoch(self, call) -> int:
         name = str(getattr(call, "name", "")).strip().lower()
+        arguments = getattr(call, "args", {}) or {}
+        if name in {"web_fetch", "web_search"} and isinstance(arguments, dict) and arguments.get("save_to"):
+            return self._workspace_mutation_epoch
         # Local writes cannot make an identical remote search/fetch more useful.
         return -1 if name in {"web_fetch", "web_search"} else self._workspace_mutation_epoch
 
@@ -765,7 +771,7 @@ class Loop:
             # between classification and result handling. Normalize it before
             # hashing so the no-progress guard sees both spellings as the same call.
             path_keys = {
-                "file_path", "path", "target", "directory",
+                "file_path", "path", "target", "directory", "save_to",
                 "working_directory", "workspace_directory",
             }
             for key, value in list(arguments.items()):
@@ -1170,7 +1176,12 @@ class Loop:
             # Treat known mutating tools as a new workspace state. A failed command
             # can still alter files before exiting non-zero, so observed workspace
             # changes also invalidate the no-progress fingerprint.
-            if tool_name in {"write_file", "apply_patch", "applypatch", "command_exec", "process_write"}:
+            is_web_save = (
+                tool_name in {"web_fetch", "web_search"}
+                and isinstance(getattr(call, "args", {}), dict)
+                and bool(call.args.get("save_to"))
+            )
+            if tool_name in {"write_file", "apply_patch", "applypatch", "command_exec", "process_write"} or (is_web_save and result.success):
                 self._workspace_mutation_epoch += 1
             if tool_name in {"write_file", "apply_patch", "applypatch"}:
                 signature = self._observation_signature(call)
