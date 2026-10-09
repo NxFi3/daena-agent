@@ -20,8 +20,17 @@ Run one case:
 
     python -m harness.runner --case basic_file_repair
 
-The JSON report records completion, independent verification, latency,
-iterations, LLM calls, tokens, tool calls, failures and blocked actions.
+Run the isolated local Flask security audit with OpenRouter:
+
+    set -a && source .env && set +a
+    python -m harness.runner --provider openrouter --model deepseek/deepseek-v4.1-flash --case security_audit_test101 --output security-results.json
+
+Use --provider and --model to compare providers with the same task and verifier.
+The output-token cap is model/provider-native by default; the legacy fixed
+Ollama num_predict=1024 value is removed from the shared config.
+
+The JSON report records provider/model, independent verification, completion
+rate, latency, iterations, LLM calls, tokens, tool calls and failures.
 
 For a fair Experience experiment, keep this directory and the baseline
 configuration immutable, run the same cases with Experience disabled/enabled,

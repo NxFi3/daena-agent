@@ -276,7 +276,7 @@ def _provider_switch(agent: Agent, name: str) -> None:
     provider_defaults = dict(getattr(agent.llm.model, "defaultConfig", {}) or {})
     shared_overrides = {
         key: previous_config[key]
-        for key in ("temperature", "think", "max_output_tokens", "top_p", "top_k")
+        for key in ("temperature", "think")
         if key in previous_config
     }
     provider_defaults.update(shared_overrides)

@@ -26,7 +26,6 @@ class GeminiProvider(ProviderBase):
     defaultConfig: ClassVar[dict] = {
         "temperature": 0.3,
         "think": "low",
-        "max_output_tokens": 1024,
     }
 
     def __init__(self) -> None:
@@ -44,6 +43,14 @@ class GeminiProvider(ProviderBase):
         if not api_key:
             raise RuntimeError("GEMINI_API_KEY environment variable is not set")
         self.client = genai.Client(api_key=api_key)
+
+    @staticmethod
+    def _normalize_generation_options(options: dict[str, Any]) -> dict[str, Any]:
+        """Remove legacy Ollama controls while preserving Gemini-native options."""
+        normalized = dict(options)
+        for key in ("num_predict", "num_thread", "num_threads", "num_ctx"):
+            normalized.pop(key, None)
+        return normalized
 
     @staticmethod
     def _sanitize_schema(value: Any) -> Any:

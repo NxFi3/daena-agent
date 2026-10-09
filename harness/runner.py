@@ -1,12 +1,45 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import tempfile
 import time
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
+
+PROVIDER_DEFAULT_MODELS = {
+    "ollama": "gpt-oss:20b",
+    "gemini": "gemini-3.8-flash",
+    "openrouter": "deepseek/deepseek-v4.1-flash",
+}
+
+
+def configure_run(config: dict[str, Any], provider: str | None, model: str | None) -> dict[str, Any]:
+    """Return an isolated, provider-compatible config for one benchmark run."""
+    run_config = copy.deepcopy(config)
+    llm = run_config.setdefault("llm", {})
+    active_provider = provider or llm.get("provider", "ollama")
+    provider_changed = active_provider != llm.get("provider", "ollama")
+    llm["provider"] = active_provider
+
+    provider_config = llm.setdefault("provider_config", {})
+    if model:
+        provider_config["model_name"] = model
+    elif provider_changed or not provider_config.get("model_name"):
+        provider_config["model_name"] = PROVIDER_DEFAULT_MODELS.get(
+            active_provider, provider_config.get("model_name", "")
+        )
+
+    generation_config = dict(provider_config.get("generation_config") or {})
+    # The old fixed 1024 output cap is intentionally not part of the benchmark.
+    generation_config.pop("num_predict", None)
+    if active_provider != "ollama":
+        generation_config.pop("num_thread", None)
+        generation_config.pop("num_threads", None)
+        generation_config.pop("num_ctx", None)
+    provider_config["generation_config"] = generation_config
+    return run_config
 
 from src.agent.agent import Agent
 from src.models.ContextEvent import ContextEvent, ContextRole, ContextType
@@ -26,11 +59,20 @@ def run_case(
 
     for repetition in range(1, repetitions + 1):
         with tempfile.TemporaryDirectory(prefix="daena-bench-") as raw:
-            workspace = Path(raw)
+            root = Path(raw)
+            workspace = root / "workspace"
+            workspace.mkdir(parents=True, exist_ok=True)
             if case.setup is not None:
                 case.setup(workspace)
 
-            agent = Agent(config)
+            run_config = copy.deepcopy(config)
+            if "security" in case.tags:
+                security_config = run_config.setdefault("security", {})
+                security_config["workspace_only"] = True
+                security_config["allow_network_tools"] = False
+                security_config["force_approve"] = False
+
+            agent = Agent(run_config)
             agent.set_workingdirectory(str(workspace))
             event = ContextEvent(
                 role=ContextRole.USER,
@@ -107,6 +149,8 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run Daena baseline benchmark.")
     parser.add_argument("--config", default="config.json")
+    parser.add_argument("--provider", choices=("ollama", "gemini", "openrouter"))
+    parser.add_argument("--model", help="Override model ID for the selected provider.")
     parser.add_argument("--repetitions", type=int, default=1)
     parser.add_argument("--output", default="baseline-results.json")
     parser.add_argument(
@@ -117,11 +161,19 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    config = load_config(args.config)
+    config = configure_run(
+        load_config(args.config),
+        provider=args.provider,
+        model=args.model,
+    )
     selected = [
         case for case in CASES
         if not args.case_names or case.name in args.case_names
     ]
+
+    provider_name = (config.get("llm") or {}).get("provider", "ollama")
+    provider_config = (config.get("llm") or {}).get("provider_config") or {}
+    model_name = provider_config.get("model_name", "")
 
     records: list[dict[str, Any]] = []
     started = time.perf_counter()
@@ -130,8 +182,10 @@ def main() -> int:
 
     report = {
         "harness": "daena-baseline",
-        "version": 1,
+        "version": 2,
         "config": args.config,
+        "provider": provider_name,
+        "model": model_name,
         "duration_ms": round((time.perf_counter() - started) * 1000.0, 2),
         "summary": summarize(records),
         "records": records,

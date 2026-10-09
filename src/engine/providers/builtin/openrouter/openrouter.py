@@ -15,7 +15,7 @@ class OpenRouterProvider(ProviderBase):
 
     name = "openrouter"
 
-    defaultModel = "openrouter/free"
+    defaultModel = "deepseek/deepseek-v4.1-flash"
 
     defaultConfig: ClassVar[dict] = {
         "temperature": 0.3,
@@ -25,6 +25,14 @@ class OpenRouterProvider(ProviderBase):
 
     def __init__(self) -> None:
         self.client: OpenRouter | None = None
+
+    @staticmethod
+    def _normalize_generation_options(options: dict[str, Any]) -> dict[str, Any]:
+        """Keep Ollama-only limits and runtime tuning out of OpenRouter requests."""
+        normalized = dict(options)
+        for key in ("num_predict", "num_thread", "num_threads", "num_ctx"):
+            normalized.pop(key, None)
+        return normalized
 
     def _create_client(self) -> None:
         if self.client is not None:
@@ -321,6 +329,9 @@ class OpenRouterProvider(ProviderBase):
 
         if llminput.options:
             options.update(llminput.options)
+
+        # Let the chosen OpenRouter model/provider use its native output limit.
+        options = self._normalize_generation_options(options)
 
         stream_callback = getattr(llminput, "stream_callback", None)
         think = options.pop("think", None)
