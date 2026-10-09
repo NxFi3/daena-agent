@@ -511,6 +511,26 @@ class Loop:
 
         message["content"] = message_content
 
+        # Provider-specific metadata such as Gemini 3 thought signatures must
+        # survive canonical tool-call normalization and persistent STM storage.
+        source_calls = message.get("tool_calls")
+        signatures_by_id: dict[str, str] = {}
+        signatures_by_name: dict[str, list[str]] = {}
+        if isinstance(source_calls, list):
+            for source_call in source_calls:
+                if not isinstance(source_call, dict):
+                    continue
+                signature = source_call.get("thought_signature_b64")
+                function = source_call.get("function")
+                name = str(function.get("name") or "") if isinstance(function, dict) else ""
+                if not isinstance(signature, str) or not signature:
+                    continue
+                source_id = str(source_call.get("id") or "").strip()
+                if source_id:
+                    signatures_by_id[source_id] = signature
+                if name:
+                    signatures_by_name.setdefault(name, []).append(signature)
+
         if normalized_tool_calls is not None:
 
             serialized_tool_calls: list[dict[str, Any]] = []
@@ -554,16 +574,22 @@ class Loop:
 
                     arguments_json = "{}"
 
-                serialized_tool_calls.append(
-                    {
-                        "id": call_id,
-                        "type": "function",
-                        "function": {
-                            "name": name,
-                            "arguments": arguments_json,
-                        },
-                    }
-                )
+                serialized_call = {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": arguments_json,
+                    },
+                }
+                signature = signatures_by_id.get(call_id)
+                if not signature:
+                    name_signatures = signatures_by_name.get(name, [])
+                    if len(name_signatures) == 1:
+                        signature = name_signatures[0]
+                if signature:
+                    serialized_call["thought_signature_b64"] = signature
+                serialized_tool_calls.append(serialized_call)
 
             message["tool_calls"] = serialized_tool_calls
 

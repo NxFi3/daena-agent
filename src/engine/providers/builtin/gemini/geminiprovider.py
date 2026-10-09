@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 from typing import Any, Callable, ClassVar
@@ -113,6 +114,22 @@ class GeminiProvider(ProviderBase):
             return {"result": content}
 
     @staticmethod
+    def _encode_thought_signature(signature: Any) -> str | None:
+        """Encode Gemini's opaque signature so it survives JSON/STM storage."""
+        if not isinstance(signature, (bytes, bytearray, memoryview)):
+            return None
+        return base64.b64encode(bytes(signature)).decode("ascii")
+
+    @staticmethod
+    def _decode_thought_signature(signature: Any) -> bytes | None:
+        if not isinstance(signature, str) or not signature:
+            return None
+        try:
+            return base64.b64decode(signature.encode("ascii"), validate=True)
+        except (ValueError, UnicodeEncodeError):
+            return None
+
+    @staticmethod
     def _convert_messages(
         messages: list[dict[str, Any]],
     ) -> tuple[list[types.Content], str | None]:
@@ -136,7 +153,9 @@ class GeminiProvider(ProviderBase):
                 continue
 
             if role == "tool":
-                name = message.get("name")
+                # ContextBuilder stores provider-neutral tool names under
+                # `tool_name`; OpenAI-style API messages may use `name`.
+                name = message.get("name") or message.get("tool_name")
                 tool_call_id = message.get("tool_call_id")
 
                 if not name:
@@ -150,12 +169,24 @@ class GeminiProvider(ProviderBase):
                 if tool_call_id:
                     function_response.id = str(tool_call_id)
 
-                contents.append(
-                    types.Content(
-                        role="tool",
-                        parts=[types.Part(function_response=function_response)],
+                response_part = types.Part(function_response=function_response)
+                # Gemini's generate_content history represents a function
+                # response as a user turn; role="tool" is not valid here.
+                if (
+                    contents
+                    and getattr(contents[-1], "role", None) == "user"
+                    and getattr(contents[-1], "parts", None)
+                    and all(
+                        getattr(part, "function_response", None) is not None
+                        for part in contents[-1].parts
                     )
-                )
+                ):
+                    # Batch parallel tool results into one response turn.
+                    contents[-1].parts.append(response_part)
+                else:
+                    contents.append(
+                        types.Content(role="user", parts=[response_part])
+                    )
                 continue
 
             if role == "assistant":
@@ -192,7 +223,10 @@ class GeminiProvider(ProviderBase):
                                 id=tool_call.get("id"),
                                 name=str(name),
                                 args=arguments,
-                            )
+                            ),
+                            thought_signature=GeminiProvider._decode_thought_signature(
+                                tool_call.get("thought_signature_b64")
+                            ),
                         )
                     )
 
@@ -202,12 +236,54 @@ class GeminiProvider(ProviderBase):
 
             text = content if isinstance(content, str) else str(content or "")
             if text:
-                contents.append(
-                    types.Content(
-                        role="user",
-                        parts=[types.Part.from_text(text=text)],
+                text_part = types.Part.from_text(text=text)
+                if contents and getattr(contents[-1], "role", None) == "user":
+                    # Gemini requires alternating conversational turns. Daena
+                    # may supply several consecutive user-context messages, and
+                    # after a function result it may append runtime/recovery
+                    # context. Keep those parts in the same user turn so the
+                    # next model turn still immediately follows the response.
+                    contents[-1].parts.append(text_part)
+                else:
+                    contents.append(
+                        types.Content(role="user", parts=[text_part])
                     )
-                )
+
+        # A malformed/compacted Daena history can start with an assistant
+        # function call, followed by its tool result and the current runtime/task
+        # text. Gemini rejects a function-call turn without a preceding user turn.
+        # When there is no preceding user turn to anchor it, move trailing text
+        # parts before that historical call while keeping the FunctionResponse
+        # immediately after the call and preserving its opaque thought signature.
+        if (
+            contents
+            and getattr(contents[0], "role", None) == "model"
+            and any(
+                getattr(part, "function_call", None) is not None
+                for part in (contents[0].parts or [])
+            )
+        ):
+            leading_text_parts: list[types.Part] = []
+            repaired: list[types.Content] = []
+            for index, item in enumerate(contents):
+                if index > 0 and getattr(item, "role", None) == "user":
+                    kept_parts = []
+                    for part in item.parts or []:
+                        if (
+                            getattr(part, "text", None) is not None
+                            and getattr(part, "function_response", None) is None
+                        ):
+                            leading_text_parts.append(part)
+                        else:
+                            kept_parts.append(part)
+                    if kept_parts:
+                        item.parts = kept_parts
+                        repaired.append(item)
+                else:
+                    repaired.append(item)
+            if leading_text_parts:
+                repaired.insert(0, types.Content(role="user", parts=leading_text_parts))
+                contents = repaired
 
         return contents, system_instruction
 
@@ -244,19 +320,23 @@ class GeminiProvider(ProviderBase):
                 continue
 
             args = getattr(function_call, "args", None) or {}
-            tool_calls.append(
-                {
-                    "id": getattr(function_call, "id", None),
-                    "type": "function",
-                    "function": {
-                        "name": str(name),
-                        "arguments": json.dumps(
-                            dict(args),
-                            ensure_ascii=False,
-                        ),
-                    },
-                }
+            normalized_call = {
+                "id": getattr(function_call, "id", None),
+                "type": "function",
+                "function": {
+                    "name": str(name),
+                    "arguments": json.dumps(
+                        dict(args),
+                        ensure_ascii=False,
+                    ),
+                },
+            }
+            signature = GeminiProvider._encode_thought_signature(
+                getattr(part, "thought_signature", None)
             )
+            if signature:
+                normalized_call["thought_signature_b64"] = signature
+            tool_calls.append(normalized_call)
 
         message: dict[str, Any] = {
             "role": "assistant",
@@ -399,6 +479,11 @@ class GeminiProvider(ProviderBase):
                             ),
                         },
                     }
+                    signature = cls._encode_thought_signature(
+                        getattr(part, "thought_signature", None)
+                    )
+                    if signature:
+                        normalized["thought_signature_b64"] = signature
 
                     identity = (
                         str(call_id)
