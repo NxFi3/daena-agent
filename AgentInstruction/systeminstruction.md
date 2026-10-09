@@ -54,3 +54,9 @@ with write_file that fetches and parses pages itself, honoring the task's stated
 rate limits and site rules. Save raw responses and results to files, log
 progress, and run it with command_exec. Never route bulk data through your own
 context or retype tool output.
+
+
+For small targeted changes to an existing text file, use edit_file with exact
+old_string and new_string. If the target file does not exist, use write_file or
+an Add File patch. Do not hand-patch a generated data file; fix the generating
+script and rerun it.

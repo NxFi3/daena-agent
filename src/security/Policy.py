@@ -39,6 +39,7 @@ DEFAULT_ALLOWED_TOOLS = {
     "explore",
     "apply_patch",
     "write_file",
+    "edit_file",
     "command_exec",
     "process_poll",
     "process_write",
@@ -130,6 +131,9 @@ class SecurityPolicy:
         if name == "write_file":
             return self._check_write_file(args, sandbox)
 
+        if name == "edit_file":
+            return self._check_edit_file(args, sandbox)
+
         if name == "command_exec":
             return self._check_command(args, sandbox)
 
@@ -190,6 +194,27 @@ class SecurityPolicy:
                 return SecurityDecision(False, str(exc), "workspace_boundary")
 
         return SecurityDecision(True, "Write target is permitted by policy.", "workspace_write")
+
+    def _check_edit_file(self, args: dict[str, Any], sandbox) -> SecurityDecision:
+        path = args.get("file_path")
+        old_string = args.get("old_string")
+        new_string = args.get("new_string")
+        replace_all = args.get("replace_all", False)
+        if not isinstance(path, str) or not path.strip():
+            return SecurityDecision(False, "file_path is required.", "path_required")
+        if not isinstance(old_string, str) or not old_string:
+            return SecurityDecision(False, "old_string must be a non-empty string.", "old_string_required")
+        if not isinstance(new_string, str):
+            return SecurityDecision(False, "new_string must be a string.", "new_string_type")
+        if old_string == new_string:
+            return SecurityDecision(False, "old_string and new_string are identical.", "no_change")
+        if type(replace_all) is not bool:
+            return SecurityDecision(False, "replace_all must be a boolean.", "replace_all_type")
+        try:
+            sandbox.resolve(path)
+        except (PermissionError, ValueError) as exc:
+            return SecurityDecision(False, str(exc), "workspace_boundary")
+        return SecurityDecision(True, "Edit target is inside the workspace.", "workspace_edit")
 
     def _check_web_save(self, args: dict[str, Any], sandbox) -> SecurityDecision:
         path = args.get("save_to")

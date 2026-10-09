@@ -453,7 +453,9 @@ class ApplyPatch(Tool):
                 continue
 
             if current_hunk is None:
-                raise ValueError("Update File content must begin with '@@'.")
+                # Many small models omit the first @@ marker; the first
+                # content line safely begins an implicit hunk.
+                current_hunk = []
 
             if line == "":
                 current_hunk.append(" ")
@@ -464,9 +466,9 @@ class ApplyPatch(Tool):
 
             if prefix not in (" ", "+", "-"):
                 raise ValueError(
-                    f"Invalid hunk line: {line!r}. "
-                    "Expected ' ' for context, '-' for removal, "
-                    "or '+' for addition."
+                    f"Invalid hunk line: {line!r}. Expected ' ' for context, "
+                    "'-' for removal, or '+' for addition. Minimal example: "
+                    "'*** Update File: app.py\\n@@\\n-old line\\n+new line'."
                 )
 
             current_hunk.append(line)
@@ -572,7 +574,9 @@ class ApplyPatch(Tool):
     ) -> dict[str, Any]:
 
         if not path.exists():
-            raise ValueError(f"Cannot update '{path}': file does not exist.")
+            raise ValueError(
+                f"Cannot update '{path}': file does not exist; use '*** Add File:' or write_file."
+            )
 
         if not path.is_file():
             raise ValueError(f"Cannot update '{path}': path is not a file.")

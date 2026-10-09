@@ -978,7 +978,7 @@ class Loop:
                     )
                     continue
 
-            if tool_name in {"write_file", "apply_patch", "applypatch"}:
+            if tool_name in {"write_file", "edit_file", "apply_patch", "applypatch"}:
                 previous_epoch = self._successful_mutation_signatures.get(signature)
                 repeated_mutation_in_batch = signature in batch_mutation_signatures
                 repeated_without_progress = (
@@ -1181,9 +1181,9 @@ class Loop:
                 and isinstance(getattr(call, "args", {}), dict)
                 and bool(call.args.get("save_to"))
             )
-            if tool_name in {"write_file", "apply_patch", "applypatch", "command_exec", "process_write"} or (is_web_save and result.success):
+            if tool_name in {"write_file", "edit_file", "apply_patch", "applypatch", "command_exec", "process_write"} or (is_web_save and result.success):
                 self._workspace_mutation_epoch += 1
-            if tool_name in {"write_file", "apply_patch", "applypatch"}:
+            if tool_name in {"write_file", "edit_file", "apply_patch", "applypatch"}:
                 signature = self._observation_signature(call)
                 if signature:
                     self._successful_mutation_signatures[signature] = self._workspace_mutation_epoch
@@ -1323,7 +1323,7 @@ class Loop:
         if not isinstance(result, ToolResult) or not result.success:
             return []
         tool_name = str(getattr(call, "name", result.name)).strip().lower()
-        if tool_name not in {"write_file", "apply_patch", "applypatch"}:
+        if tool_name not in {"write_file", "edit_file", "apply_patch", "applypatch"}:
             return []
         payload = result.content if isinstance(result.content, dict) else {}
         candidates: list[tuple[str, str]] = []
@@ -2328,6 +2328,7 @@ class Loop:
             "list_dir": "inspect one workspace directory",
             "explore": "delegate broad read-only repository exploration to a separate context",
             "write_file": "write complete text files and generated artifacts; set overwrite=true only for intentional replacement",
+            "edit_file": "replace an exact string in an existing file when a small targeted edit is needed",
             "context_search": "search prior session history and bounded tool-result evidence when relevant context is missing",
             "apply_patch": "make targeted edits to existing source files using exact context",
             "command_exec": "run local commands/scripts/tests; inspect output, exit status, and HTTP status",
@@ -2336,7 +2337,7 @@ class Loop:
         }
 
         capability_names = {
-            "web_search", "web_fetch", "command_exec", "explore", "grep",
+            "web_search", "web_fetch", "command_exec", "explore", "grep", "edit_file",
             "glob", "read_file", "list_dir", "process_poll", "process_write",
             "context_search",
         }

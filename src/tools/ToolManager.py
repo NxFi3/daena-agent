@@ -158,7 +158,7 @@ class ToolManager:
         args = dict(toolcall.args or {})
         name = toolcall.name
 
-        if name in {"read_file", "write_file"}:
+        if name in {"read_file", "write_file", "edit_file"}:
             args["file_path"] = str(
                 self._resolve_execution_path(args["file_path"])
             )
