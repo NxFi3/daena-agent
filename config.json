@@ -11,6 +11,7 @@
     }
   },
   "context": {
+    "preserve_thinking": true,
     "safe_margin": -1,
     "recent_event_limit": 80,
     "compaction_enabled": true,

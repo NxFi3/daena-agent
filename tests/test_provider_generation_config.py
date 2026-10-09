@@ -61,3 +61,14 @@ def test_openrouter_benchmark_config_selects_coding_agent_model():
     assert "num_predict" not in generation
     assert "num_thread" not in generation
     assert original["llm"]["provider_config"]["generation_config"]["num_predict"] == 1024
+
+
+def test_ollama_prepare_messages_preserves_assistant_thinking():
+    from src.engine.providers.builtin.ollama.ollama import OllamaProvider
+
+    message = {
+        "role": "assistant",
+        "content": "answer",
+        "thinking": "current reasoning",
+    }
+    assert OllamaProvider._prepare_messages([message]) == [message]

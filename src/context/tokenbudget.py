@@ -146,6 +146,10 @@ class TokenBudget:
         if content:
             total += len(str(content))
 
+        thinking = message.get("thinking")
+        if thinking:
+            total += len(str(thinking))
+
         tool_calls = message.get("tool_calls")
 
         if tool_calls:

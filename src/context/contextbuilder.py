@@ -115,6 +115,13 @@ class ContextBuilder:
         self.tokenbudget = TokenBudget(config, self.llm)
         self.compactor = Compactor(self.llm)
         context_config = config.get("context") or {}
+        provider_name = str(getattr(self.llm, "provider_name", "") or "").strip().lower()
+        preserve_thinking = context_config.get("preserve_thinking")
+        self.preserve_thinking = (
+            provider_name == "ollama"
+            if preserve_thinking is None
+            else bool(preserve_thinking) and provider_name == "ollama"
+        )
         self.compaction_enabled = bool(context_config.get("compaction_enabled", True))
 
         try:
@@ -299,7 +306,15 @@ class ContextBuilder:
                 continue
 
             if role == "assistant" and event_type == "message":
-                message = self._assistant_message(event.content, metadata)
+                message = self._assistant_message(
+                    event.content,
+                    metadata,
+                    include_thinking=(
+                        self.preserve_thinking
+                        and current_task_step > 0
+                        and not is_historical
+                    ),
+                )
                 if message is None:
                     continue
                 message["_step"] = int(event.step)
@@ -494,6 +509,8 @@ class ContextBuilder:
         self,
         content: Any,
         metadata: dict[str, Any],
+        *,
+        include_thinking: bool = False,
     ) -> dict[str, Any] | None:
         raw = metadata.get("llm_message")
         raw = raw if isinstance(raw, dict) else {}
@@ -505,6 +522,8 @@ class ContextBuilder:
 
         if raw.get("tool_calls"):
             message["tool_calls"] = raw["tool_calls"]
+        if include_thinking and raw.get("thinking") is not None:
+            message["thinking"] = str(raw["thinking"])
         for key in (
             "reasoning_details",
             "reasoning",

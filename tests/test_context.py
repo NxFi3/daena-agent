@@ -814,3 +814,61 @@ def test_lessons_survive_context_compaction_and_reset():
     assert "write a script file instead" in rendered
     ws.reset()
     assert ws.context()["lessons"] == {}
+
+
+def test_preserve_thinking_only_for_current_task_and_ollama():
+    class OllamaLike:
+        provider_name = "ollama"
+        model = FakeModel()
+
+    config = base_config()
+    config["context"]["preserve_thinking"] = True
+    builder = ContextBuilder(config, OllamaLike())
+    historical = ContextEvent(
+        role=ContextRole.ASSISTANT, type=ContextType.MESSAGE, content="old",
+        step=1, metadata={"llm_message": {"role": "assistant", "content": "old", "thinking": "private old thoughts"}},
+    )
+    current = ContextEvent(
+        role=ContextRole.ASSISTANT, type=ContextType.MESSAGE, content="new",
+        step=10, metadata={"llm_message": {"role": "assistant", "content": "new", "thinking": "current reasoning"}},
+    )
+    messages = builder._build_conversation(
+        events=[historical, current],
+        task={"id": "task", "content": "current task", "step": 10},
+    )
+    assistant = [m for m in messages if m.get("role") == "assistant"]
+    assert len(assistant) == 2
+    assert "thinking" not in assistant[0]
+    assert assistant[1]["thinking"] == "current reasoning"
+    assert "current reasoning" not in builder._serialize_for_compaction([assistant[1]])
+
+
+def test_preserve_thinking_is_disabled_for_non_ollama_provider():
+    class OtherProvider:
+        provider_name = "gemini"
+        model = FakeModel()
+
+    config = base_config()
+    config["context"]["preserve_thinking"] = True
+    builder = ContextBuilder(config, OtherProvider())
+    item = event(ContextRole.ASSISTANT, ContextType.MESSAGE, "answer", 2)
+    item.metadata["llm_message"] = {
+        "role": "assistant", "content": "answer", "thinking": "must not be sent"
+    }
+    messages = builder._build_conversation(
+        events=[item],
+        task={"id": "task", "content": "latest task", "step": 2},
+    )
+    assistant = next(m for m in messages if m.get("role") == "assistant")
+    assert "thinking" not in assistant
+
+
+def test_token_estimate_includes_preserved_thinking():
+    from src.context.tokenbudget import TokenBudget
+
+    budget = TokenBudget(base_config(), FakeLLM())
+    without = budget._message_character_count({"role": "assistant", "content": "answer"})
+    with_thinking = budget._message_character_count({
+        "role": "assistant", "content": "answer", "thinking": "x" * 100
+    })
+    assert with_thinking - without == 100
