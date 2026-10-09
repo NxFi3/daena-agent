@@ -17,7 +17,7 @@ class FakeLLM:
         self.model = FakeModel()
 
 
-def make_loop(tmp_path):
+def make_loop(tmp_path, overrides=None):
     config = {
         "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
         "context": {
@@ -35,6 +35,8 @@ def make_loop(tmp_path):
         "max_agent_iterations": 5,
         "experience": {"enabled": False},
     }
+    if overrides:
+        config.update(overrides)
     loop = Loop(config, FakeLLM())
     loop.session_id = uuid4()
     loop.set_workspace(str(tmp_path))
@@ -260,7 +262,7 @@ def test_foreground_process_state_is_evidence_not_a_strategy_gate(tmp_path):
 
 
 def test_plan_is_optional_and_full_tool_vocabulary_remains_available(tmp_path):
-    loop = make_loop(tmp_path)
+    loop = make_loop(tmp_path, {"guard_level": "light"})
     captured = []
 
     def generate(messages, tools=None):

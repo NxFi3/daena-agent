@@ -245,3 +245,18 @@ def test_context_includes_plan_progress():
     )
     assert "plan_progress" in text
     assert '"step": 3' in text
+
+
+def test_guard_level_controls_plan_visibility_and_disabled_overrides(tmp_path):
+    strict = ToolManager(config={"guard_level": "strict", "tools": {"disabled": ["grep"]}})
+    strict.set_workspace(str(tmp_path))
+    names = {item["function"]["name"] for item in strict.get_tools()}
+    assert "plan" not in names
+    assert "grep" not in names
+    strict.close()
+
+    light = ToolManager(config={"guard_level": "light", "tools": {"disabled": []}})
+    light.set_workspace(str(tmp_path))
+    names = {item["function"]["name"] for item in light.get_tools()}
+    assert "plan" in names
+    light.close()

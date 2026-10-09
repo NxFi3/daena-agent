@@ -76,6 +76,31 @@ class ToolDispatcher:
             name = self._normalize_tool_name(name)
             arguments = self._normalize_arguments(arguments)
 
+            normalization_notes: list[str] = []
+            if arguments is not None:
+                tool_aliases = {
+                    "search": "grep",
+                    "find": "glob",
+                    "ls": "list_dir",
+                    "cat": "read_file",
+                }
+                if (
+                    name not in getattr(self.tool_registry, "tools", {})
+                    and name in tool_aliases
+                    and self.tool_registry.is_available(tool_aliases[name])
+                ):
+                    requested_name = name
+                    name = tool_aliases[name]
+                    normalization_notes.append(
+                        f"Normalized unavailable tool alias '{requested_name}' to '{name}'."
+                    )
+                    if requested_name == "search" and "query" in arguments and "pattern" not in arguments:
+                        arguments["pattern"] = arguments.pop("query")
+                    elif requested_name == "find" and "path" in arguments and "pattern" not in arguments:
+                        arguments["pattern"] = arguments.pop("path")
+                    elif requested_name == "cat" and "path" in arguments and "file_path" not in arguments:
+                        arguments["file_path"] = arguments.pop("path")
+
             if arguments is None:
                 return ToolCall(
                     name=name,
@@ -110,16 +135,15 @@ class ToolDispatcher:
                 )
 
             normalize = getattr(tool, "normalize_arguments", None)
-            normalization_notes: list[str] = []
             if callable(normalize):
                 try:
                     normalized = normalize(arguments)
                     if isinstance(normalized, tuple) and len(normalized) == 2:
                         arguments, notes = normalized
                         if isinstance(notes, list):
-                            normalization_notes = [
+                            normalization_notes.extend(
                                 str(note) for note in notes if str(note).strip()
-                            ]
+                            )
                     elif isinstance(normalized, dict):
                         arguments = normalized
                 except Exception as exc:

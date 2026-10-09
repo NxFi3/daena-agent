@@ -364,3 +364,37 @@ def test_dispatcher_normalizes_write_file_aliases_and_defaults():
         "file_path": "dataset.csv",
         "content": "a,b\n1,2\n",
     }
+
+
+def test_unregistered_tool_aliases_normalize_to_available_tools():
+    from src.tools.ToolRegistry import ToolRegistry
+    from src.tools.ToolDispatcher import ToolDispatcher
+
+    registry = ToolRegistry()
+    registry.discover()
+    dispatcher = ToolDispatcher(registry)
+    cases = [
+        ({"name": "ls", "arguments": {}}, "list_dir"),
+        ({"name": "cat", "arguments": {"path": "main.py"}}, "read_file"),
+        ({"name": "find", "arguments": {"pattern": "*.py"}}, "glob"),
+        ({"name": "search", "arguments": {"pattern": "Agent"}}, "grep"),
+    ]
+    for raw, expected in cases:
+        call = dispatcher.dispatch(raw)[0]
+        assert call.name == expected
+        assert call.valid
+        assert call.normalization_notes
+        assert "Normalized unavailable tool alias" in call.normalization_notes[0]
+
+
+def test_existing_tool_names_are_not_renormalized_as_aliases():
+    from src.tools.ToolRegistry import ToolRegistry
+    from src.tools.ToolDispatcher import ToolDispatcher
+
+    registry = ToolRegistry()
+    registry.discover()
+    call = ToolDispatcher(registry).dispatch(
+        {"name": "grep", "arguments": {"pattern": "Agent"}}
+    )[0]
+    assert call.name == "grep"
+    assert call.normalization_notes == []

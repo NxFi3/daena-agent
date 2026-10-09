@@ -59,6 +59,9 @@ class Loop:
     ) -> None:
 
         self.config = config
+        self.guard_level = str(self.config.get("guard_level", "strict")).strip().lower()
+        if self.guard_level not in {"strict", "light"}:
+            self.guard_level = "strict"
 
         self.logger = get_logger("[LOOP]")
 
@@ -1005,8 +1008,7 @@ class Loop:
                     self.metrics["duplicate_observation_cache_hits"] = (
                         self.metrics.get("duplicate_observation_cache_hits", 0) + 1
                     )
-                    guard_level = str(self.config.get("guard_level", "strict")).strip().lower()
-                    hit_limit = 6 if guard_level == "light" else 3
+                    hit_limit = 6 if self.guard_level == "light" else 3
                     if self._consecutive_observation_cache_hits >= hit_limit:
                         blocked_results[index] = self._repeated_observation_result(call)
                         self.metrics["duplicate_observation_blocks"] = (

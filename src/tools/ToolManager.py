@@ -114,12 +114,23 @@ class ToolManager:
 
         allowed = set(self.security.policy.allowed_tools)
         network_allowed = bool(self.security.policy.allow_network_tools)
+        tool_config = self.config.get("tools") or {}
+        disabled = {
+            str(name).strip().lower()
+            for name in tool_config.get("disabled", [])
+            if str(name).strip()
+        } if isinstance(tool_config, dict) else set()
+        guard_level = str(self.config.get("guard_level", "strict")).strip().lower()
+        if guard_level not in {"strict", "light"}:
+            guard_level = "strict"
 
         visible: list[dict] = []
         for definition in self._definitions:
             function = definition.get("function", {}) if isinstance(definition, dict) else {}
             name = str(function.get("name", "")).strip().lower()
-            if not name or name not in allowed:
+            if not name or name not in allowed or name in disabled:
+                continue
+            if guard_level == "strict" and name == "plan":
                 continue
             if name in {"web_search", "web_fetch"} and not network_allowed:
                 continue
@@ -279,6 +290,31 @@ class ToolManager:
                 continue
 
             toolcall = incoming_call
+
+            disabled_tools = {
+                str(name).strip().lower()
+                for name in ((self.config.get("tools") or {}).get("disabled", []) or [])
+                if str(name).strip()
+            }
+            guard_level = str(self.config.get("guard_level", "strict")).strip().lower()
+            if toolcall.name in disabled_tools or (guard_level != "light" and toolcall.name == "plan"):
+                reason = (
+                    f"Tool '{toolcall.name}' is disabled by tools.disabled."
+                    if toolcall.name in disabled_tools
+                    else "The plan tool is hidden in strict guard_level. Use direct inspection and implementation instead."
+                )
+                calls.append(toolcall)
+                results.append(ToolResult(
+                    success=False,
+                    name=toolcall.name,
+                    content={"success": False, "error": {
+                        "type": "tool_disabled",
+                        "message": reason,
+                    }},
+                    metadata={"tool_call_id": toolcall.id, "recovery_hint": "Choose a currently available tool and continue the task."},
+                    summary=reason,
+                ))
+                continue
 
             if not toolcall.valid:
                 message = (
