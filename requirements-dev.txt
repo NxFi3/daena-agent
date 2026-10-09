@@ -7,3 +7,4 @@ pypdf
 rich>=13.7,<15
 prompt_toolkit>=3.0,<4
 google-genai
+python-dotenv

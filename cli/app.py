@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
+from dotenv import load_dotenv
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import NestedCompleter
 from prompt_toolkit.formatted_text import HTML
@@ -31,6 +32,9 @@ from .render import StreamRenderer
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config.json"
+# Load project-local API credentials without overriding explicit shell env vars.
+# Secrets remain in .env and are never copied into config.json or logged.
+load_dotenv(ROOT / ".env", override=False)
 
 STYLE = Style.from_dict(
     {
