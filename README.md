@@ -932,3 +932,11 @@ Experience
 ```
 
 with the longer-term goal of building an agent that can **learn useful strategies from its own experience instead of repeating the same mistakes forever**.
+
+### Completion review model
+
+The completion_review section can optionally use a separate reviewer model with
+the provider and model_name keys. When these fields are omitted, the reviewer
+continues to use the main model. Self-review with the same small model has
+limited value; use a stronger reviewer model or disable completion_review.enabled
+when the extra review is not useful.

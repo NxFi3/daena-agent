@@ -169,6 +169,22 @@ class StreamRenderer:
                 row += f"  {_DIM}─  {summary}{_R}"
             self._print(row)
 
+        elif t in {"completion_review", "recovery_review"}:
+            self._close_thinking()
+            self._close_response()
+            title = "completion review" if t == "completion_review" else "recovery review"
+            decision = _short(str(event.get("decision") or "unknown"), 24)
+            reason = _short(str(event.get("reason") or event.get("error") or ""), 260)
+            next_action = _short(str(event.get("next_action") or ""), 220)
+            self.status = f"review:{decision}"
+            color = _OK if decision == "complete" else (_FAIL if decision == "blocked" else _P)
+            row = f"\\n  {color}◇ {title}: {decision}{_R}"
+            if reason:
+                row += f"  {_DIM}{reason}{_R}"
+            self._print(row)
+            if next_action:
+                self._print(f"    {_DIM}next: {next_action}{_R}")
+
         elif t == "steering":
             self._close_thinking()
             self._close_response()

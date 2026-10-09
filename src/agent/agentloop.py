@@ -176,8 +176,46 @@ class Loop:
             )
         except (TypeError, ValueError):
             self.completion_review_max_retries = 3
+        reviewer_llm = self.llm
+        if self.completion_review_enabled and (
+            review_config.get("provider") or review_config.get("model_name")
+        ):
+            main_llm_config = self.config.get("llm") or {}
+            main_provider = str(main_llm_config.get("provider", "ollama")).strip().lower()
+            reviewer_provider = str(
+                review_config.get("provider") or main_provider
+            ).strip().lower()
+            reviewer_model = str(review_config.get("model_name") or "").strip()
+            main_provider_config = main_llm_config.get("provider_config") or {}
+            if reviewer_provider == main_provider:
+                reviewer_provider_config = dict(main_provider_config)
+                reviewer_generation_config = dict(
+                    main_provider_config.get("generation_config") or {}
+                )
+            else:
+                # Provider-specific options must not leak across providers.
+                main_generation_config = dict(
+                    main_provider_config.get("generation_config") or {}
+                )
+                reviewer_generation_config = {
+                    key: main_generation_config[key]
+                    for key in ("temperature", "think")
+                    if key in main_generation_config
+                }
+                reviewer_provider_config = {}
+            if reviewer_model:
+                reviewer_provider_config["model_name"] = reviewer_model
+            if reviewer_generation_config:
+                reviewer_provider_config["generation_config"] = reviewer_generation_config
+            reviewer_llm = LlmProvider({
+                "llm": {
+                    "provider": reviewer_provider,
+                    "provider_config": reviewer_provider_config,
+                }
+            })
+
         self.completion_reviewer = (
-            CompletionReviewer(self.llm)
+            CompletionReviewer(reviewer_llm)
             if self.completion_review_enabled
             else None
         )

@@ -271,3 +271,69 @@ def test_blocked_completion_does_not_return_false_success_claim(tmp_path):
         assert metrics["stop_reason"].startswith("Completion review rejected the result")
     finally:
         loop.close()
+
+
+def test_completion_reviewer_can_use_configured_separate_provider_and_model(tmp_path, monkeypatch):
+    import src.agent.agentloop as agentloop_module
+
+    constructed = []
+
+    class FakeReviewerProvider:
+        def __init__(self, config):
+            constructed.append(config)
+            self.config = config
+
+        def generate(self, *args, **kwargs):
+            return text_result(json.dumps({
+                "decision": "complete", "reason": "reviewed", "next_action": ""
+            }))
+
+    monkeypatch.setattr(agentloop_module, "LlmProvider", FakeReviewerProvider)
+    main_llm = ReviewRecoveryLLM()
+    config = {
+        "llm": {
+            "provider": "ollama",
+            "provider_config": {
+                "model_name": "small-main",
+                "generation_config": {"temperature": 0.3, "num_predict": 512, "think": "low"},
+            },
+        },
+        "context": {"safe_margin": 0, "recent_event_limit": 10, "compaction_enabled": False},
+        "retrieval": {"top_k": 1},
+        "security": {"workspace_only": True, "allow_background": False,
+                     "allow_network_tools": True, "force_approve": False},
+        "memory": {"stm_db_path": str(tmp_path / "reviewer.db")},
+        "completion_review": {
+            "enabled": True, "provider": "gemini", "model_name": "strong-reviewer"
+        },
+        "experience": {"enabled": False},
+    }
+    loop = Loop(config, main_llm)
+    try:
+        assert len(constructed) == 1
+        reviewer_config = constructed[0]["llm"]
+        assert reviewer_config["provider"] == "gemini"
+        assert reviewer_config["provider_config"]["model_name"] == "strong-reviewer"
+        assert "num_predict" not in reviewer_config["provider_config"].get("generation_config", {})
+        assert loop.completion_reviewer.llm is not main_llm
+    finally:
+        loop.close()
+
+
+def test_completion_reviewer_uses_main_llm_when_no_override_is_configured(tmp_path):
+    llm = ReviewRecoveryLLM()
+    config = {
+        "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
+        "context": {"safe_margin": 0, "recent_event_limit": 10, "compaction_enabled": False},
+        "retrieval": {"top_k": 1},
+        "security": {"workspace_only": True, "allow_background": False,
+                     "allow_network_tools": True, "force_approve": False},
+        "memory": {"stm_db_path": str(tmp_path / "reviewer-default.db")},
+        "completion_review": {"enabled": True},
+        "experience": {"enabled": False},
+    }
+    loop = Loop(config, llm)
+    try:
+        assert loop.completion_reviewer.llm is llm
+    finally:
+        loop.close()
