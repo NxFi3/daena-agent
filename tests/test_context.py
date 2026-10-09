@@ -146,8 +146,8 @@ def test_compactor_disables_reasoning():
         task={"id": str(task.id), "content": task.content},
     )
 
-    assert llm.calls == 1
-    assert llm.options[0]["think"] is False
+    assert llm.calls >= 1
+    assert all(options["think"] is False for options in llm.options)
     assert any(
         "<compacted_context>" in str(m.get("content", ""))
         for m in messages
@@ -194,7 +194,8 @@ def test_compactor_failure_keeps_deterministic_recent_history():
         task={"id": str(task.id), "content": task.content},
     )
 
-    assert llm.calls == 1
+    assert llm.calls >= 1
+    assert all(options["think"] is False for options in llm.options)
     fallback = next(
         m["content"]
         for m in messages
@@ -230,7 +231,8 @@ def test_compaction_is_used_when_latest_task_history_does_not_fit():
         task={"id": str(task.id), "content": task.content},
     )
 
-    assert llm.calls == 1
+    assert llm.calls >= 1
+    assert all(options["think"] is False for options in llm.options)
     assert any(
         "<compacted_context>" in str(m.get("content", ""))
         for m in messages

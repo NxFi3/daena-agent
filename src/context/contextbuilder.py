@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,8 @@ from src.context.contextwindow import ContextWindow
 from src.context.tokenbudget import TokenBudget
 from src.engine.LlmProviderManager import LlmProvider
 from src.models.ContextEvent import ContextEvent
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_INSTRUCTION = (
     "You are Daena, an autonomous assistant and software engineering agent."
@@ -1112,18 +1115,59 @@ class ContextBuilder:
         return "\n\n".join(chunks)
 
     def _compaction_input(self, text: str) -> str:
-        max_tokens = max(2048, min(self.tokenbudget.budget, 12000))
-        max_chars = int(max_tokens * self.tokenbudget.chars_per_token * 0.8)
+        """Keep compactable history intact, summarizing chunks before omitting anything."""
+        if not text:
+            return ""
+
+        max_tokens = max(128, min(40_000, int(self.tokenbudget.budget * 0.5)))
+        max_chars = max(
+            512,
+            int(max_tokens * self.tokenbudget.chars_per_token * 0.8),
+        )
         if len(text) <= max_chars:
             return text
 
-        head = max_chars // 3
-        tail = max_chars - head
-        return (
-            text[:head]
-            + "\n\n...[middle of history omitted before compaction]...\n\n"
-            + text[-tail:]
-        )
+        chunks: list[str] = []
+        start = 0
+        while start < len(text):
+            end = min(len(text), start + max_chars)
+            if end < len(text):
+                boundary = text.rfind("\n\n", start + max_chars // 2, end)
+                if boundary >= 0:
+                    end = boundary + 2
+                else:
+                    boundary = text.rfind("\n", start + max_chars // 2, end)
+                    if boundary >= 0:
+                        end = boundary + 1
+            if end <= start:
+                end = min(len(text), start + max_chars)
+            chunk = text[start:end].strip()
+            if chunk:
+                chunks.append(chunk)
+            start = end
+
+        chunk_target = max(128, int(self.compaction_target_tokens / 2))
+        summaries: list[str] = []
+        try:
+            for chunk in chunks:
+                summary = self.compactor.compact(chunk, chunk_target)
+                if not isinstance(summary, str) or not summary.strip():
+                    raise RuntimeError("Chunk summarization returned an empty result.")
+                summaries.append(summary.strip())
+        except Exception as exc:
+            logger.warning(
+                "Chunk compaction failed; using bounded head/tail fallback: %s",
+                exc,
+            )
+            head = max_chars // 3
+            tail = max_chars - head
+            return (
+                text[:head]
+                + "\n\n...[middle of history omitted before compaction]...\n\n"
+                + text[-tail:]
+            )
+
+        return "\n\n".join(summaries)
 
     @staticmethod
     def _checkpoint_boundary(events: list[ContextEvent]) -> int | None:

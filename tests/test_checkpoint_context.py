@@ -89,7 +89,8 @@ def test_checkpoint_persists_and_prevents_repeat_compaction(tmp_path):
         assert checkpoint is not None
         assert checkpoint.metadata["checkpoint"] is True
         assert checkpoint.metadata["covered_through_step"] > 0
-        assert llm.calls == 1
+        calls_after_first_compaction = llm.calls
+        assert calls_after_first_compaction >= 1
 
         second_task = ContextEvent(
             id=uuid4(),
@@ -106,7 +107,7 @@ def test_checkpoint_persists_and_prevents_repeat_compaction(tmp_path):
             workspace_directory=str(tmp_path),
         )
 
-        assert llm.calls == 1
+        assert llm.calls == calls_after_first_compaction
         assert second[-1] == {"role": "user", "content": "make the next change"}
         assert sum(
             "<checkpoint_summary>" in str(message.get("content", ""))
