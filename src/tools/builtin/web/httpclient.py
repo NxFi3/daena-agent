@@ -8,6 +8,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zlib
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 USER_AGENT = (
@@ -30,6 +31,58 @@ MAX_REDIRECTS = 5
 def _safe_text(value: object) -> str:
     """Prevent invalid Unicode surrogate characters in transport strings."""
     return str(value or "").encode("utf-8", errors="replace").decode("utf-8", errors="replace")
+
+
+_ALLOWED_REQUEST_HEADERS = {
+    "user-agent": "User-Agent",
+    "accept": "Accept",
+    "accept-language": "Accept-Language",
+    "referer": "Referer",
+    "cache-control": "Cache-Control",
+    "pragma": "Pragma",
+}
+
+
+def _normalize_request_headers(headers: Mapping[str, str] | None) -> dict[str, str]:
+    """Validate optional, non-sensitive request headers.
+
+    Credentials, cookies, host/routing headers and hop-by-hop headers are
+    intentionally unsupported. Headers are user/model input, so reject
+    unknown names and CR/LF rather than forwarding arbitrary HTTP metadata.
+    """
+    if headers is None:
+        return {}
+    if not isinstance(headers, Mapping):
+        raise FetchError("invalid_headers", "headers must be an object of string values.")
+    if len(headers) > len(_ALLOWED_REQUEST_HEADERS):
+        raise FetchError(
+            "invalid_headers",
+            "Too many headers. Only User-Agent, Accept, Accept-Language, Referer, Cache-Control and Pragma are supported.",
+        )
+
+    result: dict[str, str] = {}
+    for raw_name, raw_value in headers.items():
+        if not isinstance(raw_name, str):
+            raise FetchError("invalid_headers", "Header names must be strings.")
+        canonical = _ALLOWED_REQUEST_HEADERS.get(raw_name.strip().lower())
+        if canonical is None:
+            raise FetchError(
+                "invalid_headers",
+                f"Header '{raw_name}' is not allowed. Credentials, cookies and routing headers are not supported.",
+            )
+        if not isinstance(raw_value, str):
+            raise FetchError(
+                "invalid_headers",
+                f"The value for '{canonical}' must be a string.",
+            )
+        value = _safe_text(raw_value).strip()
+        if "\r" in value or "\n" in value:
+            raise FetchError("invalid_headers", f"Invalid newline in '{canonical}'.")
+        if len(value) > 512:
+            raise FetchError("invalid_headers", f"The value for '{canonical}' is too long (max 512 characters).")
+        result[canonical] = value
+
+    return result
 
 
 class FetchError(Exception):
@@ -265,9 +318,12 @@ def http_get(
     *,
     timeout: float = DEFAULT_TIMEOUT,
     max_bytes: int = DEFAULT_MAX_BYTES,
+    headers: Mapping[str, str] | None = None,
 ) -> HttpResponse:
     """GET `url` with SSRF protection and a hard cap on the body size."""
 
+    # Reject invalid caller headers before performing DNS or network work.
+    normalized_headers = _normalize_request_headers(headers)
     url = _safe_text(url).strip()
     url = _prepare_http_url(url)
     assert_public_url(url)
@@ -277,49 +333,38 @@ def http_get(
     base_headers = {
         "User-Agent": USER_AGENT,
         "Accept": (
-            "text/html,application/xhtml+xml,text/plain;q=0.9,"
-            "application/json;q=0.8,*/*;q=0.5"
+            "text/html,application/xhtml+xml,application/json;q=0.9,"
+            "text/plain;q=0.8,*/*;q=0.7"
         ),
-        "Accept-Language": "en-US,en;q=0.8",
+        "Accept-Language": "fa-IR,fa;q=0.9,en-US;q=0.7,en;q=0.5",
         "Accept-Encoding": "gzip, deflate",
         "Connection": "close",
     }
+    # Validate caller-provided headers before opening a connection. They can
+    # override only the safe allowlist above; transport/security headers stay
+    # under this client's control.
+    base_headers.update(normalized_headers)
 
     try:
         request = urllib.request.Request(url, headers=base_headers)
-        try:
-            with opener.open(request, timeout=timeout) as response:
-                status = int(getattr(response, "status", 200) or 200)
-                final_url = response.geturl()
-                headers = response.headers
-                raw = response.read(max_bytes + 1)
-        except urllib.error.HTTPError as exc:
-            # Retry one 403 with conventional browser headers. This can help
-            # simple header-based blocks while leaving the public API unchanged.
-            if exc.code != 403:
-                raise
-
-            exc.close()
-            retry_headers = dict(base_headers)
-            retry_headers["User-Agent"] = BROWSER_USER_AGENT
-            retry_headers["Referer"] = url
-            retry_headers["Upgrade-Insecure-Requests"] = "1"
-
-            retry = urllib.request.Request(url, headers=retry_headers)
-            with opener.open(retry, timeout=timeout) as response:
-                status = int(getattr(response, "status", 200) or 200)
-                final_url = response.geturl()
-                headers = response.headers
-                raw = response.read(max_bytes + 1)
+        with opener.open(request, timeout=timeout) as response:
+            status = int(getattr(response, "status", 200) or 200)
+            final_url = response.geturl()
+            response_headers = response.headers
+            raw = response.read(max_bytes + 1)
 
     except FetchError:
         raise
 
     except urllib.error.HTTPError as exc:
-        hint = ""
-        if exc.code in (401, 403, 429):
-            hint = " The site may block automated access or be rate limiting."
-
+        hints = {
+            400: " The URL or request may be invalid; verify the public page URL.",
+            401: " The page requires authentication; use an authorized public page instead.",
+            403: " Access was denied. Do not retry with spoofed credentials or attempt to bypass the site's controls.",
+            404: " The URL was not found; verify it or discover the correct URL through web_search.",
+            429: " The site is rate limiting requests; stop and retry later rather than increasing request frequency.",
+        }
+        hint = hints.get(exc.code, "")
         message = f"HTTP {exc.code} {exc.reason} for {url}.{hint}"
         exc.close()
         raise FetchError("http_error", message) from exc
@@ -355,15 +400,15 @@ def http_get(
 
     body, decompress_truncated = _decompress(
         raw,
-        headers.get("Content-Encoding", ""),
+        response_headers.get("Content-Encoding", ""),
         max_bytes,
     )
 
     return HttpResponse(
         url=_safe_text(final_url),
         status=status,
-        content_type=(headers.get_content_type() or "").lower(),
-        charset=headers.get_content_charset(),
+        content_type=(response_headers.get_content_type() or "").lower(),
+        charset=response_headers.get_content_charset(),
         body=body,
         truncated=truncated or decompress_truncated,
     )

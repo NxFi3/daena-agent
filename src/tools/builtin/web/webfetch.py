@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import codecs
+import json
 import re
+import urllib.parse
 from io import BytesIO
 from typing import Any
 
@@ -84,8 +86,11 @@ class WebFetch(Tool):
     description = (
         "Fetch a web page (http/https) and return its readable text. Use it "
         "after web_search to read a result, or to open any URL the user "
-        "gives. Works for HTML, plain text, JSON, XML and text-based PDFs; "
-        "images. Long pages are returned in chunks: if the result says "
+        "gives. Works for HTML, plain text, JSON, XML and text-based PDFs. "
+        "Optional safe headers (User-Agent, Accept, Accept-Language, Referer, "
+        "Cache-Control, Pragma) can be supplied when a public page needs them; "
+        "cookies and authorization headers are intentionally unsupported. "
+        "This tool does not execute JavaScript. Long pages are returned in chunks: if the result says "
         "truncated, call again with start_char set to next_start_char. Set "
         "include_links=true to also get the page's links. Local and private "
         "network addresses are blocked."
@@ -123,6 +128,24 @@ class WebFetch(Tool):
                 "description": "Also return the links found on the page.",
                 "default": False,
             },
+            "headers": {
+                "type": "object",
+                "description": (
+                    "Optional non-sensitive HTTP headers. Supported keys: "
+                    "User-Agent, Accept, Accept-Language, Referer, Cache-Control, "
+                    "Pragma. Do not use for cookies, Authorization, Host or other "
+                    "routing/security headers."
+                ),
+                "properties": {
+                    "User-Agent": {"type": "string", "maxLength": 512},
+                    "Accept": {"type": "string", "maxLength": 512},
+                    "Accept-Language": {"type": "string", "maxLength": 512},
+                    "Referer": {"type": "string", "maxLength": 512},
+                    "Cache-Control": {"type": "string", "maxLength": 512},
+                    "Pragma": {"type": "string", "maxLength": 512},
+                },
+                "additionalProperties": False,
+            },
         },
         "required": ["url"],
         "additionalProperties": False,
@@ -134,6 +157,7 @@ class WebFetch(Tool):
         max_chars: int = DEFAULT_MAX_CHARS,
         start_char: int = 0,
         include_links: bool = False,
+        headers: dict[str, str] | None = None,
     ) -> ToolResult:
         if not isinstance(url, str) or not url.strip():
             return self._error(
@@ -164,6 +188,7 @@ class WebFetch(Tool):
                 url,
                 timeout=default_timeout(),
                 max_bytes=DEFAULT_MAX_BYTES,
+                headers=headers,
             )
         except FetchError as exc:
             return self._error(exc.error_type, exc.message, url=url)
@@ -197,6 +222,19 @@ class WebFetch(Tool):
             title = page.title
             links = page.links
             method = page.method
+
+            # Read useful structured records already embedded in public HTML
+            # when generic readability extraction discards the app's data
+            # model (e.g. server-rendered POST_ROW widgets on Divar).
+            if len(text.strip()) < 800:
+                embedded_text, embedded_title, embedded_links = (
+                    self._extract_preloaded_state(decoded, response.url)
+                )
+                if embedded_text:
+                    text = embedded_text
+                    title = title or embedded_title
+                    links = embedded_links or links
+                    method = "embedded_json"
         elif kind == "pdf":
             try:
                 text, title, note = self._extract_pdf(response.body)
@@ -219,10 +257,26 @@ class WebFetch(Tool):
 
         total = len(text)
 
+        if (
+            kind == "html"
+            and total < 120
+            and len(decoded) > 12000
+            and any(
+                marker in decoded.lower()
+                for marker in ("__next_data__", "__next_f.push", "__nuxt__", "enable javascript")
+            )
+        ):
+            note = self._diagnose_empty_html(
+                decoded=decoded,
+                title=title,
+                content_type=response.content_type,
+            )
+
         if total == 0:
-            empty_note = note or (
-                "No readable text found. The page may need JavaScript "
-                "or be empty."
+            empty_note = note or self._diagnose_empty_html(
+                decoded=decoded,
+                title=title,
+                content_type=response.content_type,
             )
             return self._success(
                 url=response.url,
@@ -263,7 +317,7 @@ class WebFetch(Tool):
             method=method,
             links=shown_links,
             with_links=with_links,
-            note="",
+            note=note,
         )
 
     # ------------------------------------------------------------------
@@ -382,6 +436,219 @@ class WebFetch(Tool):
     def _looks_like_html(text: str) -> bool:
         head = text[:1024].lstrip().lower()
         return head.startswith(("<!doctype html", "<html"))
+
+    @staticmethod
+    def _extract_preloaded_state(
+        html: str,
+        base_url: str,
+    ) -> tuple[str, str, list[dict[str, str]]]:
+        """Summarize useful public records in a common embedded page-state object.
+
+        This is a narrow fallback, not a JavaScript engine: it only parses JSON
+        already delivered in the HTTP response and never executes page scripts.
+        """
+        marker = "window.__PRELOADED_STATE__"
+        marker_index = html.find(marker)
+        if marker_index < 0:
+            return "", "", []
+
+        equals_index = html.find("=", marker_index + len(marker))
+        if equals_index < 0:
+            return "", "", []
+        start = html.find("{", equals_index + 1, min(len(html), equals_index + 128))
+        if start < 0:
+            return "", "", []
+
+        # Parse the JavaScript assignment by balancing JSON braces while
+        # respecting quoted strings and escapes. Regex can truncate payloads
+        # when a brace/semicolon pair occurs inside a JSON string.
+        depth = 0
+        in_string = False
+        escaped = False
+        end = -1
+        for index in range(start, min(len(html), start + 2_000_000)):
+            char = html[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    end = index + 1
+                    break
+
+        if end < 0:
+            return "", "", []
+
+        try:
+            state = json.loads(html[start:end])
+        except (json.JSONDecodeError, RecursionError):
+            return "", "", []
+
+        if not isinstance(state, dict):
+            return "", "", []
+
+        nb = state.get("nb")
+        if not isinstance(nb, dict):
+            return "", "", []
+
+        title = ""
+        # Title and records can both be embedded in the same app-state JSON.
+        for widget in nb.get("listTopWidgets", []) if isinstance(nb.get("listTopWidgets"), list) else []:
+            if not isinstance(widget, dict):
+                continue
+            data = widget.get("dto", {}).get("data", {})
+            candidate = data.get("text") if isinstance(data, dict) else ""
+            if isinstance(candidate, str) and candidate.strip():
+                title = candidate.strip()
+                break
+
+        rows = nb.get("listWidgets", [])
+        if not isinstance(rows, list):
+            return "", title, []
+
+        blocks: list[str] = []
+        links: list[dict[str, str]] = []
+        seen_tokens: set[str] = set()
+
+        for widget in rows:
+            if not isinstance(widget, dict):
+                continue
+            # Pages may normalize each widget as {"data": {...}} or include
+            # the widget fields directly depending on the app generation.
+            widget_data = widget.get("data", widget)
+            if not isinstance(widget_data, dict):
+                continue
+            if widget_data.get("widgetType") != "POST_ROW":
+                continue
+
+            dto = widget_data.get("dto")
+            if not isinstance(dto, dict):
+                continue
+            data = dto.get("data")
+            if not isinstance(data, dict):
+                continue
+
+            action = data.get("action")
+            payload = action.get("payload", {}) if isinstance(action, dict) else {}
+            if not isinstance(payload, dict):
+                payload = {}
+            web_info = payload.get("web_info", {})
+            if not isinstance(web_info, dict):
+                web_info = {}
+
+            token = str(data.get("token") or payload.get("token") or "").strip()
+            post_title = str(data.get("title") or "").strip()
+            if not token or not post_title or token in seen_tokens:
+                continue
+            # Tokens are path segments emitted by the site. Restrict them to a
+            # conservative identifier alphabet before constructing a link.
+            if not re.fullmatch(r"[A-Za-z0-9_-]{3,80}", token):
+                continue
+            seen_tokens.add(token)
+
+            district = str(web_info.get("district_persian") or "").strip()
+            city = str(web_info.get("city_persian") or "").strip()
+            price = str(data.get("middle_description_text") or "").strip()
+            detail = str(data.get("bottom_description_text") or "").strip()
+            listing_url = urllib.parse.urljoin(
+                base_url,
+                "/v/" + urllib.parse.quote(token, safe=""),
+            )
+            # Keep each record grounded in the exact strings shipped by the
+            # public page. Do not infer unknown fields from the title here.
+            parts = [f"Title: {post_title}"]
+            if price:
+                parts.append(f"Displayed price: {price}")
+            if detail:
+                parts.append(f"Description: {detail}")
+            if district:
+                parts.append(f"Neighborhood: {district}")
+            if city:
+                parts.append(f"City: {city}")
+            parts.extend((f"Post token: {token}", f"Listing URL: {listing_url}"))
+            blocks.append(" | ".join(parts))
+            links.append({"text": post_title[:60], "url": listing_url})
+
+        if not blocks:
+            return "", title, []
+
+        intro = (
+            f"Extracted {len(blocks)} public listing records from JSON already "
+            "embedded in the HTML response (no JavaScript executed). "
+            "Values below are source fields as supplied by the page; missing "
+            "details are not inferred.\n"
+        )
+        return intro + "\n".join(
+            f"{index}. {block}" for index, block in enumerate(blocks, start=1)
+        ), title, links
+
+    @staticmethod
+    def _diagnose_empty_html(
+        *,
+        decoded: str,
+        title: str,
+        content_type: str,
+    ) -> str:
+        """Give the model evidence-based next steps instead of a vague empty result."""
+        lowered = decoded.lower()
+        if any(
+            marker in lowered
+            for marker in (
+                "enable javascript",
+                "javascript is required",
+                "please enable javascript",
+                "you need to enable javascript",
+            )
+        ):
+            return (
+                "The server returned HTML, but the page explicitly requires JavaScript. "
+                "web_fetch does not execute JavaScript; use an available authorized "
+                "browser-rendering tool, or inspect public data already embedded in "
+                "this response. Do not keep fetching the same URL with the same method."
+            )
+
+        app_shell_markers = (
+            "__next_data__",
+            "__next_f.push",
+            "__nuxt__",
+            "id=\"root\"",
+            "id=\"app\"",
+            "data-reactroot",
+        )
+        if len(decoded) > 12000 and any(marker in lowered for marker in app_shell_markers):
+            return (
+                "The server returned a large HTML document but no readable page text; "
+                "it appears to be a client-rendered JavaScript app shell. web_fetch "
+                "does not run page JavaScript. Inspect public embedded JSON or use an "
+                "authorized browser-rendering tool if one is available. Do not keep "
+                "retrying the same URL with the same method; report the limitation "
+                "instead of inventing records."
+            )
+
+        if "text/html" in (content_type or "").lower():
+            return (
+                f"The server returned HTML (title: {title or 'unknown'}), but no readable "
+                "text was extracted. It may be an empty page, a client-rendered app, or "
+                "a consent/challenge page. Try one materially different public URL or "
+                "search result, then stop if access remains unavailable. This tool does "
+                "not execute JavaScript or bypass access controls."
+            )
+
+        return (
+            "The response contained no readable text. Verify the URL/content type and "
+            "try one materially different public source; do not infer missing data."
+        )
 
     @staticmethod
     def _decode(

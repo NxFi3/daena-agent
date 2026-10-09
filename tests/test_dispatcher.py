@@ -343,3 +343,24 @@ def test_dispatcher_accepts_legacy_plan_operation_alias():
     assert calls[0].valid is True
     assert calls[0].args["action"] == "create"
     assert "operation" not in calls[0].args
+
+
+def test_dispatcher_normalizes_write_file_aliases_and_defaults():
+    from src.tools.ToolRegistry import ToolRegistry
+
+    registry = ToolRegistry()
+    registry.discover()
+    dispatcher = ToolDispatcher(registry)
+    call = dispatcher.dispatch({
+        "name": "write_file",
+        "arguments": {
+            "path": "dataset.csv",
+            "text": "a,b\n1,2\n",
+        },
+    })[0]
+
+    assert call.valid is True
+    assert call.args == {
+        "file_path": "dataset.csv",
+        "content": "a,b\n1,2\n",
+    }

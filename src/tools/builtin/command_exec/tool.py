@@ -69,7 +69,7 @@ class CommandExec(Tool):
         "Run a local command given as an argv array (not a shell command string). "
         "Shell operators such as >, |, &&, ||, $(...), heredocs, and shell globbing are "
         "not interpreted unless you explicitly invoke a shell executable such as sh or bash. "
-        "Use apply_patch for file creation/editing instead of relying on echo output. "
+        "Use write_file for complete text files and generated artifacts; use apply_patch for targeted edits to existing source files. "
         "For directory inspection, prefer one concise listing when the workspace "
         "inventory is insufficient; do not repeat an identical successful ls/find "
         "observation. The command waits up to yield_time_ms (default 1000ms). Optional numeric "

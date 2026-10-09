@@ -22,6 +22,10 @@ class ToolDispatcher:
             "content": "patch",
             "diff": "patch",
         },
+        "write_file": {
+            "path": "file_path",
+            "text": "content",
+        },
         "plan": {
             "operation": "action",
         },

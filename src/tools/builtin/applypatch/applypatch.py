@@ -79,6 +79,8 @@ class ApplyPatch(Tool):
         "Multiple file operations are allowed. "
         "The patch may be wrapped in a markdown code fence. "
         "For updates, use exact file context. "
+        "For a complete generated artifact or whole-file replacement, prefer "
+        "write_file; use this tool for targeted changes to existing files. "
         "The tool fails rather than guessing when an update is ambiguous."
     )
 

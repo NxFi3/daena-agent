@@ -93,6 +93,38 @@ def test_stm_search_excludes_raw_tool_events(tmp_path):
         db.close()
 
 
+def test_stm_search_can_retrieve_tool_results_when_explicitly_requested(tmp_path):
+    db = STMDatabase(tmp_path / "stm.db")
+    session_id = uuid4()
+    tool_event = ContextEvent(
+        id=uuid4(),
+        role=ContextRole.TOOL,
+        type=ContextType.TOOL_RESULT,
+        content=(
+            '{"name":"web_fetch","success":true,'
+            '"content":{"content":"public listing token abc123 neighborhood Fin"}}'
+        ),
+        step=4,
+    )
+    db.add(session_id, tool_event)
+
+    try:
+        # Existing callers retain message-only behavior by default.
+        assert db.search(session_id, "abc123 neighborhood", top_k=3) == []
+
+        # Context retrieval can explicitly recall the earlier tool evidence.
+        results = db.search(
+            session_id,
+            "abc123 neighborhood",
+            top_k=3,
+            include_tool_results=True,
+        )
+        assert [item.id for item in results] == [tool_event.id]
+        assert results[0].type == ContextType.TOOL_RESULT
+    finally:
+        db.close()
+
+
 def test_stm_recent_after_step_returns_newest_chronological_slice(tmp_path):
     db = STMDatabase(tmp_path / "stm.db")
     session_id = uuid4()

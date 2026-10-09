@@ -88,7 +88,8 @@ class WebSearch(Tool):
                 "type": "string",
                 "description": (
                     "Only results from the last day, week, month or year. "
-                    "Omit for no time limit. Avoid combining this with a "
+                    "Omit for no time limit; an empty string is treated as "
+                    "omitted. Avoid combining this with a "
                     "site: filter on the first attempt for anything that "
                     "isn't dated news (e.g. a live price or a docs page), "
                     "since the two together often over-restrict results."
@@ -130,6 +131,12 @@ class WebSearch(Tool):
             self.MAX_NUM_RESULTS,
         )
 
+        # Models sometimes emit an empty string for an optional enum.
+        # Treat it as "no time filter" rather than turning a useful search
+        # into a preventable schema error.
+        if isinstance(time_range, str):
+            time_range = time_range.strip().lower() or None
+
         if time_range is not None and time_range not in TIME_RANGES:
             return self._error(
                 "invalid_argument",
@@ -142,6 +149,7 @@ class WebSearch(Tool):
         timeout = default_timeout()
 
         failures: list[str] = []
+        empty_backends: list[str] = []
 
         # Ask for a few extra: duplicates and junk get removed below.
         request_size = min(limit + 3, 15)
@@ -184,11 +192,37 @@ class WebSearch(Tool):
                     limit=limit,
                 )
 
+            if not cleaned:
+                # A backend can respond successfully yet have weak index
+                # coverage. Try the next configured provider instead of
+                # treating an empty list as a definitive result.
+                empty_backends.append(backend.name)
+                continue
+
             return self._success(
                 query=query,
                 backend=backend.name,
                 hits=cleaned,
                 fallback_note=fallback_note,
+            )
+
+        if empty_backends:
+            detail = (
+                "Available search providers returned no useful results: "
+                + ", ".join(empty_backends)
+                + ". "
+            )
+            if failures:
+                detail += "Other provider failures: " + " | ".join(failures) + ". "
+            detail += (
+                "Try a short query without site: restrictions, or fetch a known "
+                "public URL directly. Do not repeat an identical search indefinitely."
+            )
+            return self._success(
+                query=query,
+                backend=", ".join(empty_backends),
+                hits=[],
+                fallback_note=detail,
             )
 
         return self._error(
@@ -375,11 +409,12 @@ class WebSearch(Tool):
         if not hits:
 
             note = (
-                "No results. If this had a site: filter or a time_range, "
-                "both were already retried without them and still returned "
-                "nothing — the domain may not be indexed. Try web_fetch "
-                "directly on the site's likely URL, or use different, "
-                "shorter keywords."
+                (fallback_note + "\\n\\n") if fallback_note else ""
+            ) + (
+                "No useful results were found after the available search "
+                "providers were tried. The site may not be indexed. Try one "
+                "different, short query or web_fetch on a known public URL; "
+                "do not repeat the same failed search indefinitely."
             )
 
             return ToolResult(

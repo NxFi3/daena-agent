@@ -1,7 +1,7 @@
 from uuid import uuid4
 
 from src.context.contextbuilder import ContextBuilder
-from src.models.ContextEvent import ContextEvent, ContextRole, ContextType
+from src.models.ContextEvent import ContextEvent, ContextPriority, ContextRole, ContextType
 from src.models.LLMResult import LLMResult
 
 
@@ -686,3 +686,100 @@ def test_tool_payload_prefers_normalized_observation_state():
     assert "Read src/main.py." in payload
     assert "important finding" in payload
     assert "huge raw content" not in payload
+
+
+
+def test_retrieved_old_tool_evidence_survives_history_trimming_without_tool_replay():
+    llm = FakeLLM()
+    builder = ContextBuilder(base_config(), llm)
+    important = event(
+        ContextRole.TOOL,
+        ContextType.TOOL_RESULT,
+        (
+            '{"name":"read_file","tool_call_id":"old-call","success":true,'
+            '"summary":"Prior inspection confirmed the admin route validates ADMIN_TOKEN.",'
+            '"evidence":{"path":"src/auth.py","finding":"constant-time token comparison"}}'
+        ),
+        1,
+    )
+    recent_history = [
+        event(ContextRole.USER, ContextType.MESSAGE, f"unrelated old turn {step}", step)
+        for step in range(2, 14)
+    ]
+    task = event(
+        ContextRole.USER,
+        ContextType.MESSAGE,
+        "continue the security fix",
+        20,
+    )
+
+    messages = builder.build_context(
+        events=[important, *recent_history, task],
+        task={"id": str(task.id), "content": task.content, "step": task.step},
+        retrieved_events=[important],
+    )
+
+    retrieved = [
+        message for message in messages
+        if "<retrieved_context>" in str(message.get("content", ""))
+    ]
+    assert len(retrieved) == 1
+    assert "Prior inspection confirmed the admin route validates ADMIN_TOKEN." in retrieved[0]["content"]
+    assert "constant-time token comparison" in retrieved[0]["content"]
+    assert all(message.get("role") != "tool" for message in messages)
+    assert messages[-1] == {"role": "user", "content": task.content}
+
+
+def test_retrieved_event_already_in_kept_history_is_not_duplicated():
+    llm = FakeLLM()
+    builder = ContextBuilder(base_config(), llm)
+    important = event(
+        ContextRole.ASSISTANT,
+        ContextType.MESSAGE,
+        "The project uses SQLite for persistent short-term memory.",
+        10,
+    )
+    task = event(
+        ContextRole.USER,
+        ContextType.MESSAGE,
+        "continue",
+        11,
+    )
+
+    messages = builder.build_context(
+        events=[important, task],
+        task={"id": str(task.id), "content": task.content, "step": task.step},
+        retrieved_events=[important],
+    )
+
+    rendered = "\\n".join(str(message.get("content", "")) for message in messages)
+    assert "The project uses SQLite for persistent short-term memory." in rendered
+    assert "<retrieved_context>" not in rendered
+
+
+
+def test_retrieval_does_not_resurrect_old_high_priority_steering():
+    llm = FakeLLM()
+    builder = ContextBuilder(base_config(), llm)
+    stale_nudge = ContextEvent(
+        role=ContextRole.USER,
+        type=ContextType.MESSAGE,
+        content="OUTDATED steering: stop editing files and do only something else",
+        priority=ContextPriority.HIGH,
+        step=1,
+        metadata={"runtime_nudge": True},
+    )
+    recent_history = [
+        event(ContextRole.USER, ContextType.MESSAGE, f"later task {step}", step)
+        for step in range(2, 12)
+    ]
+    task = event(ContextRole.USER, ContextType.MESSAGE, "continue current task", 20)
+
+    messages = builder.build_context(
+        events=[stale_nudge, *recent_history, task],
+        task={"id": str(task.id), "content": task.content, "step": task.step},
+        retrieved_events=[stale_nudge],
+    )
+
+    rendered = "\\n".join(str(message.get("content", "")) for message in messages)
+    assert "OUTDATED steering" not in rendered

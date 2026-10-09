@@ -163,3 +163,50 @@ def test_system_prompt_is_stable_while_runtime_state_changes(tmp_path):
         )
     finally:
         stm.close()
+
+
+
+def test_context_service_keeps_retrieved_memory_outside_recent_history_window(
+    tmp_path,
+    monkeypatch,
+):
+    llm = FakeLLM()
+    stm = STM(tmp_path / "stm.db")
+    service = ContextService(config(), llm, stm)
+    session_id = uuid4()
+    important = event(
+        "Previous investigation proved the cache key must include checkpoint_step.",
+        1,
+    )
+
+    try:
+        stm.add(session_id, important)
+        for step in range(2, 18):
+            stm.add(session_id, event(f"routine historical event {step}", step))
+
+        task = ContextEvent(
+            id=uuid4(),
+            role=ContextRole.USER,
+            type=ContextType.MESSAGE,
+            content="continue context debugging",
+            step=20,
+        )
+        stm.add(session_id, task)
+        monkeypatch.setattr(stm, "search", lambda **_kwargs: [important])
+
+        messages = service.get_context(
+            session_id=session_id,
+            user_task=task,
+            agent_state=AgentState(),
+            workspace_directory=str(tmp_path),
+        )
+
+        rendered = "\\n".join(str(message.get("content", "")) for message in messages)
+        assert "<retrieved_context>" in rendered
+        assert "Previous investigation proved the cache key must include checkpoint_step." in rendered
+        assert messages[-1] == {
+            "role": "user",
+            "content": "continue context debugging",
+        }
+    finally:
+        stm.close()

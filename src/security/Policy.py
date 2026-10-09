@@ -32,11 +32,13 @@ DEFAULT_BLOCKED_COMMANDS = {
 DEFAULT_ALLOWED_TOOLS = {
     "plan",
     "read_file",
+    "context_search",
     "grep",
     "glob",
     "list_dir",
     "explore",
     "apply_patch",
+    "write_file",
     "command_exec",
     "process_poll",
     "process_write",
@@ -125,6 +127,9 @@ class SecurityPolicy:
         if name == "apply_patch":
             return self._check_apply_patch(args, sandbox)
 
+        if name == "write_file":
+            return self._check_write_file(args, sandbox)
+
         if name == "command_exec":
             return self._check_command(args, sandbox)
 
@@ -163,6 +168,26 @@ class SecurityPolicy:
                 return SecurityDecision(False, str(exc), "workspace_boundary")
 
         return SecurityDecision(True, "Patch targets are inside the workspace.", "workspace_patch")
+
+    def _check_write_file(self, args: dict[str, Any], sandbox) -> SecurityDecision:
+        path = args.get("file_path")
+        content = args.get("content")
+        overwrite = args.get("overwrite", False)
+
+        if not isinstance(path, str) or not path.strip():
+            return SecurityDecision(False, "file_path is required.", "path_required")
+        if not isinstance(content, str):
+            return SecurityDecision(False, "content must be a string.", "content_type")
+        if type(overwrite) is not bool:
+            return SecurityDecision(False, "overwrite must be a boolean.", "overwrite_type")
+
+        if self.workspace_only:
+            try:
+                sandbox.resolve(path)
+            except (PermissionError, ValueError) as exc:
+                return SecurityDecision(False, str(exc), "workspace_boundary")
+
+        return SecurityDecision(True, "Write target is permitted by policy.", "workspace_write")
 
     def _check_command(self, args: dict[str, Any], sandbox) -> SecurityDecision:
         command = args.get("command")

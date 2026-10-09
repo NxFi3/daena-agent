@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -395,6 +396,7 @@ class STMDatabase:
         query: str,
         top_k: int = 3,
         min_step: int | None = None,
+        include_tool_results: bool = False,
     ) -> list[ContextEvent]:
         """
         Lexical retrieval using SQLite FTS5 + BM25.
@@ -416,16 +418,34 @@ class STMDatabase:
             int(top_k),
         )
 
-        terms = [term.strip() for term in query.split() if term.strip()]
+        # Keep long task prompts from turning into huge, noisy FTS expressions.
+        query = re.sub(r"https?://\S+", " ", query, flags=re.IGNORECASE)
+        stop_words = {
+            "the", "and", "for", "with", "from", "that", "this", "these", "those",
+            "then", "than", "into", "onto", "your", "you", "are", "was", "were",
+            "will", "would", "could", "should", "have", "has", "had", "not", "but",
+            "use", "using", "used", "only", "must", "please", "task", "create",
+            "make", "write", "file", "data", "source", "public", "real", "actual",
+            "after", "before", "there", "their", "each", "every", "where", "when",
+            "what", "also", "now", "same", "such", "about",
+        }
+        terms: list[str] = []
+        seen_terms: set[str] = set()
+        for match in re.finditer(r"[\w-]{2,}", query, flags=re.UNICODE):
+            term = match.group(0).strip().lower()
+            if not term or term in stop_words or term in seen_terms:
+                continue
+            seen_terms.add(term)
+            terms.append(term)
+            if len(terms) >= 18:
+                break
 
         if not terms:
             return []
 
         safe_terms: list[str] = []
-
         for term in terms:
             cleaned = term.replace('"', "").replace("'", "")
-
             if cleaned:
                 safe_terms.append(f'"{cleaned}"')
 
@@ -451,8 +471,14 @@ class STMDatabase:
 
             WHERE
                 f.session_id = ?
-                AND e.type = 'message'
-                AND e.role IN ('user', 'assistant')
+                AND (
+                    (? = 1 AND (
+                        (e.type = 'message' AND e.role IN ('user', 'assistant'))
+                        OR (e.type = 'tool_result' AND e.role = 'tool')
+                    ))
+                    OR
+                    (? = 0 AND e.type = 'message' AND e.role IN ('user', 'assistant'))
+                )
                 AND (? IS NULL OR e.step > ?)
                 AND f.context_events_fts MATCH ?
 
@@ -471,6 +497,8 @@ class STMDatabase:
             select_sql,
             (
                 str(session_id),
+                int(include_tool_results),
+                int(include_tool_results),
                 min_step,
                 min_step,
                 fts_query,
@@ -485,6 +513,8 @@ class STMDatabase:
                 select_sql,
                 (
                     str(session_id),
+                    int(include_tool_results),
+                    int(include_tool_results),
                     min_step,
                     min_step,
                     fts_query,

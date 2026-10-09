@@ -34,7 +34,7 @@ class ContextService:
         self.default_search_top_k = max(
             1, int(retrieval_config.get("top_k", 3))
         )
-        self._retrieval_cache_key: tuple[str, str, int] | None = None
+        self._retrieval_cache_key: tuple[str, str, int, int, int] | None = None
         self._retrieval_cache: list[ContextEvent] = []
 
     @staticmethod
@@ -155,11 +155,15 @@ class ContextService:
 
         query = str(user_task.content or "").strip()
         top_k = search_top_k or self.default_search_top_k
+        # New tool results should invalidate retrieval cache even while the
+        # user task id stays unchanged across agent iterations.
+        event_count = self.stm.count(session_id)
         cache_key = (
             str(session_id),
             str(user_task.id),
             int(top_k),
             int(checkpoint_step),
+            int(event_count),
         )
 
         if query and cache_key == self._retrieval_cache_key:
@@ -170,16 +174,17 @@ class ContextService:
                 query=query,
                 top_k=top_k,
                 min_step=checkpoint_step if checkpoint_step > 0 else None,
+                include_tool_results=True,
             )
             self._retrieval_cache_key = cache_key
             self._retrieval_cache = list(relevant_events or [])
         else:
             relevant_events = []
 
-        events = self._merge_events(
-            recent_events,
-            (*checkpoint_events, *relevant_events),
-        )
+        # Keep recalled events in the dedicated <retrieved_context> reference
+        # message. Re-inserting old tool results into live chronology can create
+        # orphaned provider tool messages with no matching assistant tool call.
+        events = self._merge_events(recent_events, checkpoint_events)
 
         self.context = self.contextbuilder.build_context(
             events=events,
@@ -192,6 +197,7 @@ class ContextService:
             workspace=workspace_directory,
             available_tool_names=available_tool_names,
             include_plan=include_plan,
+            retrieved_events=relevant_events,
         )
 
         self._store_checkpoint(

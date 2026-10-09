@@ -292,3 +292,26 @@ def test_force_approve_does_not_bypass_security_policy(tmp_path):
 
     assert checked.approved is False
     assert checked.security_rule == "blocked_executable"
+
+
+def test_write_file_is_allowed_inside_workspace_and_denied_outside(tmp_path):
+    service = make_service(tmp_path)
+
+    inside = ToolCall(
+        name="write_file",
+        id="write-inside",
+        valid=True,
+        args={"file_path": "dataset.csv", "content": "a,b\n1,2\n"},
+    )
+    checked_inside = service.check(inside)
+    assert checked_inside.approved is True
+
+    outside = ToolCall(
+        name="write_file",
+        id="write-outside",
+        valid=True,
+        args={"file_path": "../secret.txt", "content": "do not write"},
+    )
+    checked_outside = service.check(outside)
+    assert checked_outside.approved is False
+    assert checked_outside.security_rule == "workspace_boundary"

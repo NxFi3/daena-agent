@@ -41,7 +41,7 @@ def make_loop(tmp_path):
     return loop
 
 
-def test_valid_duplicate_calls_are_model_owned(tmp_path):
+def test_exact_duplicate_observation_calls_are_blocked_in_one_batch(tmp_path):
     loop = make_loop(tmp_path)
     try:
         call_a = ToolCall(
@@ -59,7 +59,129 @@ def test_valid_duplicate_calls_are_model_owned(tmp_path):
 
         allowed, blocked = loop._classify_calls([call_a, call_b])
 
-        assert allowed == [0, 1]
+        assert allowed == [0]
+        assert set(blocked) == {1}
+        assert blocked[1].content["error"]["type"] == "repeated_observation_no_progress"
+    finally:
+        loop.close()
+
+
+def test_identical_failed_command_is_blocked_after_two_failures_without_progress(tmp_path):
+    loop = make_loop(tmp_path)
+    command = ToolCall(
+        name="command_exec",
+        id="failed-command",
+        valid=True,
+        args={
+            "command": ["python", "-c", "raise SystemExit('same error')"],
+            "working_directory": str(tmp_path),
+        },
+    )
+    failed_result = ToolResult(
+        success=False,
+        name="command_exec",
+        content={
+            "exit_code": 1,
+            "stderr": "same error",
+            "error": {"type": "command_failed", "message": "exit code 1"},
+        },
+        summary="Command exited with status 1",
+    )
+    try:
+        loop._apply_result(command, failed_result, iteration=1)
+        loop._apply_result(command, failed_result, iteration=2)
+
+        allowed, blocked = loop._classify_calls([command])
+
+        assert allowed == []
+        assert 0 in blocked
+        assert blocked[0].content["error"]["type"] == "repeated_command_failure_no_progress"
+        assert loop.get_metrics()["repeated_command_failure_blocks"] == 1
+    finally:
+        loop.close()
+
+
+def test_failed_command_can_run_again_after_workspace_progress(tmp_path):
+    loop = make_loop(tmp_path)
+    command = ToolCall(
+        name="command_exec",
+        id="failed-command",
+        valid=True,
+        args={
+            "command": ["python", "-c", "raise SystemExit('same error')"],
+            "working_directory": str(tmp_path),
+        },
+    )
+    failed_result = ToolResult(
+        success=False,
+        name="command_exec",
+        content={
+            "exit_code": 1,
+            "stderr": "same error",
+            "error": {"type": "command_failed", "message": "exit code 1"},
+        },
+        summary="Command exited with status 1",
+    )
+    write = ToolCall(
+        name="write_file",
+        id="write-after-failure",
+        valid=True,
+        args={"file_path": "recovery.txt", "content": "corrected"},
+    )
+    try:
+        loop._apply_result(command, failed_result, iteration=1)
+        loop._apply_result(command, failed_result, iteration=2)
+        loop._apply_result(
+            write,
+            ToolResult(
+                success=True,
+                name="write_file",
+                content={"path": str(tmp_path / "recovery.txt"), "bytes_written": 9},
+                summary="Wrote recovery.txt",
+            ),
+            iteration=3,
+        )
+
+        allowed, blocked = loop._classify_calls([command])
+
+        assert allowed == [0]
+        assert blocked == {}
+    finally:
+        loop.close()
+
+
+def test_observation_can_repeat_after_a_successful_write(tmp_path):
+    loop = make_loop(tmp_path)
+    try:
+        read_call = ToolCall(
+            name="read_file",
+            id="read-a",
+            valid=True,
+            args={"file_path": "app.py"},
+        )
+        loop._apply_result(
+            read_call,
+            ToolResult(success=True, name="read_file", content={"content": "print('hi')"}),
+            1,
+        )
+        allowed, blocked = loop._classify_calls([read_call])
+        assert allowed == []
+        assert set(blocked) == {0}
+
+        write_call = ToolCall(
+            name="write_file",
+            id="write-a",
+            valid=True,
+            args={"file_path": "generated.txt", "content": "new state"},
+        )
+        loop._apply_result(
+            write_call,
+            ToolResult(success=True, name="write_file", content={"success": True}),
+            2,
+        )
+
+        allowed, blocked = loop._classify_calls([read_call])
+        assert allowed == [0]
         assert blocked == {}
     finally:
         loop.close()
@@ -308,5 +430,181 @@ def test_natural_language_completion_is_not_blocked_after_mutation(tmp_path):
         assert result is not None
         assert result.response == "done"
         assert (tmp_path / "result.txt").read_text(encoding="utf-8") == "done\n"
+    finally:
+        loop.close()
+
+
+def test_successful_remote_fetch_is_not_unlocked_by_a_local_write(tmp_path):
+    loop = make_loop(tmp_path)
+    try:
+        fetch_call = ToolCall(
+            name="web_fetch",
+            id="fetch-a",
+            valid=True,
+            args={"url": "https://example.invalid/public"},
+        )
+        loop._apply_result(
+            fetch_call,
+            ToolResult(success=True, name="web_fetch", content={"content": "observed data"}),
+            1,
+        )
+
+        write_call = ToolCall(
+            name="write_file",
+            id="write-a",
+            valid=True,
+            args={"file_path": "dataset.csv", "content": "header"},
+        )
+        loop._apply_result(
+            write_call,
+            ToolResult(success=True, name="write_file", content={"success": True}),
+            2,
+        )
+
+        allowed, blocked = loop._classify_calls([fetch_call])
+        assert allowed == []
+        assert set(blocked) == {0}
+        assert blocked[0].content["error"]["type"] == "repeated_observation_no_progress"
+    finally:
+        loop.close()
+
+
+def test_csv_artifact_validator_reports_inconsistent_record_width(tmp_path):
+    loop = make_loop(tmp_path)
+    try:
+        path = tmp_path / "dataset.csv"
+        path.write_text(
+            "price,area,rooms,parking,elevator,neighborhood,url,retrieved_at\n"
+            "1000000,,2,,,\n",
+            encoding="utf-8",
+        )
+        call = ToolCall(
+            name="write_file",
+            id="write-csv",
+            valid=True,
+            args={"file_path": "dataset.csv", "content": "irrelevant-to-the-validator"},
+        )
+        result = ToolResult(
+            success=True,
+            name="write_file",
+            content={"path": str(path), "success": True},
+        )
+
+        findings = loop._validate_written_artifact(call, result)
+        assert len(findings) == 1
+        assert "line 2 has 6 fields (expected 8)" in findings[0]
+    finally:
+        loop.close()
+
+
+
+def test_csv_validator_rejects_date_only_value_in_timestamp_column(tmp_path):
+    loop = make_loop(tmp_path)
+    try:
+        path = tmp_path / "dataset.csv"
+        path.write_text(
+            "retrieved_at,listing_url\n"
+            "2026-10-09,https://example.com/listing\n",
+            encoding="utf-8",
+        )
+        call = ToolCall(
+            name="write_file",
+            id="write-timestamp",
+            valid=True,
+            args={"file_path": "dataset.csv", "content": "irrelevant-to-validator"},
+        )
+        result = ToolResult(
+            success=True,
+            name="write_file",
+            content={"path": str(path), "success": True},
+        )
+
+        findings = loop._validate_written_artifact(call, result)
+        assert any("date without a time" in finding for finding in findings)
+    finally:
+        loop.close()
+
+
+def test_write_result_itself_exposes_artifact_validation_failure_to_next_turn(tmp_path):
+    import json
+
+    loop = make_loop(tmp_path)
+    try:
+        call = ToolCall(
+            name="write_file",
+            id="write-invalid-csv",
+            valid=True,
+            args={
+                "file_path": "dataset.csv",
+                "content": (
+                    "price,area,rooms,url\n"
+                    "1000000,90,2\n"
+                ),
+            },
+        )
+        loop._execute_tool_calls([call], iteration=1)
+
+        events = loop.stm.get_recent(loop.session_id, limit=30)
+        result_events = [
+            event for event in events
+            if str(getattr(event.type, "value", event.type)) == "tool_result"
+        ]
+        assert result_events, "Tool execution should persist a result event."
+        payload = json.loads(result_events[-1].content)
+        assert payload["name"] == "write_file"
+        assert payload["success"] is True  # write succeeded; the artifact format did not.
+        assert "ARTIFACT VALIDATION FAILED" in payload["summary"]
+        findings = payload["content"]["artifact_validation"]["findings"]
+        assert any("line 2 has 3 fields (expected 4)" in finding for finding in findings)
+        assert payload["metadata"]["validation_findings"] == findings
+    finally:
+        loop.close()
+
+
+def test_identical_successful_write_is_blocked_until_content_changes(tmp_path):
+    loop = make_loop(tmp_path)
+    try:
+        content = "a,b\n1,2\n"
+        write_call = ToolCall(
+            name="write_file",
+            id="write-once",
+            valid=True,
+            args={"file_path": "dataset.csv", "content": content, "overwrite": True},
+        )
+        # ToolManager resolves the relative workspace path before result handling.
+        executed_call = ToolCall(
+            name="write_file",
+            id="write-once",
+            valid=True,
+            args={
+                "file_path": str(tmp_path / "dataset.csv"),
+                "content": content,
+                "overwrite": True,
+            },
+        )
+        loop._apply_result(
+            executed_call,
+            ToolResult(
+                success=True,
+                name="write_file",
+                content={"success": True, "path": str(tmp_path / "dataset.csv")},
+            ),
+            1,
+        )
+
+        allowed, blocked = loop._classify_calls([write_call])
+        assert allowed == []
+        assert set(blocked) == {0}
+        assert blocked[0].content["error"]["type"] == "repeated_mutation_no_progress"
+
+        corrected_call = ToolCall(
+            name="write_file",
+            id="write-corrected",
+            valid=True,
+            args={"file_path": "dataset.csv", "content": "a,b\n1,2,3\n", "overwrite": True},
+        )
+        allowed, blocked = loop._classify_calls([corrected_call])
+        assert allowed == [0]
+        assert blocked == {}
     finally:
         loop.close()

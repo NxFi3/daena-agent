@@ -37,6 +37,12 @@
     }
   },
   "max_agent_iterations": 50,
+  "completion_review": {
+    "enabled": true,
+    "max_retries": 3,
+    "recovery_interval": 3,
+    "max_recovery_checks": 4
+  },
   "experience": {
     "enabled": true
   }

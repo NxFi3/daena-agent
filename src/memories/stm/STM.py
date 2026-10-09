@@ -94,6 +94,7 @@ class STM:
         query: str,
         top_k: int = 3,
         min_step: int | None = None,
+        include_tool_results: bool = False,
     ) -> list[ContextEvent]:
 
         return self.db.search(
@@ -101,6 +102,7 @@ class STM:
             query=query,
             top_k=top_k,
             min_step=min_step,
+            include_tool_results=include_tool_results,
         )
 
     def list_sessions(

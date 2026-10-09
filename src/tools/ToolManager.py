@@ -30,9 +30,16 @@ class ToolManager:
         self.process_manager = ProcessManager()
         self._workspace_root: Path | None = None
         self._llm_provider = None
+        self._context_stm = None
+        self._session_id_provider = None
 
     def set_llm_provider(self, llm_provider) -> None:
         self._llm_provider = llm_provider
+        self._bind_runtime_services()
+
+    def set_context_store(self, stm, session_id_provider) -> None:
+        self._context_stm = stm
+        self._session_id_provider = session_id_provider
         self._bind_runtime_services()
 
     def set_workspace(self, directory: str) -> None:
@@ -93,6 +100,10 @@ class ToolManager:
             if callable(llm_setter) and self._llm_provider is not None:
                 llm_setter(self._llm_provider)
 
+            context_setter = getattr(tool, "set_context_store", None)
+            if callable(context_setter) and self._context_stm is not None:
+                context_setter(self._context_stm, self._session_id_provider)
+
     def get_tools(self) -> list[dict]:
         if self._definitions is None:
             self.toolregistry.discover()
@@ -147,7 +158,7 @@ class ToolManager:
         args = dict(toolcall.args or {})
         name = toolcall.name
 
-        if name == "read_file":
+        if name in {"read_file", "write_file"}:
             args["file_path"] = str(
                 self._resolve_execution_path(args["file_path"])
             )
