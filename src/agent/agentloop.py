@@ -1,6 +1,7 @@
 # src/agent/agentloop.py
 from __future__ import annotations
 
+import copy
 import csv
 import hashlib
 import json
@@ -105,6 +106,12 @@ class Loop:
         self._workspace_mutation_epoch = 0
         self._successful_observation_signatures: dict[str, int] = {}
         self._successful_mutation_signatures: dict[str, int] = {}
+        observation_cache_config = self.config.get("observation_cache") or {}
+        self.observation_cache_enabled = bool(observation_cache_config.get("enabled", True))
+        self.observation_cache_max_entries = 20
+        self.observation_cache_max_result_chars = 200_000
+        self._observation_cache: dict[str, tuple[int, ToolResult]] = {}
+        self._consecutive_observation_cache_hits = 0
         # A deterministic command that fails repeatedly with the same result
         # should not consume the remaining agent iterations forever.
         # signature -> (workspace epoch, failure fingerprint, consecutive failures)
@@ -857,6 +864,48 @@ class Loop:
             summary=message,
         )
 
+    def _cached_observation_result(self, call, signature: str) -> ToolResult | None:
+        if not self.observation_cache_enabled:
+            return None
+        cached = self._observation_cache.get(signature)
+        if cached is None:
+            return None
+        epoch, original = cached
+        if epoch != self._observation_epoch(call):
+            return None
+        result = copy.deepcopy(original)
+        result.success = True
+        result.content = dict(result.content)
+        result.content["cached"] = True
+        if "success" in result.content:
+            result.content["success"] = True
+        result.metadata = dict(result.metadata)
+        result.metadata["cached_observation"] = True
+        result.summary = "(cached: identical earlier call, workspace unchanged) " + result.summary
+        return result
+
+    def _remember_observation(self, call, signature: str, result: ToolResult) -> None:
+        if not self.observation_cache_enabled or not result.success:
+            return
+        if result.metadata.get("cached_observation"):
+            return
+        try:
+            content_size = len(json.dumps(
+                {"content": result.content, "summary": result.summary, "evidence": result.evidence},
+                ensure_ascii=False, default=str,
+            ))
+        except Exception:
+            content_size = len(str(result.content)) + len(result.summary)
+        if content_size > self.observation_cache_max_result_chars:
+            return
+        self._observation_cache.pop(signature, None)
+        self._observation_cache[signature] = (
+            self._observation_epoch(call),
+            copy.deepcopy(result),
+        )
+        while len(self._observation_cache) > self.observation_cache_max_entries:
+            self._observation_cache.pop(next(iter(self._observation_cache)))
+
     @staticmethod
     def _repeated_observation_result(call) -> ToolResult:
         name = str(getattr(call, "name", "unknown")).strip() or "unknown"
@@ -939,8 +988,28 @@ class Loop:
                 batch_mutation_signatures.add(signature)
 
             if self._is_observation_call(call):
-                previous_epoch = self._successful_observation_signatures.get(signature)
                 repeated_in_batch = signature in batch_signatures
+                cached_result = (
+                    None if repeated_in_batch
+                    else self._cached_observation_result(call, signature)
+                )
+                if cached_result is not None:
+                    self._consecutive_observation_cache_hits += 1
+                    self.metrics["duplicate_observation_cache_hits"] = (
+                        self.metrics.get("duplicate_observation_cache_hits", 0) + 1
+                    )
+                    guard_level = str(self.config.get("guard_level", "strict")).strip().lower()
+                    hit_limit = 6 if guard_level == "light" else 3
+                    if self._consecutive_observation_cache_hits >= hit_limit:
+                        blocked_results[index] = self._repeated_observation_result(call)
+                        self.metrics["duplicate_observation_blocks"] = (
+                            self.metrics.get("duplicate_observation_blocks", 0) + 1
+                        )
+                    else:
+                        blocked_results[index] = cached_result
+                    continue
+
+                previous_epoch = self._successful_observation_signatures.get(signature)
                 repeated_without_progress = (
                     previous_epoch is not None
                     and previous_epoch == self._observation_epoch(call)
@@ -1088,6 +1157,14 @@ class Loop:
         )
 
         tool_name = str(getattr(call, "name", result.name)).strip().lower()
+        if result.metadata.get("cached_observation"):
+            pass
+        else:
+            self._consecutive_observation_cache_hits = 0
+            if self._is_observation_call(call) and result.success:
+                observation_signature = self._observation_signature(call)
+                if observation_signature:
+                    self._remember_observation(call, observation_signature, result)
 
         if result.success or (tool_name == "command_exec" and changed):
             # Treat known mutating tools as a new workspace state. A failed command
@@ -2419,6 +2496,8 @@ class Loop:
 
         self._same_revision_read_count = 0
         self._observation_action_count = 0
+        self._observation_cache.clear()
+        self._consecutive_observation_cache_hits = 0
         self._phase = "explore"
 
         self._plan_progress.reset()

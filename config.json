@@ -19,6 +19,9 @@
     "compaction_trigger_ratio": 0.78
   },
   "guard_level": "strict",
+  "observation_cache": {
+    "enabled": true
+  },
   "retrieval": {
     "top_k": 3
   },

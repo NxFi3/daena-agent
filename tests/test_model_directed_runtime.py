@@ -464,7 +464,9 @@ def test_successful_remote_fetch_is_not_unlocked_by_a_local_write(tmp_path):
         allowed, blocked = loop._classify_calls([fetch_call])
         assert allowed == []
         assert set(blocked) == {0}
-        assert blocked[0].content["error"]["type"] == "repeated_observation_no_progress"
+        assert blocked[0].success is True
+        assert blocked[0].content["cached"] is True
+        assert blocked[0].summary.startswith("(cached: identical earlier call, workspace unchanged)")
     finally:
         loop.close()
 
@@ -604,6 +606,83 @@ def test_identical_successful_write_is_blocked_until_content_changes(tmp_path):
             args={"file_path": "dataset.csv", "content": "a,b\n1,2,3\n", "overwrite": True},
         )
         allowed, blocked = loop._classify_calls([corrected_call])
+        assert allowed == [0]
+        assert blocked == {}
+    finally:
+        loop.close()
+
+
+def test_repeated_observation_returns_cached_success_before_block_limit(tmp_path):
+    loop = make_loop(tmp_path)
+    try:
+        call = ToolCall(
+            name="read_file", id="cached-read", valid=True,
+            args={"file_path": "app.py"},
+        )
+        result = ToolResult(
+            success=True, name="read_file",
+            content={"success": True, "path": "app.py", "content": "observed bytes"},
+        )
+        loop._apply_result(call, result, 1)
+        allowed, cached = loop._classify_calls([call])
+        assert allowed == []
+        assert cached[0].success is True
+        assert cached[0].content["cached"] is True
+        assert cached[0].summary.startswith("(cached: identical earlier call, workspace unchanged)")
+        assert cached[0] is not result
+        assert loop.get_metrics()["duplicate_observation_cache_hits"] == 1
+    finally:
+        loop.close()
+
+
+def test_observation_cache_blocks_after_three_consecutive_hits(tmp_path):
+    loop = make_loop(tmp_path)
+    try:
+        call = ToolCall(
+            name="read_file", id="cached-read", valid=True,
+            args={"file_path": "app.py"},
+        )
+        loop._apply_result(
+            call,
+            ToolResult(success=True, name="read_file", content={"success": True, "content": "observed"}),
+            1,
+        )
+        for iteration in (2, 3):
+            allowed, results = loop._classify_calls([call])
+            assert allowed == []
+            assert results[0].success
+            loop._apply_result(call, results[0], iteration)
+        allowed, results = loop._classify_calls([call])
+        assert allowed == []
+        assert results[0].content["error"]["type"] == "repeated_observation_no_progress"
+        assert loop.get_metrics()["duplicate_observation_cache_hits"] == 3
+    finally:
+        loop.close()
+
+
+def test_observation_cache_is_invalidated_by_workspace_mutation(tmp_path):
+    loop = make_loop(tmp_path)
+    try:
+        read_call = ToolCall(
+            name="read_file", id="cached-read", valid=True,
+            args={"file_path": "app.py"},
+        )
+        loop._apply_result(
+            read_call,
+            ToolResult(success=True, name="read_file", content={"content": "old"}),
+            1,
+        )
+        allowed, results = loop._classify_calls([read_call])
+        assert results[0].content.get("cached") is True
+        loop._apply_result(
+            ToolCall(
+                name="write_file", id="write-after-read", valid=True,
+                args={"file_path": "new.txt", "content": "new"},
+            ),
+            ToolResult(success=True, name="write_file", content={"success": True}),
+            3,
+        )
+        allowed, blocked = loop._classify_calls([read_call])
         assert allowed == [0]
         assert blocked == {}
     finally:
