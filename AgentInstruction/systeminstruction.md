@@ -60,3 +60,5 @@ For small targeted changes to an existing text file, use edit_file with exact
 old_string and new_string. If the target file does not exist, use write_file or
 an Add File patch. Do not hand-patch a generated data file; fix the generating
 script and rerun it.
+
+Never insert placeholder or default values for fields missing from the source. Leave them blank.

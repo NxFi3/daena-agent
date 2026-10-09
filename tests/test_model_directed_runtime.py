@@ -687,3 +687,48 @@ def test_observation_cache_is_invalidated_by_workspace_mutation(tmp_path):
         assert blocked == {}
     finally:
         loop.close()
+
+
+def test_csv_validator_emits_identical_column_as_advisory_not_failure(tmp_path):
+    loop = make_loop(tmp_path)
+    try:
+        path = tmp_path / "dataset.csv"
+        path.write_text(
+            "listing_id,price,source\n"
+            "a,100,Divar\n"
+            "b,200,Divar\n"
+            "c,300,Divar\n"
+            "d,400,Divar\n"
+            "e,500,Divar\n",
+            encoding="utf-8",
+        )
+        call = ToolCall(
+            name="write_file", id="advisory-csv", valid=True,
+            args={"file_path": "dataset.csv", "content": "ignored"},
+        )
+        result = ToolResult(
+            success=True, name="write_file",
+            content={"path": str(path), "success": True},
+        )
+        findings = loop._validate_written_artifact(call, result)
+        assert len([f for f in findings if f.startswith("ADVISORY:")]) == 1
+        advisory = next(f for f in findings if f.startswith("ADVISORY:"))
+        assert "column 'source' has the same value in all 5 rows" in advisory
+        assert loop._validate_written_artifact(call, result) == []
+    finally:
+        loop.close()
+
+
+def test_csv_identical_column_advisory_ignores_empty_or_varied_values(tmp_path):
+    loop = make_loop(tmp_path)
+    try:
+        path = tmp_path / "dataset.csv"
+        path.write_text(
+            "id,price\na,100\nb,100\nc,\nd,100\ne,100\n",
+            encoding="utf-8",
+        )
+        call = ToolCall(name="write_file", id="csv", valid=True, args={"file_path": "dataset.csv"})
+        result = ToolResult(success=True, name="write_file", content={"path": str(path)})
+        assert not any(item.startswith("ADVISORY:") for item in loop._validate_written_artifact(call, result))
+    finally:
+        loop.close()

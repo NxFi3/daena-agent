@@ -116,6 +116,7 @@ class Loop:
         # should not consume the remaining agent iterations forever.
         # signature -> (workspace epoch, failure fingerprint, consecutive failures)
         self._failed_command_signatures: dict[str, tuple[int, str, int]] = {}
+        self._identical_column_advisories_seen: set[tuple[str, str]] = set()
 
         self._generation_retries = 0
         # Consecutive model turns that produce neither a tool call nor a final
@@ -1392,6 +1393,21 @@ class Loop:
                             if not values:
                                 continue
 
+                            non_empty_values = [value for _, value in values if value]
+                            advisory_key = (path_key, str(raw_header))
+                            if (
+                                len(values) >= 5
+                                and len(non_empty_values) == len(values)
+                                and len(set(non_empty_values)) == 1
+                                and advisory_key not in self._identical_column_advisories_seen
+                            ):
+                                findings.append(
+                                    f"ADVISORY: {path.name}: column '{raw_header}' has the same value "
+                                    f"in all {len(values)} rows; confirm it is present in each source "
+                                    "record, otherwise leave it blank."
+                                )
+                                self._identical_column_advisories_seen.add(advisory_key)
+
                             # Common semantic checks for columns whose names declare a format.
                             if "url" in header or "link" in header:
                                 for line_no, value in values:
@@ -1544,6 +1560,7 @@ class Loop:
             )
 
         artifact_findings: list[str] = []
+        artifact_advisories: list[str] = []
         for index, call in enumerate(parsed_calls):
 
             if index in blocked_results:
@@ -1563,30 +1580,47 @@ class Loop:
             # nudge it can overlook while the write itself appears fully successful.
             findings = self._validate_written_artifact(call, result)
             if findings:
-                artifact_findings.extend(findings)
+                advisories = [item.removeprefix("ADVISORY: ").strip()
+                              for item in findings if item.startswith("ADVISORY: ")]
+                blocking_findings = [item for item in findings
+                                     if not item.startswith("ADVISORY: ")]
+                artifact_advisories.extend(advisories)
+                artifact_findings.extend(blocking_findings)
                 result_content = (
                     dict(result.content)
                     if isinstance(result.content, dict)
                     else {"value": result.content}
                 )
                 result_content["artifact_validation"] = {
-                    "passed": False,
-                    "findings": findings,
+                    "passed": not blocking_findings,
+                    "findings": blocking_findings,
+                    "advisories": advisories,
                 }
                 result.content = result_content
-                result.summary = (
-                    str(result.summary or "")
-                    + " | ARTIFACT VALIDATION FAILED: "
-                    + " ".join(findings)
-                    + " The file was written, but it is not a valid deliverable yet."
-                )
+                if blocking_findings:
+                    result.summary = (
+                        str(result.summary or "")
+                        + " | ARTIFACT VALIDATION FAILED: "
+                        + " ".join(blocking_findings)
+                        + " The file was written, but it is not a valid deliverable yet."
+                    )
+                elif advisories:
+                    result.summary = (
+                        str(result.summary or "")
+                        + " | ARTIFACT VALIDATION ADVISORY: "
+                        + " ".join(advisories)
+                    )
                 result_metadata = dict(result.metadata or {})
-                result_metadata["validation_findings"] = findings
+                if blocking_findings:
+                    result_metadata["validation_findings"] = blocking_findings
+                if advisories:
+                    result_metadata["validation_advisories"] = advisories
                 result.metadata = result_metadata
                 result_evidence = dict(result.evidence or {})
                 result_evidence["artifact_validation"] = {
-                    "passed": False,
-                    "findings": findings,
+                    "passed": not blocking_findings,
+                    "findings": blocking_findings,
+                    "advisories": advisories,
                 }
                 result.evidence = result_evidence
 
@@ -1613,6 +1647,14 @@ class Loop:
                 + " ".join(unique_findings)
                 + " This is a format finding, not a successful task outcome. Correct the affected file, "
                   "then inspect or validate it again. The runtime will not create or repair task data for you."
+            )
+
+        if artifact_advisories:
+            unique_advisories = list(dict.fromkeys(artifact_advisories))
+            self._store_nudge(
+                "Artifact validation advisory (not a failure): "
+                + " ".join(unique_advisories)
+                + " Verify these values against the source; do not replace missing values with placeholders."
             )
 
         # Invalid tool calls and artifact format findings are returned as evidence;
@@ -2503,6 +2545,7 @@ class Loop:
         self._successful_observation_signatures.clear()
         self._successful_mutation_signatures.clear()
         self._failed_command_signatures.clear()
+        self._identical_column_advisories_seen.clear()
 
         self._context_step = 0
 
