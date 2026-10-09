@@ -1273,6 +1273,16 @@ class Loop:
             self.metrics["tool_successes"] = self.metrics.get("tool_successes", 0) + 1
         else:
             self.metrics["tool_failures"] = self.metrics.get("tool_failures", 0) + 1
+            content = result.content if isinstance(result.content, dict) else {}
+            error = content.get("error")
+            if isinstance(error, dict):
+                error_type = str(error.get("type") or "unknown_error").strip().lower()
+            elif error:
+                error_type = str(error).strip().lower() or "unknown_error"
+            else:
+                error_type = "unknown_error"
+            failures_by_type = self.metrics.setdefault("tool_failures_by_error_type", {})
+            failures_by_type[error_type] = int(failures_by_type.get(error_type, 0)) + 1
             if status != "running":
                 self._phase = "recover"
 
@@ -2626,6 +2636,8 @@ class Loop:
             "tool_call_attempts": 0,
             "tool_successes": 0,
             "tool_failures": 0,
+            "tool_failures_by_error_type": {},
+            "duplicate_observation_cache_hits": 0,
             "duplicate_observation_blocks": 0,
             "duplicate_mutation_blocks": 0,
             "repeated_command_failure_blocks": 0,

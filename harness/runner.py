@@ -99,8 +99,26 @@ def run_case(
                 verification_note = f"harness exception: {type(exc).__name__}: {exc}"
                 metrics = agent.last_run_metrics
 
-            agent.close()
+            try:
+                agent.close()
+            finally:
+                if case.cleanup is not None:
+                    case.cleanup(workspace)
 
+            metrics = metrics if isinstance(metrics, dict) else {}
+            grouped_failures = metrics.get("tool_failures_by_error_type", {})
+            if not isinstance(grouped_failures, dict):
+                grouped_failures = {}
+            run_metrics = {
+                "iterations": int(metrics.get("iterations", 0) or 0),
+                "tool_failures_by_error_type": dict(grouped_failures),
+                "duplicate_cache_hits": int(
+                    metrics.get("duplicate_observation_cache_hits", 0) or 0
+                ),
+                "tokens": int(metrics.get("tokens", 0) or 0),
+                "wall_time_ms": elapsed_ms,
+                "completed": bool(metrics.get("completed", False)),
+            }
             results.append(
                 {
                     "case": case.name,
@@ -112,6 +130,7 @@ def run_case(
                     ),
                     "elapsed_ms": elapsed_ms,
                     "metrics": metrics,
+                    "run_metrics": run_metrics,
                     "tags": list(case.tags),
                 }
             )
@@ -128,6 +147,24 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
         values = [float(r["metrics"].get(key, 0) or 0) for r in records]
         return round(sum(values) / len(values), 2) if values else 0.0
 
+    failure_totals: dict[str, int] = {}
+    for record in records:
+        run_metrics = record.get("run_metrics") or {}
+        grouped = run_metrics.get("tool_failures_by_error_type") or {}
+        if isinstance(grouped, dict):
+            for error_type, count in grouped.items():
+                key = str(error_type or "unknown_error")
+                failure_totals[key] = failure_totals.get(key, 0) + int(count or 0)
+
+    duplicate_values = [
+        int((record.get("run_metrics") or {}).get("duplicate_cache_hits", 0) or 0)
+        for record in records
+    ]
+    average_duplicate_cache_hits = (
+        round(sum(duplicate_values) / len(duplicate_values), 2)
+        if duplicate_values else 0.0
+    )
+
     return {
         "runs": total,
         "completed_runs": completed,
@@ -139,6 +176,8 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
         "average_tokens": avg("tokens"),
         "average_tool_calls": avg("tool_call_attempts"),
         "average_tool_failures": avg("tool_failures"),
+        "tool_failures_by_error_type": dict(sorted(failure_totals.items())),
+        "average_duplicate_cache_hits": average_duplicate_cache_hits,
         "average_tool_blocks": avg("tool_blocks"),
         "average_duration_ms": round(
             sum(float(r["elapsed_ms"]) for r in records) / total, 2

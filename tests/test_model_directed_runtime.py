@@ -734,3 +734,25 @@ def test_csv_identical_column_advisory_ignores_empty_or_varied_values(tmp_path):
         assert not any(item.startswith("ADVISORY:") for item in loop._validate_written_artifact(call, result))
     finally:
         loop.close()
+
+
+def test_tool_failure_metrics_are_grouped_by_error_type(tmp_path):
+    loop = make_loop(tmp_path)
+    try:
+        call = ToolCall(
+            name="read_file", id="typed-failure", valid=True,
+            args={"file_path": "missing.txt"},
+        )
+        result = ToolResult(
+            success=False, name="read_file",
+            content={"success": False, "error": {
+                "type": "file_not_found", "message": "Missing input file"
+            }},
+            summary="Missing input file",
+        )
+        loop._apply_result(call, result, 1)
+        metrics = loop.get_metrics()
+        assert metrics["tool_failures"] == 1
+        assert metrics["tool_failures_by_error_type"] == {"file_not_found": 1}
+    finally:
+        loop.close()

@@ -286,7 +286,7 @@ def test_multiphase_task_can_start_without_a_runtime_plan_gate(tmp_path):
 
 
 
-def test_generation_keeps_full_tool_vocabulary_before_optional_plan(tmp_path):
+def test_generation_uses_strict_default_vocabulary_without_plan(tmp_path):
     llm = FakeLLM()
     captured = []
 
@@ -328,7 +328,8 @@ def test_generation_keeps_full_tool_vocabulary_before_optional_plan(tmp_path):
         loop._generate_next_action(task, str(tmp_path))
 
         assert captured
-        assert "plan" in captured[0]
+        # guard_level defaults to strict, which deliberately hides the optional plan tool.
+        assert "plan" not in captured[0]
         assert "read_file" in captured[0]
         assert "apply_patch" in captured[0]
         assert "command_exec" in captured[0]
