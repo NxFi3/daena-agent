@@ -39,3 +39,28 @@ def test_completion_and_recovery_review_events_are_rendered():
     assert "completion review: continue" in rendered
     assert "recovery review: blocked" in rendered
     assert "inspect the result file" in rendered
+
+
+def test_finish_summary_reports_total_llm_calls_and_review_breakdown():
+    renderer = StreamRenderer(
+        model="gpt-oss:20b", workspace="/tmp", session_id="session"
+    )
+    output = []
+    renderer._print = output.append
+    renderer.total_iterations = 19
+    renderer.handle({
+        "type": "run_end",
+        "completed": True,
+        "metrics": {
+            "llm_calls": 24,
+            "tokens": 17300,
+            "completion_review_calls": 1,
+            "recovery_review_calls": 4,
+        },
+    })
+    renderer.finish()
+
+    rendered = "\\n".join(output)
+    assert "LLM 24" in rendered
+    assert "reviews R4/F1" in rendered
+    assert "17.3k tok" in rendered

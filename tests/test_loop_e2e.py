@@ -157,6 +157,65 @@ def test_loop_honors_configured_context_limits(tmp_path):
 
 
 
+def test_direct_greeting_does_not_expose_tools_or_run_completion_review(tmp_path):
+    class DirectChatLLM:
+        def __init__(self):
+            self.model = FakeModel()
+            self.calls = []
+
+        def generate(self, messages, tools=None, **_kwargs):
+            self.calls.append({"messages": messages, "tools": tools})
+            return LLMResult(
+                response="Hello! How can I help?",
+                message={"role": "assistant", "content": "Hello! How can I help?"},
+                tool_calls=[],
+                thinking=None,
+                usage=1,
+            )
+
+    config = {
+        "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
+        "context": {"safe_margin": 0, "recent_event_limit": 10, "compaction_enabled": False},
+        "retrieval": {"top_k": 1},
+        "security": {
+            "workspace_only": True,
+            "allow_background": False,
+            "allow_network_tools": True,
+            "force_approve": False,
+        },
+        "memory": {"stm_db_path": str(tmp_path / "direct-chat.db")},
+        "max_agent_iterations": 3,
+        "completion_review": {"enabled": True, "max_retries": 2},
+        "experience": {"enabled": False},
+    }
+    llm = DirectChatLLM()
+    loop = Loop(config, llm)
+    loop.session_id = uuid4()
+
+    try:
+        task = ContextEvent(
+            role=ContextRole.USER,
+            type=ContextType.MESSAGE,
+            content="Hello!",
+        )
+        result = loop.run(task, workspace_directory=str(tmp_path))
+
+        assert result is not None
+        assert result.response == "Hello! How can I help?"
+        assert len(llm.calls) == 1
+        assert llm.calls[0]["tools"] == []
+        assert loop.get_metrics()["completion_review_calls"] == 0
+        assert loop.get_metrics()["tool_call_attempts"] == 0
+        assert Loop._is_direct_chat_turn("why did you use tools?")
+        assert Loop._is_direct_chat_turn("سلام!")
+        assert Loop._is_direct_chat_turn("salam")
+        assert not Loop._is_direct_chat_turn("list files")
+        assert not Loop._is_direct_chat_turn("فایل‌ها رو لیست کن")
+        assert not Loop._is_direct_chat_turn("what's the weather?")
+    finally:
+        loop.close()
+
+
 def test_apply_result_tracks_only_foreground_running_processes(tmp_path):
     config = {
         "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},

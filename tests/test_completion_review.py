@@ -54,6 +54,7 @@ class ReviewRecoveryLLM:
                     "decision": "continue",
                     "reason": "No action was attempted and the requested outcome is unmet.",
                     "next_action": "Use the available file-reading tool.",
+                    "unmet_requirements": ["hello.txt"],
                 })
             )
         if self.calls == 3:
@@ -114,6 +115,187 @@ def test_completion_review_recovers_from_premature_refusal(tmp_path):
         assert metrics["tool_successes"] == 1
     finally:
         loop.close()
+
+
+def test_ordinary_knowledge_answer_skips_extra_completion_review(tmp_path):
+    class KnowledgeLLM:
+        def __init__(self):
+            self.model = FakeModel()
+            self.main_calls = 0
+            self.reviewer_calls = 0
+
+        def generate(self, messages, tools=None, **_kwargs):
+            if tools == []:
+                self.reviewer_calls += 1
+                return text_result(json.dumps({
+                    "decision": "complete",
+                    "reason": "Review should not run for an ordinary answer.",
+                    "next_action": "",
+                }))
+            self.main_calls += 1
+            return text_result(
+                "A Python dictionary stores key-value pairs and supports lookup by key."
+            )
+
+    llm = KnowledgeLLM()
+    config = {
+        "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
+        "context": {"safe_margin": 0, "recent_event_limit": 20, "compaction_enabled": False},
+        "retrieval": {"top_k": 1},
+        "security": {
+            "workspace_only": True,
+            "allow_background": False,
+            "allow_network_tools": True,
+            "force_approve": False,
+        },
+        "memory": {"stm_db_path": str(tmp_path / "knowledge.db")},
+        "max_agent_iterations": 4,
+        "completion_review": {"enabled": True, "max_retries": 2},
+        "experience": {"enabled": False},
+    }
+    loop = Loop(config, llm)
+    loop.session_id = uuid4()
+
+    try:
+        task = ContextEvent(
+            role=ContextRole.USER,
+            type=ContextType.MESSAGE,
+            content="Explain what a Python dictionary is.",
+        )
+        result = loop.run(task, workspace_directory=str(tmp_path))
+
+        assert result is not None
+        assert "key-value pairs" in result.response
+        assert llm.main_calls == 1
+        assert llm.reviewer_calls == 0
+        metrics = loop.get_metrics()
+        assert metrics["llm_calls"] == 1
+        assert metrics["completion_review_calls"] == 0
+        assert metrics["completed"] is True
+    finally:
+        loop.close()
+
+
+def test_successful_read_only_answer_skips_extra_completion_review(tmp_path):
+    (tmp_path / "hello.txt").write_text("hello baseline", encoding="utf-8")
+
+    class ReadOnlyAnswerLLM:
+        def __init__(self):
+            self.model = FakeModel()
+            self.main_calls = 0
+            self.reviewer_calls = 0
+
+        def generate(self, messages, tools=None, **_kwargs):
+            if tools == []:
+                self.reviewer_calls += 1
+                return text_result(json.dumps({
+                    "decision": "complete",
+                    "reason": "This should not be needed for a successful read-only answer.",
+                    "next_action": "",
+                }))
+            self.main_calls += 1
+            if self.main_calls == 1:
+                return read_call_result()
+            return text_result("The file contains: hello baseline.")
+
+    llm = ReadOnlyAnswerLLM()
+    config = {
+        "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
+        "context": {"safe_margin": 0, "recent_event_limit": 20, "compaction_enabled": False},
+        "retrieval": {"top_k": 1},
+        "security": {
+            "workspace_only": True,
+            "allow_background": False,
+            "allow_network_tools": True,
+            "force_approve": False,
+        },
+        "memory": {"stm_db_path": str(tmp_path / "read-only.db")},
+        "max_agent_iterations": 4,
+        "completion_review": {
+            "enabled": True,
+            "recovery_interval": 6,
+            "max_recovery_checks": 2,
+            "max_retries": 2,
+        },
+        "experience": {"enabled": False},
+    }
+    loop = Loop(config, llm)
+    loop.session_id = uuid4()
+
+    try:
+        task = ContextEvent(
+            role=ContextRole.USER,
+            type=ContextType.MESSAGE,
+            content="Read hello.txt and tell me what it contains.",
+        )
+        result = loop.run(task, workspace_directory=str(tmp_path))
+
+        assert result is not None
+        assert result.response == "The file contains: hello baseline."
+        assert llm.main_calls == 2
+        assert llm.reviewer_calls == 0
+        metrics = loop.get_metrics()
+        assert metrics["llm_calls"] == 2
+        assert metrics["completion_review_calls"] == 0
+        assert metrics["completed"] is True
+    finally:
+        loop.close()
+
+
+def test_completion_review_rejects_contradictory_missing_item_claims():
+    from src.agent.completionreview import CompletionReviewer
+
+    payload = {
+        "decision": "continue",
+        "reason": "The answer omits .github, run_logs, src, tests, and workspaces.",
+        "next_action": "List the missing entries.",
+        "unmet_requirements": [".github", "run_logs", "src", "tests", "workspaces"],
+    }
+
+    class StaticReviewerLLM:
+        def generate(self, messages, tools=None, **_kwargs):
+            return text_result(json.dumps(payload))
+
+    task = "List the entries in this directory."
+    draft = "Entries: .github, run_logs, src, tests, workspaces."
+    evidence = [{
+        "tool": "list_dir",
+        "output": ".github run_logs src tests workspaces",
+    }]
+    reviewer = CompletionReviewer(StaticReviewerLLM())
+
+    verdict = reviewer.review(
+        task=task,
+        draft=draft,
+        evidence=evidence,
+        workspace={"entries": [".github", "run_logs", "src", "tests", "workspaces"]},
+    )
+
+    assert verdict.decision == "complete"
+    assert "contradictory continuation was ignored" in verdict.reason
+    assert verdict.unmet_requirements == ()
+
+
+def test_completion_review_requires_grounded_unmet_requirements():
+    from src.agent.completionreview import CompletionReviewer
+
+    class StaticReviewerLLM:
+        def generate(self, messages, tools=None, **_kwargs):
+            return text_result(json.dumps({
+                "decision": "continue",
+                "reason": "The answer feels incomplete.",
+                "next_action": "Try again.",
+            }))
+
+    verdict = CompletionReviewer(StaticReviewerLLM()).review(
+        task="Say hello.",
+        draft="Hello!",
+        evidence=[],
+        workspace={},
+    )
+
+    assert verdict.decision == "unknown"
+    assert "unmet_requirements" in verdict.error
 
 
 def test_completion_review_is_disabled_unless_enabled_in_config(tmp_path):

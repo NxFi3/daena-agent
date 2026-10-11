@@ -82,7 +82,8 @@ class ListDir(Tool):
             },
             metadata={},
             summary=(
-                f"Listed {len(entries)} workspace entrie(s)."
+                f"Listed {len(entries)} workspace entrie(s) at "
+                f"'{relative_path(root, target)}'."
                 + (" Results may be truncated." if truncated else "")
             ),
         )

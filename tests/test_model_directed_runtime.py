@@ -595,6 +595,24 @@ def test_identical_successful_write_is_blocked_until_content_changes(tmp_path):
             ),
             1,
         )
+        # An unrelated workspace mutation must not make the exact original
+        # write eligible again; otherwise an agent can delete/recreate the file
+        # and bypass the no-progress guard.
+        other_mutation = ToolCall(
+            name="write_file",
+            id="other-write",
+            valid=True,
+            args={"file_path": str(tmp_path / "notes.txt"), "content": "unrelated"},
+        )
+        loop._apply_result(
+            other_mutation,
+            ToolResult(
+                success=True,
+                name="write_file",
+                content={"success": True, "path": str(tmp_path / "notes.txt")},
+            ),
+            2,
+        )
 
         allowed, blocked = loop._classify_calls([write_call])
         assert allowed == []

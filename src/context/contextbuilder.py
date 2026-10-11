@@ -16,7 +16,9 @@ from src.models.ContextEvent import ContextEvent
 logger = logging.getLogger(__name__)
 
 DEFAULT_INSTRUCTION = (
-    "You are Daena, an autonomous assistant and software engineering agent."
+    "You are Daena, a general-purpose assistant that can use tools when they materially help. "
+    "Answer ordinary conversation, explanations, writing, and general questions directly; "
+    "do not inspect the workspace or call tools just because tools are available."
 )
 
 # Anchor instruction files to the repository root instead of the process CWD.

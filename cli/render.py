@@ -81,6 +81,11 @@ class StreamRenderer:
     success_count: int = 0
     failure_count: int = 0
     usage: int = 0
+    llm_calls: int = 0
+    completion_review_calls: int = 0
+    recovery_review_calls: int = 0
+    run_tokens: int = 0
+    metrics_available: bool = False
     context_tokens: int = 0
     context_budget: int = 0
     response_streamed: bool = False
@@ -234,6 +239,17 @@ class StreamRenderer:
                 if bool(event.get("completed"))
                 else str(event.get("stop_reason") or "stopped")
             )
+            metrics = event.get("metrics")
+            if isinstance(metrics, dict):
+                self.llm_calls = int(metrics.get("llm_calls") or 0)
+                self.completion_review_calls = int(
+                    metrics.get("completion_review_calls") or 0
+                )
+                self.recovery_review_calls = int(
+                    metrics.get("recovery_review_calls") or 0
+                )
+                self.run_tokens = int(metrics.get("tokens") or 0)
+                self.metrics_available = True
 
         elif t == "error":
             self._close_thinking()
@@ -338,7 +354,14 @@ class StreamRenderer:
         self._close_response()
 
         elapsed = f"{time.monotonic() - self._start_ts:.1f}s"
-        tok = _fmt_tok(self.usage)
+        tok = _fmt_tok(self.run_tokens if self.metrics_available else self.usage)
+        llm_summary = f"LLM {self.llm_calls}" if self.metrics_available else "LLM n/a"
+        review_total = self.recovery_review_calls + self.completion_review_calls
+        if review_total:
+            llm_summary += (
+                f" (reviews R{self.recovery_review_calls}/"
+                f"F{self.completion_review_calls})"
+            )
 
         if error is not None:
             badge = f"{_ERR}{_BD}✗ failed{_R}"
@@ -354,7 +377,7 @@ class StreamRenderer:
         self._print(f"\n{_sep()}")
         self._print(
             f"  {badge}  "
-            f"{_DIM}iter {self.total_iterations or self.iteration}  ·  tools {_R}"
+            f"{_DIM}iter {self.total_iterations or self.iteration}  ·  {llm_summary}  ·  tools {_R}"
             f"{tools_str}  "
             f"{_DIM}·  {tok} tok  ·  ctx {self._ctx_str()}  ·  {elapsed}{_R}"
         )

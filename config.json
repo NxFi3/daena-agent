@@ -49,8 +49,8 @@
   "completion_review": {
     "enabled": true,
     "max_retries": 5,
-    "recovery_interval": 3,
-    "max_recovery_checks": 4
+    "recovery_interval": 6,
+    "max_recovery_checks": 2
   },
   "experience": {
     "enabled": true

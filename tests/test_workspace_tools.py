@@ -49,3 +49,4 @@ def test_glob_and_list_dir_are_workspace_bounded(tmp_path):
     list_tool.set_workspace(tmp_path)
     result = list_tool.execute("src")
     assert [item["path"] for item in result.content["entries"]] == ["src/a.py", "src/b.txt"]
+    assert "at 'src'" in result.summary

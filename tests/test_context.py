@@ -577,7 +577,8 @@ def test_workspace_inventory_is_visible_even_without_old_creation_events(tmp_pat
     )
 
     system = messages[0]["content"]
-    assert "workspace" not in system
+    # Runtime-specific paths belong in bounded state, never the static system prompt.
+    assert str(tmp_path) not in system
     assert "public/index.html" not in system
 
     dynamic = next(

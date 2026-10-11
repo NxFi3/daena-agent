@@ -108,7 +108,9 @@ class Loop:
         # the exact same read/search/fetch again with no new evidence.
         self._workspace_mutation_epoch = 0
         self._successful_observation_signatures: dict[str, int] = {}
-        self._successful_mutation_signatures: dict[str, int] = {}
+        # Exact successful mutations are one-shot per run. A change to some
+        # other path must not re-enable the same write/delete/add cycle.
+        self._successful_mutation_signatures: set[str] = set()
         observation_cache_config = self.config.get("observation_cache") or {}
         self.observation_cache_enabled = bool(observation_cache_config.get("enabled", True))
         self.observation_cache_max_entries = 20
@@ -237,16 +239,17 @@ class Loop:
         )
         self._completion_review_retries = 0
         self._tool_turns_since_recovery = 0
+        self._consecutive_tool_failures = 0
         try:
             self.recovery_review_interval = max(
-                2, min(8, int(review_config.get("recovery_interval", 3)))
+                2, min(8, int(review_config.get("recovery_interval", 6)))
             )
             self.recovery_review_max_checks = max(
-                0, min(8, int(review_config.get("max_recovery_checks", 4)))
+                0, min(8, int(review_config.get("max_recovery_checks", 2)))
             )
         except (TypeError, ValueError):
-            self.recovery_review_interval = 3
-            self.recovery_review_max_checks = 4
+            self.recovery_review_interval = 6
+            self.recovery_review_max_checks = 2
         self._recovery_review_count = 0
 
         self.tool_definitions = self.tool.get_tools()
@@ -275,6 +278,36 @@ class Loop:
             1,
             value,
         )
+
+    @staticmethod
+    def _is_direct_chat_turn(text: Any) -> bool:
+        """Recognize unambiguous small-talk turns that do not need runtime tools.
+
+        This deliberately uses a small allow-list rather than guessing that an
+        arbitrary short request is conversational: "weather?", "list files", and
+        other compact but action-oriented requests must still reach the tools.
+        """
+        normalized = str(text or "").casefold().replace("’", "'")
+        normalized = "".join(
+            character
+            if (character.isalnum() or character.isspace() or character == "'")
+            else " "
+            for character in normalized
+        )
+        normalized = " ".join(normalized.split())
+        return normalized in {
+            "hi", "hello", "hey", "hey there", "hi there", "hello there",
+            "good morning", "good afternoon", "good evening",
+            "how are you", "how are you doing", "how's it going",
+            "what's up", "whats up", "thanks", "thank you", "thanks a lot",
+            "thx", "ok", "okay", "cool", "got it", "nice", "great",
+            "bye", "goodbye", "see you", "who are you", "what are you",
+            "what can you do", "why did you use tools",
+            # Persian greetings and common transliterations used in this workspace.
+            "سلام", "درود", "صبح بخیر", "عصر بخیر", "شب بخیر",
+            "خداحافظ", "ممنون", "ممنونم", "مرسی", "خوبی", "چطوری",
+            "salam", "salaam", "merci", "khoobi", "khodafez",
+        }
 
     def _next_step(
         self,
@@ -885,10 +918,10 @@ class Loop:
         name = str(getattr(call, "name", "unknown")).strip() or "unknown"
         message = (
             "Repeated mutation blocked: this exact file-write/patch operation already "
-            "succeeded and no intervening workspace change explains repeating it. "
-            "Do not rewrite identical content or route around this guard. Use the "
-            "observed validation/read results to make a concrete correction, then write "
-            "the changed content and verify the resulting file."
+            "succeeded earlier in this task. Replaying an identical mutation after other "
+            "workspace changes can revert progress and is not new evidence. Inspect the "
+            "current target and observed diagnostics; if a correction is needed, submit "
+            "a genuinely changed, targeted operation and verify its result."
         )
         return ToolResult(
             success=False,
@@ -1063,13 +1096,13 @@ class Loop:
                     continue
 
             if tool_name in {"write_file", "edit_file", "apply_patch", "applypatch"}:
-                previous_epoch = self._successful_mutation_signatures.get(signature)
                 repeated_mutation_in_batch = signature in batch_mutation_signatures
-                repeated_without_progress = (
-                    previous_epoch is not None
-                    and previous_epoch == self._workspace_mutation_epoch
-                )
-                if repeated_mutation_in_batch or repeated_without_progress:
+                # The same mutation must not become eligible again just because
+                # some other operation changed the workspace. It has already
+                # succeeded once in this run; genuine corrections have new content
+                # and therefore a new signature.
+                repeated_successful_mutation = signature in self._successful_mutation_signatures
+                if repeated_mutation_in_batch or repeated_successful_mutation:
                     blocked_results[index] = self._repeated_mutation_result(call)
                     self.metrics["duplicate_mutation_blocks"] = (
                         self.metrics.get("duplicate_mutation_blocks", 0) + 1
@@ -1269,7 +1302,7 @@ class Loop:
             if tool_name in {"write_file", "edit_file", "apply_patch", "applypatch"}:
                 signature = self._observation_signature(call)
                 if signature:
-                    self._successful_mutation_signatures[signature] = self._workspace_mutation_epoch
+                    self._successful_mutation_signatures.add(signature)
             if self._is_observation_call(call):
                 signature = self._observation_signature(call)
                 if signature:
@@ -1312,8 +1345,10 @@ class Loop:
                     )
 
         if result.success:
+            self._consecutive_tool_failures = 0
             self.metrics["tool_successes"] = self.metrics.get("tool_successes", 0) + 1
         else:
+            self._consecutive_tool_failures += 1
             self.metrics["tool_failures"] = self.metrics.get("tool_failures", 0) + 1
             content = result.content if isinstance(result.content, dict) else {}
             error = content.get("error")
@@ -1909,6 +1944,19 @@ class Loop:
             "tool_failures": self.metrics.get("tool_failures", 0),
         }
 
+    def _recovery_review_is_warranted(self) -> bool:
+        """Review only when recent execution shows a real sign of getting stuck.
+
+        A fixed interval alone is not evidence of a problem: healthy tool-using
+        tasks commonly need several consecutive calls. Trigger recovery when
+        failures are consecutive or the observation cache shows a repeated-read
+        loop. The main model remains in charge during normal progress.
+        """
+        return (
+            self._consecutive_tool_failures >= 2
+            or self._consecutive_observation_cache_hits >= 2
+        )
+
     def _review_stalled_execution(
         self,
         user_task: ContextEvent,
@@ -1948,6 +1996,80 @@ class Loop:
             usage=verdict.usage,
         )
         return verdict
+
+    @staticmethod
+    def _looks_like_refusal(response: Any) -> bool:
+        """Detect common explicit refusal phrasing, not task-specific intent."""
+        text = str(response or "").casefold()
+        refusal_markers = (
+            "i can't help",
+            "i cannot help",
+            "i'm unable to",
+            "i am unable to",
+            "i can't assist",
+            "i cannot assist",
+            "i must decline",
+            "i can't comply",
+            "i cannot comply",
+            "sorry, but i can't",
+            "متأسفم، نمی‌توانم",
+            "نمی‌توانم کمک کنم",
+            "نمی‌تونم کمک کنم",
+            "قادر به انجام این کار نیستم",
+        )
+        return any(marker in text for marker in refusal_markers)
+
+    @staticmethod
+    def _is_information_request(text: Any) -> bool:
+        """Recognize broad information-seeking intents without matching exact tasks."""
+        normalized = " ".join(str(text or "").casefold().split())
+        prefixes = (
+            "what ", "what's ", "whats ", "why ", "how ", "who ", "when ",
+            "where ", "which ", "explain ", "define ", "describe ", "compare ",
+            "summarize ", "translate ", "rewrite ", "tell me about ",
+            "tell me what ", "can you explain ", "difference between ",
+            "what is ", "what are ",
+            "چرا", "چطور", "چگونه", "چیست", "چیه", "توضیح", "تعریف",
+            "تفاوت", "فرق", "معنی", "آیا", "چه کسی", "چه زمانی", "کجا",
+        )
+        return normalized.startswith(prefixes)
+
+    def _should_review_final_candidate(
+        self,
+        user_task: ContextEvent,
+        candidate: LLMResult,
+    ) -> bool:
+        """Run the extra reviewer only when observed behavior raises the risk.
+
+        Ordinary no-tool answers are the main model's responsibility. Keep a
+        check for explicit refusals so a premature refusal can recover, and
+        retain independent review for failures, mutations, multi-step tool work,
+        or a task already sent back for completion recovery.
+        """
+        if self.completion_reviewer is None:
+            return False
+        if self._is_direct_chat_turn(user_task.content):
+            return False
+        if self._completion_review_retries > 0:
+            return True
+
+        successful_tools = int(self.metrics.get("tool_successes", 0) or 0)
+        tool_failures = int(self.metrics.get("tool_failures", 0) or 0)
+        tool_attempts = int(self.metrics.get("tool_call_attempts", 0) or 0)
+        state_changed = self._workspace_mutation_epoch > 0
+
+        if tool_attempts == 0 and tool_failures == 0:
+            return (
+                self._looks_like_refusal(candidate.response)
+                or not self._is_information_request(user_task.content)
+            )
+        if (
+            successful_tools == 1
+            and not state_changed
+            and tool_failures == 0
+        ):
+            return False
+        return True
 
     def _review_final_candidate(
         self,
@@ -2036,7 +2158,14 @@ class Loop:
         self._event_sink = event_sink
         self._stop_event = stop_event
         self._run_started_at = time.perf_counter()
-        self.set_workspace(workspace_directory)
+        if self._is_direct_chat_turn(user_task.content):
+            # Keep workspace roots/security scopes current without walking the
+            # filesystem for a greeting or other plain conversational turn.
+            self._workspace_root = Path(workspace_directory).expanduser().resolve()
+            self.tool.set_workspace(str(self._workspace_root))
+            self.working_set.set_workspace(str(self._workspace_root))
+        else:
+            self.set_workspace(workspace_directory)
 
         # Must run AFTER _reset_run_state()
         # and BEFORE the first _next_step().
@@ -2290,11 +2419,14 @@ class Loop:
                     self.completion_reviewer is not None
                     and self.recovery_review_interval > 0
                     and self.recovery_review_max_checks > self._recovery_review_count
-                    and self._tool_turns_since_recovery >= self.recovery_review_interval
+                    and self._recovery_review_is_warranted()
+                    and (
+                        self._tool_turns_since_recovery >= self.recovery_review_interval
+                        or self._consecutive_tool_failures >= 2
+                    )
                 ):
-                    # Periodic model-led review is a progress check, not a prescribed
-                    # tool sequence. The reviewer sees the actual recent call arguments,
-                    # outputs, and workspace state and recommends whether to continue.
+                    # This is evidence-triggered, not a fixed-cadence second opinion:
+                    # review only when repeated failures/cache hits suggest a stall.
                     self._tool_turns_since_recovery = 0
                     verdict = self._review_stalled_execution(
                         user_task=user_task,
@@ -2333,7 +2465,7 @@ class Loop:
 
             if isinstance(llmresult.response, str) and llmresult.response.strip():
 
-                if self.completion_reviewer is not None:
+                if self._should_review_final_candidate(user_task, llmresult):
                     verdict = self._review_final_candidate(
                         user_task=user_task,
                         candidate=llmresult,
@@ -2469,10 +2601,11 @@ class Loop:
 
             raise RuntimeError("No active session.")
 
-        # Deterministic workspace truth is refreshed on every generation
-        # boundary. This is independent of STM retrieval and therefore remains
-        # correct even when old file-creation events are no longer in context.
-        self.working_set.refresh_workspace()
+        # Deterministic workspace truth is refreshed when this task depends on
+        # it. A direct conversational turn must not inspect the workspace.
+        direct_chat = self._is_direct_chat_turn(user_task.content)
+        if not direct_chat:
+            self.working_set.refresh_workspace()
 
         # A persisted plan belongs to an explicitly activated plan lifecycle
         # in the current run. Do not synchronize stale workspace plan state into
@@ -2492,7 +2625,7 @@ class Loop:
         # observe processes whenever the task requires it. Runtime checks in
         # _classify_calls() remain the safety boundary for destructive,
         # duplicate, invalid, or otherwise unsafe actions.
-        effective_tool_definitions = self.tool_definitions
+        effective_tool_definitions = [] if direct_chat else self.tool_definitions
 
         available_tool_names = {
             str(definition.get("function", {}).get("name", "")).strip().lower()
@@ -2502,7 +2635,7 @@ class Loop:
             and str(definition.get("function", {}).get("name", "")).strip()
         }
 
-        working_context = self.working_set.context()
+        working_context = {} if direct_chat else self.working_set.context()
         # Expose plan progress only after this run has explicitly activated
         # planning. This prevents an old .daena/plan.md from steering a fresh
         # task into an unrelated plan completion/update.
@@ -2514,13 +2647,22 @@ class Loop:
         working_context["execution_phase"] = self._phase
         working_context["available_tools"] = sorted(available_tool_names)
         working_context["workspace_guidance"] = (
-            "Workspace inventory is authoritative. Do not guess filenames. "
-            "Use the tool whose documented capability best fits the next unknown: "
-            "web_search discovers current information and likely URLs; web_fetch reads a "
-            "known public URL; command_exec runs local commands/scripts and tests. "
-            "A 404 or empty extraction only describes that URL/response, not the whole site. "
-            "After a failed or uninformative attempt, use its evidence to choose a materially "
-            "different approach instead of cosmetic variants of the same command."
+            "Use tools only when they materially help or the user requests an action requiring them. "
+            "Greetings, small talk, and ordinary questions answerable from knowledge should be "
+            "answered directly without tool calls. For local-state requests, inventory is authoritative: "
+            "do not guess filenames, and include all observed entries when a complete list is requested. "
+            "web_search finds current information/URLs; web_fetch reads known public URLs; "
+            "command_exec runs local commands/tests. A 404 or empty extraction only describes that "
+            "URL/response, not the whole site. After a failed or uninformative attempt, choose a "
+            "materially different approach based on evidence. Reuse successful read/search/fetch "
+            "results; do not repeat an identical observation while its result remains in context. "
+            "Treat successful mutations and observed workspace state as current truth: do not assume "
+            "an existing or newly created file is absent, and do not delete/recreate a working artifact "
+            "merely to recover from a validation failure. Judge progress by the requested outcome and "
+            "verification evidence, not by whether a tool reports success. If the same verification "
+            "failure persists, inspect its specific assertion/traceback and correct that cause before "
+            "changing unrelated files. Before continuing for an alleged omission, check the draft and "
+            "evidence; stop once the goal is met and answer once."
         )
         working_context["tool_choice"] = {
             "read_file": "read a known file or a narrow line range with line numbers",
@@ -2559,8 +2701,12 @@ class Loop:
             user_task=user_task,
             agent_state=self.agent_state,
             working_set=working_context,
-            observation=(self.working_set.observation_context()),
-            recent_actions=(self.working_set.recent_actions_context()),
+            observation=(
+                {} if direct_chat else self.working_set.observation_context()
+            ),
+            recent_actions=(
+                [] if direct_chat else self.working_set.recent_actions_context()
+            ),
             workspace_directory=(workspace_directory),
             recent_limit=self.recent_context_limit,
             search_top_k=self.search_context_top_k,
@@ -2723,6 +2869,7 @@ class Loop:
         self._completion_review_retries = 0
         self._tool_turns_since_recovery = 0
         self._recovery_review_count = 0
+        self._consecutive_tool_failures = 0
         self._run_started_at = None
         self.metrics = {
             "iterations": 0,
