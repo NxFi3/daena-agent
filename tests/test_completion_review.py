@@ -21,6 +21,24 @@ def text_result(text, usage=1):
     )
 
 
+def tool_search_call_result(query="read a known workspace file and return its contents", usage=2):
+    call = {
+        "id": "tool-search-1",
+        "type": "function",
+        "function": {
+            "name": "tool_search",
+            "arguments": json.dumps({"query": query}),
+        },
+    }
+    return LLMResult(
+        response="",
+        message={"role": "assistant", "content": "", "tool_calls": [call]},
+        tool_calls=[call],
+        thinking=None,
+        usage=usage,
+    )
+
+
 def read_call_result():
     call = {
         "id": "read-1",
@@ -58,10 +76,12 @@ class ReviewRecoveryLLM:
                 })
             )
         if self.calls == 3:
-            return read_call_result()
+            return tool_search_call_result()
         if self.calls == 4:
-            return text_result("The file contains: hello baseline.")
+            return read_call_result()
         if self.calls == 5:
+            return text_result("The file contains: hello baseline.")
+        if self.calls == 6:
             return text_result(
                 json.dumps({
                     "decision": "complete",
@@ -107,12 +127,12 @@ def test_completion_review_recovers_from_premature_refusal(tmp_path):
 
         assert result is not None
         assert result.response == "The file contains: hello baseline."
-        assert llm.calls == 5
+        assert llm.calls == 6
         metrics = loop.get_metrics()
         assert metrics["completed"] is True
         assert metrics["completion_review_calls"] == 2
         assert metrics["completion_review_retries"] == 1
-        assert metrics["tool_successes"] == 1
+        assert metrics["tool_successes"] == 2  # tool_search + read_file
     finally:
         loop.close()
 
@@ -195,6 +215,8 @@ def test_successful_read_only_answer_skips_extra_completion_review(tmp_path):
                 }))
             self.main_calls += 1
             if self.main_calls == 1:
+                return tool_search_call_result()
+            if self.main_calls == 2:
                 return read_call_result()
             return text_result("The file contains: hello baseline.")
 
@@ -232,10 +254,10 @@ def test_successful_read_only_answer_skips_extra_completion_review(tmp_path):
 
         assert result is not None
         assert result.response == "The file contains: hello baseline."
-        assert llm.main_calls == 2
+        assert llm.main_calls == 3
         assert llm.reviewer_calls == 0
         metrics = loop.get_metrics()
-        assert metrics["llm_calls"] == 2
+        assert metrics["llm_calls"] == 3
         assert metrics["completion_review_calls"] == 0
         assert metrics["completed"] is True
     finally:

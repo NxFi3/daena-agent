@@ -16,6 +16,7 @@ from src.engine.providers.ProviderBase import ProviderBase
 from src.models.LLMInput import LLMInput
 from src.models.LLMResult import LLMResult
 from src.utils.logger import get_logger
+from src.utils.image_reference import read_image_reference
 
 logger = get_logger("[GEMINI]")
 
@@ -235,19 +236,25 @@ class GeminiProvider(ProviderBase):
                 continue
 
             text = content if isinstance(content, str) else str(content or "")
+            user_parts: list[types.Part] = []
             if text:
-                text_part = types.Part.from_text(text=text)
+                user_parts.append(types.Part.from_text(text=text))
+
+            image_ref = message.get("image_ref")
+            if image_ref:
+                image_bytes, image_mime = read_image_reference(
+                    str(image_ref),
+                    str(message.get("image_mime_type") or "image/png"),
+                )
+                user_parts.append(types.Part.from_bytes(data=image_bytes, mime_type=image_mime))
+
+            if user_parts:
                 if contents and getattr(contents[-1], "role", None) == "user":
-                    # Gemini requires alternating conversational turns. Daena
-                    # may supply several consecutive user-context messages, and
-                    # after a function result it may append runtime/recovery
-                    # context. Keep those parts in the same user turn so the
-                    # next model turn still immediately follows the response.
-                    contents[-1].parts.append(text_part)
+                    # Gemini requires alternating turns. Keep consecutive context
+                    # text and a screenshot attached to the same user turn.
+                    contents[-1].parts.extend(user_parts)
                 else:
-                    contents.append(
-                        types.Content(role="user", parts=[text_part])
-                    )
+                    contents.append(types.Content(role="user", parts=user_parts))
 
         # A malformed/compacted Daena history can start with an assistant
         # function call, followed by its tool result and the current runtime/task

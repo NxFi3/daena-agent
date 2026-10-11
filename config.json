@@ -17,7 +17,8 @@
     "compaction_enabled": true,
     "compaction_target_tokens": 8192,
     "max_prompt_tokens": 65536,
-    "compaction_trigger_ratio": 0.78
+    "compaction_trigger_ratio": 0.78,
+    "screenshot_history_frames": 3
   },
   "guard_level": "strict",
   "tools": {
@@ -53,6 +54,6 @@
     "max_recovery_checks": 2
   },
   "experience": {
-    "enabled": true
+    "enabled": false
   }
 }

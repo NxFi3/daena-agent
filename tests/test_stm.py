@@ -19,6 +19,34 @@ def event(content: str, step: int) -> ContextEvent:
     )
 
 
+def test_stm_recent_order_is_chronological_and_search_is_session_scoped(tmp_path):
+    db = STMDatabase(tmp_path / "stm.db")
+    session_a = uuid4()
+    session_b = uuid4()
+
+    try:
+        db.add(session_a, event("session-a first orchid", 1))
+        db.add(session_a, event("session-a second orchid", 2))
+        db.add(session_a, event("session-a third orchid", 3))
+        db.add(session_b, event("session-b private cobalt", 1))
+
+        recent = db.get_recent(session_a, limit=2)
+        assert [item.step for item in recent] == [2, 3]
+        assert [item.content for item in recent] == [
+            "session-a second orchid",
+            "session-a third orchid",
+        ]
+
+        results_a = db.search(session_a, "orchid", top_k=5)
+        results_b = db.search(session_b, "cobalt", top_k=5)
+        assert results_a
+        assert all(item.content.endswith("orchid") for item in results_a)
+        assert [item.content for item in results_b] == ["session-b private cobalt"]
+        assert not any("cobalt" in item.content for item in results_a)
+    finally:
+        db.close()
+
+
 def test_stm_search_falls_back_to_or_when_and_has_no_match(tmp_path):
     db = STMDatabase(tmp_path / "stm.db")
     session_id = uuid4()

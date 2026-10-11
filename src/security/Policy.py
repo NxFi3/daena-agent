@@ -32,6 +32,7 @@ DEFAULT_BLOCKED_COMMANDS = {
 
 DEFAULT_ALLOWED_TOOLS = {
     "plan",
+    "tool_search",
     "read_file",
     "context_search",
     "grep",
@@ -45,6 +46,7 @@ DEFAULT_ALLOWED_TOOLS = {
     "process_poll",
     "process_write",
     "process_stop",
+    "computer_use",
     "web_search",
     "web_fetch",
 }

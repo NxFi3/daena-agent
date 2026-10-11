@@ -28,7 +28,7 @@ class FakeLLM:
         )
 
 
-def test_context_exposes_specialized_web_tools_and_failure_recovery_guidance(tmp_path):
+def test_context_exposes_tool_search_without_eagerly_sending_every_schema(tmp_path):
     llm = FakeLLM()
     config = {
         "llm": {"provider_config": {"generation_config": {"num_ctx": 4096}}},
@@ -62,17 +62,19 @@ def test_context_exposes_specialized_web_tools_and_failure_recovery_guidance(tmp
 
         assert result is not None
         rendered = "\n".join(str(message.get("content", "")) for message in llm.captured)
-        assert "web_search" in rendered
-        assert "web_fetch" in rendered
-        assert any(
-            item.get("function", {}).get("name") == "write_file"
+        captured_names = {
+            item.get("function", {}).get("name")
             for item in (llm.captured_tools or [])
-        )
-        assert any(
-            item.get("function", {}).get("name") == "context_search"
-            for item in (llm.captured_tools or [])
-        )
-        assert "A 404 or empty extraction only describes that URL/response" in rendered
-        assert "choose a materially different approach" in rendered
+        }
+        assert "tool_search" in captured_names
+        assert {
+            "command_exec", "read_file", "write_file", "edit_file", "apply_patch"
+        }.issubset(captured_names)
+        assert "tool_search" in rendered
+        assert "available on the next turn" in rendered
+        assert "Core tools for shell commands, file reading/writing/editing" in rendered
+        assert "web_search" not in captured_names
+        assert "context_search" not in captured_names
+        assert "If a search finds nothing, try a concrete alternate query" in rendered
     finally:
         loop.close()

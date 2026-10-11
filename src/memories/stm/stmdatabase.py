@@ -318,6 +318,37 @@ class STMDatabase:
 
         return [self._row_to_event(row) for row in rows]
 
+    def get_all_session_Events(self, session_id: UUID | str) -> list[ContextEvent]:
+        """
+        return All Events From selected Session
+
+        """
+        rows = self.connection.execute(
+            f"""
+            SELECT
+                id,
+                session_id,
+                role,
+                type,
+                content,
+                priority,
+                step,
+                timestamp,
+                metadata
+
+            FROM context_events
+
+            WHERE session_id = ?
+
+            ORDER BY
+                step DESC,
+                timestamp DESC
+""",
+            (str(session_id),),
+        ).fetchall()
+        rows = list(reversed(rows))
+        return [self._row_to_event(row) for row in rows]
+
     def get_after_step(
         self,
         session_id: UUID | str,
@@ -421,13 +452,63 @@ class STMDatabase:
         # Keep long task prompts from turning into huge, noisy FTS expressions.
         query = re.sub(r"https?://\S+", " ", query, flags=re.IGNORECASE)
         stop_words = {
-            "the", "and", "for", "with", "from", "that", "this", "these", "those",
-            "then", "than", "into", "onto", "your", "you", "are", "was", "were",
-            "will", "would", "could", "should", "have", "has", "had", "not", "but",
-            "use", "using", "used", "only", "must", "please", "task", "create",
-            "make", "write", "file", "data", "source", "public", "real", "actual",
-            "after", "before", "there", "their", "each", "every", "where", "when",
-            "what", "also", "now", "same", "such", "about",
+            "the",
+            "and",
+            "for",
+            "with",
+            "from",
+            "that",
+            "this",
+            "these",
+            "those",
+            "then",
+            "than",
+            "into",
+            "onto",
+            "your",
+            "you",
+            "are",
+            "was",
+            "were",
+            "will",
+            "would",
+            "could",
+            "should",
+            "have",
+            "has",
+            "had",
+            "not",
+            "but",
+            "use",
+            "using",
+            "used",
+            "only",
+            "must",
+            "please",
+            "task",
+            "create",
+            "make",
+            "write",
+            "file",
+            "data",
+            "source",
+            "public",
+            "real",
+            "actual",
+            "after",
+            "before",
+            "there",
+            "their",
+            "each",
+            "every",
+            "where",
+            "when",
+            "what",
+            "also",
+            "now",
+            "same",
+            "such",
+            "about",
         }
         terms: list[str] = []
         seen_terms: set[str] = set()
@@ -709,7 +790,6 @@ class STMDatabase:
         """
         Get MemoryEvents for Experience/Memory System.
         """
-
 
     def __enter__(self) -> "STMDatabase":
         return self

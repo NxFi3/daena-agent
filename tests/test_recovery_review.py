@@ -23,6 +23,17 @@ def llm_result(*, response="", tool_calls=None):
     )
 
 
+def search_call(query):
+    return llm_result(tool_calls=[{
+        "id": "search-tools",
+        "type": "function",
+        "function": {
+            "name": "tool_search",
+            "arguments": json.dumps({"query": query}),
+        },
+    }])
+
+
 class RepeatedActionLLM:
     def __init__(self):
         self.model = FakeModel()
@@ -50,7 +61,9 @@ class RepeatedActionLLM:
             }))
 
         self.main_calls += 1
-        if self.main_calls <= 3:
+        if self.main_calls == 1:
+            return search_call("read a known workspace file")
+        if self.main_calls <= 4:
             call = {
                 "id": f"read-{self.main_calls}",
                 "type": "function",
@@ -90,14 +103,17 @@ class SequentialReadLLM:
             }))
 
         self.main_calls += 1
-        if self.main_calls <= 6:
+        if self.main_calls == 1:
+            return search_call("read several named workspace files")
+        if self.main_calls <= 7:
+            read_index = self.main_calls - 1
             call = {
-                "id": f"unique-read-{self.main_calls}",
+                "id": f"unique-read-{read_index}",
                 "type": "function",
                 "function": {
                     "name": "read_file",
                     "arguments": json.dumps({
-                        "file_path": f"note_{self.main_calls}.txt",
+                        "file_path": f"note_{read_index}.txt",
                     }),
                 },
             }
@@ -148,11 +164,11 @@ def test_healthy_tool_streak_does_not_trigger_periodic_recovery_review(tmp_path)
 
         assert result is not None
         assert result.response == "Read all six notes successfully."
-        assert llm.main_calls == 7
+        assert llm.main_calls == 8
         assert llm.recovery_review_calls == 0
         assert llm.final_review_calls == 1
         metrics = loop.get_metrics()
-        assert metrics["tool_successes"] == 6
+        assert metrics["tool_successes"] == 7  # one search plus six reads
         assert metrics["recovery_review_calls"] == 0
         assert metrics["completion_review_calls"] == 1
         assert metrics["completed"] is True
@@ -200,7 +216,7 @@ def test_model_driven_recovery_review_runs_after_repeated_observation_loop(tmp_p
 
         assert result is not None
         assert result.response == "done"
-        assert llm.main_calls == 4
+        assert llm.main_calls == 5
         assert llm.final_review_calls == 1
         metrics = loop.get_metrics()
         assert metrics["recovery_review_calls"] == 1

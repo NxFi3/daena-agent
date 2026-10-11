@@ -37,7 +37,7 @@ class Agent:
         )
 
         self.loop.session_id = self.session_id
-        self.loop.set_workspace(self.workingdirectory)
+        self.loop.configure_workspace(self.workingdirectory, refresh=False)
 
     def act(
         self,
@@ -93,7 +93,7 @@ class Agent:
             exist_ok=True,
         )
 
-        self.loop.set_workspace(self.workingdirectory)
+        self.loop.configure_workspace(self.workingdirectory, refresh=False)
 
     @property
     def last_run_metrics(self) -> dict:

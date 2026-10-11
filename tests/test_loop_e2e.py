@@ -24,39 +24,35 @@ class FakeLLM:
         self.calls += 1
 
         if self.calls == 1:
+            function_name = "tool_search"
+            arguments = '{"query":"read a known workspace file and return its content"}'
+            call_id = "call_search_1"
+        elif self.calls == 2:
+            function_name = "read_file"
+            arguments = '{"file_path":"hello.txt"}'
+            call_id = "call_read_1"
+        else:
             return LLMResult(
-                response="",
-                message={
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [{
-                        "id": "call_read_1",
-                        "type": "function",
-                        "function": {
-                            "name": "read_file",
-                            "arguments": '{"file_path":"hello.txt"}',
-                        },
-                    }],
-                },
-                tool_calls=[{
-                    "id": "call_read_1",
-                    "type": "function",
-                    "function": {
-                        "name": "read_file",
-                        "arguments": '{"file_path":"hello.txt"}',
-                    },
-                }],
+                response="done",
+                message={"role": "assistant", "content": "done"},
+                tool_calls=[],
                 thinking=None,
-                usage=25,
+                usage=15,
             )
 
+        tool_call = {
+            "id": call_id,
+            "type": "function",
+            "function": {"name": function_name, "arguments": arguments},
+        }
         return LLMResult(
-            response="done",
-            message={"role": "assistant", "content": "done"},
-            tool_calls=[],
+            response="",
+            message={"role": "assistant", "content": "", "tool_calls": [tool_call]},
+            tool_calls=[tool_call],
             thinking=None,
-            usage=15,
+            usage=25,
         )
+
 
 
 def test_loop_executes_tool_through_security_and_context(tmp_path, monkeypatch):
@@ -107,15 +103,15 @@ def test_loop_executes_tool_through_security_and_context(tmp_path, monkeypatch):
 
         assert result is not None
         assert result.response == "done"
-        assert llm.calls == 2
+        assert llm.calls == 3
 
         metrics = loop.get_metrics()
         assert metrics["completed"] is True
-        assert metrics["iterations"] == 2
-        assert metrics["tool_successes"] == 1
+        assert metrics["iterations"] == 3
+        assert metrics["tool_successes"] == 2
         assert metrics["tool_failures"] == 0
-        assert metrics["llm_calls"] == 2
-        assert metrics["tokens"] == 40
+        assert metrics["llm_calls"] == 3
+        assert metrics["tokens"] == 65
     finally:
         loop.close()
 
@@ -157,7 +153,7 @@ def test_loop_honors_configured_context_limits(tmp_path):
 
 
 
-def test_direct_greeting_does_not_expose_tools_or_run_completion_review(tmp_path):
+def test_plain_chat_is_model_routed_without_eager_workspace_scan_or_completion_review(tmp_path):
     class DirectChatLLM:
         def __init__(self):
             self.model = FakeModel()
@@ -188,6 +184,7 @@ def test_direct_greeting_does_not_expose_tools_or_run_completion_review(tmp_path
         "completion_review": {"enabled": True, "max_retries": 2},
         "experience": {"enabled": False},
     }
+    (tmp_path / "should-not-be-scanned.txt").write_text("workspace sentinel", encoding="utf-8")
     llm = DirectChatLLM()
     loop = Loop(config, llm)
     loop.session_id = uuid4()
@@ -203,15 +200,10 @@ def test_direct_greeting_does_not_expose_tools_or_run_completion_review(tmp_path
         assert result is not None
         assert result.response == "Hello! How can I help?"
         assert len(llm.calls) == 1
-        assert llm.calls[0]["tools"] == []
+        assert llm.calls[0]["tools"]  # Tools are available; the model chose not to call one.
         assert loop.get_metrics()["completion_review_calls"] == 0
         assert loop.get_metrics()["tool_call_attempts"] == 0
-        assert Loop._is_direct_chat_turn("why did you use tools?")
-        assert Loop._is_direct_chat_turn("سلام!")
-        assert Loop._is_direct_chat_turn("salam")
-        assert not Loop._is_direct_chat_turn("list files")
-        assert not Loop._is_direct_chat_turn("فایل‌ها رو لیست کن")
-        assert not Loop._is_direct_chat_turn("what's the weather?")
+        assert loop.working_set.workspace_file_count == 0
     finally:
         loop.close()
 
@@ -345,7 +337,7 @@ def test_multiphase_task_can_start_without_a_runtime_plan_gate(tmp_path):
 
 
 
-def test_generation_uses_strict_default_vocabulary_without_plan(tmp_path):
+def test_generation_starts_with_tool_search_and_hides_plan(tmp_path):
     llm = FakeLLM()
     captured = []
 
@@ -387,11 +379,10 @@ def test_generation_uses_strict_default_vocabulary_without_plan(tmp_path):
         loop._generate_next_action(task, str(tmp_path))
 
         assert captured
-        # guard_level defaults to strict, which deliberately hides the optional plan tool.
+        # Tool Search is the only initial schema; strict guard still hides plan.
+        assert "tool_search" in captured[0]
+        assert {"command_exec", "read_file", "write_file", "apply_patch"}.issubset(captured[0])
         assert "plan" not in captured[0]
-        assert "read_file" in captured[0]
-        assert "apply_patch" in captured[0]
-        assert "command_exec" in captured[0]
-        assert len(captured[0]) > 2
+        assert "plan" not in captured[0]
     finally:
         loop.close()

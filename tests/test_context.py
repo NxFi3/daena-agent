@@ -73,6 +73,108 @@ def test_current_task_is_not_duplicated():
     assert [m["content"] for m in user_messages] == ["fix the parser"]
 
 
+def test_active_user_task_stays_before_its_tool_call_and_result():
+    llm = FakeLLM()
+    builder = ContextBuilder(base_config(), llm)
+    task = event(ContextRole.USER, ContextType.MESSAGE, "write and compile hello.cpp", 1)
+    assistant = event(ContextRole.ASSISTANT, ContextType.MESSAGE, "", 2)
+    assistant.metadata = {
+        "llm_message": {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "call_write",
+                "type": "function",
+                "function": {
+                    "name": "write_file",
+                    "arguments": '{"file_path":"hello.cpp","content":"int main() {}"}',
+                },
+            }],
+        }
+    }
+    tool = event(
+        ContextRole.TOOL,
+        ContextType.TOOL_RESULT,
+        '{"name":"write_file","tool_call_id":"call_write","success":true,"summary":"Wrote hello.cpp"}',
+        3,
+    )
+
+    messages = builder.build_context(
+        events=[task, assistant, tool],
+        task={"id": str(task.id), "content": task.content, "step": task.step},
+        working_set={"available_tools": ["write_file"]},
+    )
+
+    user_task_indices = [
+        i for i, message in enumerate(messages)
+        if message.get("role") == "user"
+        and message.get("content") == task.content
+    ]
+    runtime_indices = [
+        i for i, message in enumerate(messages)
+        if message.get("role") == "user"
+        and "<runtime_state>" in str(message.get("content", ""))
+    ]
+    assistant_index = next(
+        i for i, message in enumerate(messages)
+        if message.get("role") == "assistant" and message.get("tool_calls")
+    )
+    tool_index = next(
+        i for i, message in enumerate(messages)
+        if message.get("role") == "tool"
+    )
+
+    assert len(user_task_indices) == 1
+    assert len(runtime_indices) == 1
+    assert runtime_indices[0] < user_task_indices[0] < assistant_index < tool_index
+
+
+def test_new_task_with_prior_turn_keeps_both_turns_in_chronological_order():
+    llm = FakeLLM()
+    builder = ContextBuilder(base_config(), llm)
+    old_user = event(ContextRole.USER, ContextType.MESSAGE, "create a text file", 1)
+    old_answer = event(ContextRole.ASSISTANT, ContextType.MESSAGE, "Created note.txt.", 2)
+    task = event(ContextRole.USER, ContextType.MESSAGE, "now compile a C++ file", 3)
+    assistant = event(ContextRole.ASSISTANT, ContextType.MESSAGE, "", 4)
+    assistant.metadata = {
+        "llm_message": {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "call_compile",
+                "type": "function",
+                "function": {
+                    "name": "command_exec",
+                    "arguments": '{"command":["g++","hello.cpp","-o","hello"]}',
+                },
+            }],
+        }
+    }
+    tool = event(
+        ContextRole.TOOL,
+        ContextType.TOOL_RESULT,
+        '{"name":"command_exec","tool_call_id":"call_compile","success":true,"summary":"Compiled"}',
+        5,
+    )
+
+    messages = builder.build_context(
+        events=[old_user, old_answer, task, assistant, tool],
+        task={"id": str(task.id), "content": task.content, "step": task.step},
+    )
+    contents = [str(message.get("content") or "") for message in messages]
+    task_index = contents.index(task.content)
+    tool_call_index = next(
+        i for i, message in enumerate(messages)
+        if message.get("role") == "assistant" and message.get("tool_calls")
+    )
+    tool_result_index = next(
+        i for i, message in enumerate(messages) if message.get("role") == "tool"
+    )
+    assert contents.index(old_user.content) < contents.index(old_answer.content)
+    assert task_index < tool_call_index < tool_result_index
+    assert contents.count(task.content) == 1
+
+
 def test_tool_call_and_id_are_preserved():
     llm = FakeLLM()
     builder = ContextBuilder(base_config(), llm)
@@ -201,8 +303,15 @@ def test_compactor_failure_keeps_deterministic_recent_history():
         for m in messages
         if m.get("role") == "user" and "<deterministic_context>" in str(m.get("content", ""))
     )
-    assert "important state 34" in fallback
-    assert messages[-1] == {"role": "user", "content": "continue the implementation"}
+    assert "Earlier actions that happened after the active user request." in fallback
+    task_index = next(
+        i for i, message in enumerate(messages)
+        if message.get("role") == "user" and message.get("content") == "continue the implementation"
+    )
+    assert any(
+        "important state 34" in str(message.get("content", ""))
+        for message in messages[task_index + 1 :]
+    )
 
 
 def test_compaction_is_used_when_latest_task_history_does_not_fit():
@@ -238,7 +347,14 @@ def test_compaction_is_used_when_latest_task_history_does_not_fit():
         for m in messages
         if m.get("role") == "user"
     )
-    assert messages[-1] == {"role": "user", "content": "finish the task"}
+    task_index = next(
+        i for i, message in enumerate(messages)
+        if message.get("role") == "user" and message.get("content") == "finish the task"
+    )
+    assert any(
+        "<compacted_context>" in str(message.get("content", ""))
+        for message in messages[task_index + 1 :]
+    )
 
 
 def test_hard_fit_keeps_prompt_under_budget_without_compaction():
@@ -271,7 +387,10 @@ def test_hard_fit_keeps_prompt_under_budget_without_compaction():
     )
 
     assert builder.tokenbudget.estimate_messages_tokens(messages) <= 512
-    assert messages[-1]["role"] == "user"
+    assert any(
+        message.get("role") == "user" and message.get("content") == "finish the task"
+        for message in messages
+    )
 
 
 def test_token_budget_uses_configured_num_ctx():
@@ -873,3 +992,115 @@ def test_token_estimate_includes_preserved_thinking():
         "role": "assistant", "content": "answer", "thinking": "x" * 100
     })
     assert with_thinking - without == 100
+
+
+def test_computer_use_tool_payload_preserves_controls_and_verification():
+    import json
+
+    builder = ContextBuilder(base_config(), FakeLLM())
+    controls = [
+        {"id": 1, "role": "entry", "label": "موبایل یا ایمیل خود را وارد کنید:",
+         "actions": ["activate"], "enabled": True,
+         "bounds": {"x": 100, "y": 200, "w": 300, "h": 40}},
+    ]
+    raw = {
+        "action": "click",
+        "capture_after": {
+            "success": True,
+            "screen_hash_changed": False,
+            "elements": controls,
+            "elements_text": '#1 entry "موبایل یا ایمیل خود را وارد کنید:" @(250,220)',
+            "element_count": 1,
+            "no_visible_change_warning": "No visible change; verify before retrying.",
+        },
+        "screen_hash_changed": False,
+        "verification_warning": "No screenshot pixel change was detected.",
+    }
+    rendered = builder._tool_payload({
+        "name": "computer_use",
+        "success": True,
+        "summary": "Action dispatched; fresh screen captured.",
+        "content": raw,
+        "metadata": {"verification_warning": raw["verification_warning"]},
+        "evidence": {},
+        "effects": [],
+    })
+    payload = json.loads(rendered)
+
+    assert payload["result"]["capture_after"]["screen_hash_changed"] is False
+    assert "elements" not in payload["result"]["capture_after"]
+    assert "موبایل یا ایمیل خود را وارد کنید" in payload["result"]["capture_after"]["elements_text"]
+    assert "No visible change" in payload["result"]["capture_after"]["no_visible_change_warning"]
+    assert "image_ref" not in payload["result"]
+
+
+def test_tool_protocol_keeps_interleaved_screenshot_observations():
+    builder = ContextBuilder(base_config(), FakeLLM())
+    messages = [
+        {"role": "user", "content": "Open a page and click two controls."},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call-A", "type": "function", "function": {"name": "computer_use", "arguments": "{}"}},
+            {"id": "call-B", "type": "function", "function": {"name": "computer_use", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "call-A", "tool_name": "computer_use", "content": "result A"},
+        {"role": "user", "content": "screenshot after A", "image_ref": "/tmp/.daena/screenshots/a.png"},
+        {"role": "tool", "tool_call_id": "call-B", "tool_name": "computer_use", "content": "result B"},
+        {"role": "user", "content": "screenshot after B", "image_ref": "/tmp/.daena/screenshots/b.png"},
+        {"role": "user", "content": "active task"},
+    ]
+
+    sanitized = builder._sanitize_tool_protocol(messages)
+    assistant_index = next(i for i, item in enumerate(sanitized) if item.get("role") == "assistant")
+    result_indices = [i for i, item in enumerate(sanitized) if item.get("role") == "tool"]
+    screenshot_indices = [i for i, item in enumerate(sanitized) if item.get("image_ref")]
+
+    assert [sanitized[i]["tool_call_id"] for i in result_indices] == ["call-A", "call-B"]
+    assert result_indices == [assistant_index + 1, assistant_index + 2]
+    assert len(screenshot_indices) == 2
+    assert screenshot_indices[0] < screenshot_indices[1]
+    assert sanitized[-1]["content"] == "active task"
+
+
+def test_runtime_state_uses_real_newlines_not_literal_backslash_n():
+    from src.context.contextwindow import ContextWindow
+
+    window = ContextWindow()
+    window.set_system("system")
+    window.set_runtime("/tmp/workspace")
+    window.set_conversation([{"role": "user", "content": "active task"}])
+    messages = window.get_prompt("active task")
+    runtime = next(item["content"] for item in messages if "<runtime_state>" in item.get("content", ""))
+
+    assert runtime.startswith("<runtime_state>\n")
+    assert "guidance.\n\n<runtime>" not in runtime
+    assert runtime.endswith("\n</runtime_state>")
+
+
+def test_computer_use_payload_keeps_all_numbered_controls_in_valid_json():
+    import json
+
+    builder = ContextBuilder(base_config(), FakeLLM())
+    elements = []
+    lines = []
+    for index in range(1, 25):
+        label = "موبایل یا ایمیل خود را وارد کنید:" if index == 22 else f"Accessible control {index}"
+        elements.append({
+            "id": index, "role": "entry" if index == 22 else "push button",
+            "label": label, "enabled": True,
+            "bounds": {"x": 100 + index, "y": 100 + index, "w": 100, "h": 30},
+        })
+        lines.append(f"#{index} {elements[-1]['role']} {label} @{100 + index},{100 + index}")
+    element_text = "\n".join(lines)
+
+    rendered = builder._tool_payload({
+        "name": "computer_use", "success": True, "summary": "Captured 24 numbered controls.",
+        "content": {"action": "capture", "element_count": 24,
+                    "elements": elements, "elements_text": element_text},
+        "metadata": {}, "evidence": {}, "effects": [],
+    })
+    parsed = json.loads(rendered)
+    result = parsed["result"]
+
+    assert len(result["elements_text"].splitlines()) == 24
+    assert "#22 entry موبایل یا ایمیل خود را وارد کنید" in result["elements_text"]
+    assert "elements" not in result  # don't duplicate the same control list

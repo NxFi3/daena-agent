@@ -9,6 +9,7 @@ from src.engine.providers.ProviderBase import ProviderBase
 from src.models.LLMInput import LLMInput
 from src.models.LLMResult import LLMResult
 from src.utils.logger import get_logger
+from src.utils.image_reference import read_image_reference
 
 logger = get_logger("[OLLAMA]")
 
@@ -69,6 +70,18 @@ class OllamaProvider(ProviderBase):
                 continue
 
             item = dict(message)
+
+            image_ref = item.pop("image_ref", None)
+            image_mime_type = item.pop("image_mime_type", None)
+            if image_ref:
+                image_bytes, _mime_type = read_image_reference(
+                    str(image_ref),
+                    str(image_mime_type) if image_mime_type else None,
+                )
+                existing_images = item.get("images")
+                if not isinstance(existing_images, list):
+                    existing_images = []
+                item["images"] = [*existing_images, image_bytes]
 
             tool_calls = item.get("tool_calls")
 

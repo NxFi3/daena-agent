@@ -261,7 +261,7 @@ def test_foreground_process_state_is_evidence_not_a_strategy_gate(tmp_path):
         loop.close()
 
 
-def test_plan_is_optional_and_full_tool_vocabulary_remains_available(tmp_path):
+def test_plan_is_optional_and_tool_search_is_the_initial_schema(tmp_path):
     loop = make_loop(tmp_path, {"guard_level": "light"})
     captured = []
 
@@ -293,11 +293,10 @@ def test_plan_is_optional_and_full_tool_vocabulary_remains_available(tmp_path):
 
         assert result is not None
         assert captured
-        assert "plan" in captured[0]
-        assert "read_file" in captured[0]
-        assert "apply_patch" in captured[0]
-        assert "command_exec" in captured[0]
-        assert "process_poll" in captured[0]
+        assert "tool_search" in captured[0]
+        assert {"command_exec", "read_file", "write_file", "apply_patch"}.issubset(captured[0])
+        assert "plan" not in captured[0]
+        assert "plan" not in captured[0]
     finally:
         loop.close()
 
@@ -368,6 +367,22 @@ def test_natural_language_completion_is_not_blocked_after_mutation(tmp_path):
         def generate(self, messages, tools=None, **kwargs):
             self.calls += 1
             if self.calls == 1:
+                raw = {
+                    "id": "search-1",
+                    "type": "function",
+                    "function": {
+                        "name": "tool_search",
+                        "arguments": {"query": "apply a patch to create a new file"},
+                    },
+                }
+                return LLMResult(
+                    response="",
+                    message={"role": "assistant", "content": "", "tool_calls": [raw]},
+                    tool_calls=[raw],
+                    thinking=None,
+                    usage=1,
+                )
+            if self.calls == 2:
                 patch = (
                     "*** Begin Patch\n"
                     "*** Add File: result.txt\n"

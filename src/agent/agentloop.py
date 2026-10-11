@@ -46,6 +46,15 @@ class Loop:
     # Without this, a single hiccup used to kill the entire run instantly,
     # regardless of how much progress had already been made.
     MAX_GENERATION_RETRIES = 3
+    NON_RETRYABLE_GENERATION_ERROR_MARKERS = (
+        "model does not support multimodal requests",
+        "model does not support multimodal data",
+    )
+
+    @classmethod
+    def _is_non_retryable_generation_error(cls, message: str) -> bool:
+        lowered = str(message or "").casefold()
+        return any(marker in lowered for marker in cls.NON_RETRYABLE_GENERATION_ERROR_MARKERS)
 
     DEFAULT_MAX_ITERATIONS = 100
 
@@ -102,6 +111,9 @@ class Loop:
         self._observation_action_count = 0
         self._phase = "explore"
         self._active_process_ids: set[str] = set()
+        # Names whose full schemas were actually supplied on the current turn.
+        # None keeps low-level unit helpers backwards-compatible outside a run.
+        self._turn_tool_names: set[str] | None = None
 
         # A successful observation is reusable until an intervening write/action
         # changes the workspace. Prevent the model from burning turns by issuing
@@ -278,36 +290,6 @@ class Loop:
             1,
             value,
         )
-
-    @staticmethod
-    def _is_direct_chat_turn(text: Any) -> bool:
-        """Recognize unambiguous small-talk turns that do not need runtime tools.
-
-        This deliberately uses a small allow-list rather than guessing that an
-        arbitrary short request is conversational: "weather?", "list files", and
-        other compact but action-oriented requests must still reach the tools.
-        """
-        normalized = str(text or "").casefold().replace("’", "'")
-        normalized = "".join(
-            character
-            if (character.isalnum() or character.isspace() or character == "'")
-            else " "
-            for character in normalized
-        )
-        normalized = " ".join(normalized.split())
-        return normalized in {
-            "hi", "hello", "hey", "hey there", "hi there", "hello there",
-            "good morning", "good afternoon", "good evening",
-            "how are you", "how are you doing", "how's it going",
-            "what's up", "whats up", "thanks", "thank you", "thanks a lot",
-            "thx", "ok", "okay", "cool", "got it", "nice", "great",
-            "bye", "goodbye", "see you", "who are you", "what are you",
-            "what can you do", "why did you use tools",
-            # Persian greetings and common transliterations used in this workspace.
-            "سلام", "درود", "صبح بخیر", "عصر بخیر", "شب بخیر",
-            "خداحافظ", "ممنون", "ممنونم", "مرسی", "خوبی", "چطوری",
-            "salam", "salaam", "merci", "khoobi", "khodafez",
-        }
 
     def _next_step(
         self,
@@ -1080,6 +1062,39 @@ class Loop:
                 continue
 
             tool_name = str(getattr(call, "name", "")).strip().lower()
+            if (
+                self._turn_tool_names is not None
+                and tool_name not in self._turn_tool_names
+            ):
+                exposed = sorted(self._turn_tool_names)
+                message = (
+                    f"Tool '{tool_name}' was not exposed in this model turn, so the runtime "
+                    "did not execute it. Use tool_search to find and activate the needed "
+                    "capability; the matching schema will be available on the next turn."
+                )
+                blocked_results[index] = ToolResult(
+                    success=False,
+                    name=tool_name,
+                    content={
+                        "success": False,
+                        "error": {
+                            "type": "tool_not_exposed",
+                            "message": message,
+                        },
+                        "available_this_turn": exposed,
+                    },
+                    metadata={
+                        "recovery_hint": (
+                            "Do not retry the hidden tool directly. Call tool_search with a "
+                            "natural-language description of the action you need, then use "
+                            "the schema exposed on the next turn."
+                        ),
+                    },
+                    summary=message,
+                )
+                self.metrics["tool_blocks"] = self.metrics.get("tool_blocks", 0) + 1
+                continue
+
             signature = self._observation_signature(call)
 
             if tool_name == "command_exec":
@@ -1347,6 +1362,12 @@ class Loop:
         if result.success:
             self._consecutive_tool_failures = 0
             self.metrics["tool_successes"] = self.metrics.get("tool_successes", 0) + 1
+            # Catalog lookup is control-plane work, not task progress. Keep it in
+            # total tool metrics but exclude it from action-quality/review heuristics.
+            if tool_name != "tool_search":
+                self.metrics["action_tool_successes"] = (
+                    self.metrics.get("action_tool_successes", 0) + 1
+                )
         else:
             self._consecutive_tool_failures += 1
             self.metrics["tool_failures"] = self.metrics.get("tool_failures", 0) + 1
@@ -2020,19 +2041,19 @@ class Loop:
         return any(marker in text for marker in refusal_markers)
 
     @staticmethod
-    def _is_information_request(text: Any) -> bool:
-        """Recognize broad information-seeking intents without matching exact tasks."""
-        normalized = " ".join(str(text or "").casefold().split())
-        prefixes = (
-            "what ", "what's ", "whats ", "why ", "how ", "who ", "when ",
-            "where ", "which ", "explain ", "define ", "describe ", "compare ",
-            "summarize ", "translate ", "rewrite ", "tell me about ",
-            "tell me what ", "can you explain ", "difference between ",
-            "what is ", "what are ",
-            "چرا", "چطور", "چگونه", "چیست", "چیه", "توضیح", "تعریف",
-            "تفاوت", "فرق", "معنی", "آیا", "چه کسی", "چه زمانی", "کجا",
+    def _looks_like_unverified_action_claim(text: Any) -> bool:
+        """Detect a final answer that appears to claim an external action succeeded.
+
+        This is deliberately applied to the draft, not used as a chat/action
+        router. Tool evidence remains authoritative for whether an operation ran.
+        """
+        value = str(text or "").casefold()
+        markers = (
+            r"\b(?:created|wrote|saved|compiled|built|generated|implemented|fixed|updated|deleted|installed|verified|validated|completed|finished|done|successfully)\b",
+            r"\b(?:the file|the artifact|the program|the script|the change|the fix)\b.{0,80}\b(?:ready|complete|done|working|validated|verified)\b",
+            r"(?:ساخته\s*شد|ایجاد\s*شد|انجام\s*شد|تکمیل\s*شد|کامپایل\s*شد|بررسی\s*شد|درست\s*شد|آماده\s*است)",
         )
-        return normalized.startswith(prefixes)
+        return any(re.search(pattern, value, flags=re.IGNORECASE | re.DOTALL) for pattern in markers)
 
     def _should_review_final_candidate(
         self,
@@ -2048,20 +2069,22 @@ class Loop:
         """
         if self.completion_reviewer is None:
             return False
-        if self._is_direct_chat_turn(user_task.content):
-            return False
         if self._completion_review_retries > 0:
             return True
 
-        successful_tools = int(self.metrics.get("tool_successes", 0) or 0)
+        successful_tools = int(
+            self.metrics.get("action_tool_successes", self.metrics.get("tool_successes", 0)) or 0
+        )
         tool_failures = int(self.metrics.get("tool_failures", 0) or 0)
         tool_attempts = int(self.metrics.get("tool_call_attempts", 0) or 0)
         state_changed = self._workspace_mutation_epoch > 0
 
         if tool_attempts == 0 and tool_failures == 0:
+            # Keep normal chat single-call. Independently review refusals and
+            # unsupported claims that the runtime changed or verified something.
             return (
                 self._looks_like_refusal(candidate.response)
-                or not self._is_information_request(user_task.content)
+                or self._looks_like_unverified_action_claim(candidate.response)
             )
         if (
             successful_tools == 1
@@ -2158,14 +2181,9 @@ class Loop:
         self._event_sink = event_sink
         self._stop_event = stop_event
         self._run_started_at = time.perf_counter()
-        if self._is_direct_chat_turn(user_task.content):
-            # Keep workspace roots/security scopes current without walking the
-            # filesystem for a greeting or other plain conversational turn.
-            self._workspace_root = Path(workspace_directory).expanduser().resolve()
-            self.tool.set_workspace(str(self._workspace_root))
-            self.working_set.set_workspace(str(self._workspace_root))
-        else:
-            self.set_workspace(workspace_directory)
+        # Set tool/security roots without eagerly enumerating files. The model
+        # decides whether tools are useful; tool results refresh workspace state.
+        self.configure_workspace(workspace_directory, refresh=False)
 
         # Must run AFTER _reset_run_state()
         # and BEFORE the first _next_step().
@@ -2304,6 +2322,15 @@ class Loop:
                 self._generation_retries += 1
 
                 error_message = self.agent_state.error or "LLM generation failed."
+
+                if self._is_non_retryable_generation_error(error_message):
+                    error_message += (
+                        "\nThis is a model capability mismatch, not a transient failure. "
+                        "Select a vision-capable model (for example, qwen3.5:9b) for tasks "
+                        "that require analyzing screenshots."
+                    )
+                    self.logger.error(error_message)
+                    return self._stopped_result(error_message)
 
                 if self._generation_retries > self.MAX_GENERATION_RETRIES:
 
@@ -2601,12 +2628,6 @@ class Loop:
 
             raise RuntimeError("No active session.")
 
-        # Deterministic workspace truth is refreshed when this task depends on
-        # it. A direct conversational turn must not inspect the workspace.
-        direct_chat = self._is_direct_chat_turn(user_task.content)
-        if not direct_chat:
-            self.working_set.refresh_workspace()
-
         # A persisted plan belongs to an explicitly activated plan lifecycle
         # in the current run. Do not synchronize stale workspace plan state into
         # the model context before this run has created/activated a plan.
@@ -2620,12 +2641,17 @@ class Loop:
         else:
             plan_state = PlanState.empty()
 
-        # Tool availability describes the agent's capabilities, not an
-        # enforced execution sequence. The LLM may inspect, edit, execute, or
-        # observe processes whenever the task requires it. Runtime checks in
-        # _classify_calls() remain the safety boundary for destructive,
-        # duplicate, invalid, or otherwise unsafe actions.
-        effective_tool_definitions = [] if direct_chat else self.tool_definitions
+        # Keep optional tools in ToolManager, but expose high-frequency runtime
+        # primitives (shell + file/process operations) every turn. Tool Search expands
+        # capabilities beyond that core set instead of gating basic coding actions.
+        effective_tool_definitions = self.tool.get_model_tools()
+        self._turn_tool_names = {
+            str(definition.get("function", {}).get("name", "")).strip().lower()
+            for definition in effective_tool_definitions
+            if isinstance(definition, dict)
+            and isinstance(definition.get("function"), dict)
+            and str(definition.get("function", {}).get("name", "")).strip()
+        }
 
         available_tool_names = {
             str(definition.get("function", {}).get("name", "")).strip().lower()
@@ -2635,7 +2661,18 @@ class Loop:
             and str(definition.get("function", {}).get("name", "")).strip()
         }
 
-        working_context = {} if direct_chat else self.working_set.context()
+        # Retain prior tool-call/result evidence even when a later search swaps
+        # the active schemas. Only `available_tools` in working_context describes
+        # what is callable right now; history should not disappear with selection.
+        history_available_tool_names = {
+            str(definition.get("function", {}).get("name", "")).strip().lower()
+            for definition in self.tool_definitions
+            if isinstance(definition, dict)
+            and isinstance(definition.get("function"), dict)
+            and str(definition.get("function", {}).get("name", "")).strip()
+        }
+
+        working_context = self.working_set.context()
         # Expose plan progress only after this run has explicitly activated
         # planning. This prevents an old .daena/plan.md from steering a fresh
         # task into an unrelated plan completion/update.
@@ -2647,70 +2684,52 @@ class Loop:
         working_context["execution_phase"] = self._phase
         working_context["available_tools"] = sorted(available_tool_names)
         working_context["workspace_guidance"] = (
-            "Use tools only when they materially help or the user requests an action requiring them. "
-            "Greetings, small talk, and ordinary questions answerable from knowledge should be "
-            "answered directly without tool calls. For local-state requests, inventory is authoritative: "
-            "do not guess filenames, and include all observed entries when a complete list is requested. "
-            "web_search finds current information/URLs; web_fetch reads known public URLs; "
-            "command_exec runs local commands/tests. A 404 or empty extraction only describes that "
-            "URL/response, not the whole site. After a failed or uninformative attempt, choose a "
-            "materially different approach based on evidence. Reuse successful read/search/fetch "
-            "results; do not repeat an identical observation while its result remains in context. "
-            "Treat successful mutations and observed workspace state as current truth: do not assume "
-            "an existing or newly created file is absent, and do not delete/recreate a working artifact "
-            "merely to recover from a validation failure. Judge progress by the requested outcome and "
-            "verification evidence, not by whether a tool reports success. If the same verification "
-            "failure persists, inspect its specific assertion/traceback and correct that cause before "
-            "changing unrelated files. Before continuing for an alleged omission, check the draft and "
-            "evidence; stop once the goal is met and answer once."
+            "Use tools only when they materially help; answer ordinary knowledge questions directly. "
+            "Core tools for shell commands, file reading/writing/editing, patching, and managed-process "
+            "control are already available: call them directly when appropriate. Use tool_search only "
+            "when the required capability is not among the currently exposed tools; its matching schemas "
+            "become available on the next turn. If a search finds nothing, try a concrete alternate query "
+            "before concluding a capability is unavailable. Do not guess filenames. Workspace inventory "
+            "refreshes after tool results; include all observed entries when a complete list is requested. "
+            "After a failed or uninformative attempt, choose a materially different approach based on "
+            "evidence. Reuse successful observations; do not repeat an identical read/search while its "
+            "result remains valid. Treat successful mutations and observed workspace state as current "
+            "truth: do not assume an existing or newly created file is absent, and do not delete/recreate "
+            "a working artifact merely to recover from validation failure. Judge progress by the requested "
+            "outcome and verification evidence, not by whether a tool reports success. If the same "
+            "verification failure persists, inspect its specific assertion/traceback and correct that cause "
+            "before changing unrelated files. Before continuing for an alleged omission, check the draft "
+            "and evidence; stop once the goal is met and answer once."
         )
         working_context["tool_choice"] = {
-            "read_file": "read a known file or a narrow line range with line numbers",
-            "grep": "locate symbols/usages and return file:line:snippet matches",
-            "glob": "discover files and paths by pattern",
-            "list_dir": "inspect one workspace directory",
-            "explore": "delegate broad read-only repository exploration to a separate context",
-            "write_file": "write complete text files and generated artifacts; set overwrite=true only for intentional replacement",
-            "edit_file": "replace an exact string in an existing file when a small targeted edit is needed",
-            "context_search": "search prior session history and bounded tool-result evidence when relevant context is missing",
-            "apply_patch": "make targeted edits to existing source files using exact context",
-            "command_exec": "run local commands/scripts/tests; inspect output, exit status, and HTTP status",
-            "web_search": "discover current information, find a correct URL, and identify relevant sources",
-            "web_fetch": "retrieve a known public URL; inspect title, status, text, links, and empty-content notes",
+            "tool_search": (
+                "discover additional capabilities not covered by the core shell/file/process tools; "
+                "matching schemas are exposed on the next turn. Try a more concrete alternate query if needed."
+            )
         }
 
-        capability_names = {
-            "web_search", "web_fetch", "command_exec", "explore", "grep", "edit_file",
-            "glob", "read_file", "list_dir", "process_poll", "process_write",
-            "context_search",
-        }
         working_context["tool_capabilities"] = [
             {
-                "name": name,
-                "description": str(definition.get("function", {}).get("description", ""))[:260],
+                "name": str(definition.get("function", {}).get("name", "")).strip().lower(),
+                "description": str(definition.get("function", {}).get("description", ""))[:220],
             }
             for definition in effective_tool_definitions
             if isinstance(definition, dict)
             and isinstance(definition.get("function"), dict)
-            and (name := str(definition["function"].get("name", "")).strip().lower())
-            in capability_names
-        ][:12]
+            and str(definition["function"].get("name", "")).strip().lower() != "tool_search"
+        ][:8]
 
         context = self.context.get_context(
             session_id=self.session_id,
             user_task=user_task,
             agent_state=self.agent_state,
             working_set=working_context,
-            observation=(
-                {} if direct_chat else self.working_set.observation_context()
-            ),
-            recent_actions=(
-                [] if direct_chat else self.working_set.recent_actions_context()
-            ),
+            observation=self.working_set.observation_context(),
+            recent_actions=self.working_set.recent_actions_context(),
             workspace_directory=(workspace_directory),
             recent_limit=self.recent_context_limit,
             search_top_k=self.search_context_top_k,
-            available_tool_names=available_tool_names,
+            available_tool_names=history_available_tool_names,
             include_plan=self._plan_active_this_run,
         )
 
@@ -2819,15 +2838,25 @@ class Loop:
 
         return result
 
+    def configure_workspace(
+        self,
+        workspace_directory: str,
+        *,
+        refresh: bool = False,
+    ) -> None:
+        """Configure workspace/security roots; inventory refresh is optional."""
+        self._workspace_root = Path(workspace_directory).expanduser().resolve()
+        self.tool.set_workspace(str(self._workspace_root))
+        self.working_set.set_workspace(str(self._workspace_root))
+        if refresh:
+            self.working_set.refresh_workspace()
+
     def set_workspace(
         self,
         workspace_directory: str,
     ) -> None:
-
-        self._workspace_root = Path(workspace_directory).expanduser().resolve()
-        self.tool.set_workspace(workspace_directory)
-        self.working_set.set_workspace(str(self._workspace_root))
-        self.working_set.refresh_workspace()
+        """Explicitly set a workspace and refresh its inventory."""
+        self.configure_workspace(workspace_directory, refresh=True)
 
     def get_metrics(self) -> dict[str, Any]:
         return dict(self.metrics)
@@ -2844,6 +2873,7 @@ class Loop:
         self.agent_state.reset()
 
         self.working_set.reset()
+        self.tool.reset_tool_selection()
 
         self.workspace_revision = 0
         self._workspace_mutation_epoch = 0
@@ -2859,6 +2889,7 @@ class Loop:
         self._observation_cache.clear()
         self._consecutive_observation_cache_hits = 0
         self._phase = "explore"
+        self._turn_tool_names = None
 
         self._plan_progress.reset()
         self._plan_active_this_run = False
@@ -2893,6 +2924,7 @@ class Loop:
             "execution_phase": self._phase,
             "tool_call_attempts": 0,
             "tool_successes": 0,
+            "action_tool_successes": 0,
             "tool_failures": 0,
             "tool_failures_by_error_type": {},
             "duplicate_observation_cache_hits": 0,

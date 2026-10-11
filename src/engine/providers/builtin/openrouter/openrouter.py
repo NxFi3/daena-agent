@@ -7,6 +7,7 @@ from src.engine.providers.ProviderBase import ProviderBase
 from src.models.LLMInput import LLMInput
 from src.models.LLMResult import LLMResult
 from src.utils.logger import get_logger
+from src.utils.image_reference import image_data_url
 
 logger = get_logger("[OPENROUTER]")
 
@@ -33,6 +34,32 @@ class OpenRouterProvider(ProviderBase):
         for key in ("num_predict", "num_thread", "num_threads", "num_ctx"):
             normalized.pop(key, None)
         return normalized
+
+    @staticmethod
+    def _prepare_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Resolve Daena's private image references into OpenRouter image_url blocks."""
+        prepared: list[dict[str, Any]] = []
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            item = dict(message)
+            image_ref = item.pop("image_ref", None)
+            image_mime_type = item.pop("image_mime_type", None)
+            if image_ref:
+                text = item.get("content", "")
+                if isinstance(text, list):
+                    blocks = list(text)
+                else:
+                    blocks = [{"type": "text", "text": str(text or "")}] if text else []
+                blocks.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": image_data_url(str(image_ref), str(image_mime_type) if image_mime_type else None)
+                    },
+                })
+                item["content"] = blocks
+            prepared.append(item)
+        return prepared
 
     def _create_client(self) -> None:
         if self.client is not None:
@@ -321,7 +348,7 @@ class OpenRouterProvider(ProviderBase):
 
         model_name = llminput.model_name or self.defaultModel
 
-        messages = llminput.messages or []
+        messages = self._prepare_messages(llminput.messages or [])
 
         tools = llminput.tools or []
 

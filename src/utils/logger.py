@@ -5,11 +5,12 @@ from datetime import datetime
 LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
 
-def get_logger(name="RAG Memory"):
+
+def get_logger(name="Daena"):
     logger = logging.getLogger(name)
 
     if logger.handlers:
-        return logger  
+        return logger
 
     logger.setLevel(logging.DEBUG)
 
@@ -25,8 +26,7 @@ def get_logger(name="RAG Memory"):
     )
     #  format
     formatter = logging.Formatter(
-        "[%(asctime)s] [%(levelname)s] [%(name)s] → %(message)s",
-        datefmt="%H:%M:%S"
+        "[%(asctime)s] [%(levelname)s] [%(name)s] → %(message)s", datefmt="%H:%M:%S"
     )
 
     file_handler.setFormatter(formatter)

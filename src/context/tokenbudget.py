@@ -146,6 +146,13 @@ class TokenBudget:
         if content:
             total += len(str(content))
 
+        # Image tokens are not represented by the textual file reference.
+        # Reserve a conservative visual-input allowance so prompt fitting does
+        # not assume screenshots are nearly free. The estimate is intentionally
+        # fixed/provider-neutral; actual token usage calibrates the textual ratio.
+        if message.get("image_ref"):
+            total += int(self.chars_per_token * 1536)
+
         thinking = message.get("thinking")
         if thinking:
             total += len(str(thinking))
