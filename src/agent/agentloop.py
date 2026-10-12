@@ -125,6 +125,9 @@ class Loop:
         # the exact failed action at the same workspace revision without
         # producing new evidence first.
         self._failed_call_keys: dict[str, tuple[int, int]] = {}
+        # GUI action failures survive screenshot/capture observations. A capture
+        # changes observation data, not the validity of the failed click itself.
+        self._failed_gui_call_keys: set[str] = set()
         self._active_process_ids: set[str] = set()
         self._recovery_mode = False
 
@@ -599,6 +602,105 @@ class Loop:
             ensure_ascii=False,
             sort_keys=True,
             default=str,
+        )
+
+    @staticmethod
+    def _gui_action_key(call) -> str | None:
+        """Stable key for a state-changing Computer Use action.
+
+        Observation calls (capture/inspect/list_apps) are intentionally excluded:
+        a fresh screenshot must not make a previously failed click retryable.
+        """
+        name = str(getattr(call, "name", "")).strip().lower()
+        if name != "computer_use":
+            return None
+
+        arguments = getattr(call, "args", {}) or {}
+        if not isinstance(arguments, dict):
+            return None
+
+        action = str(arguments.get("action", "")).strip().lower()
+        if not action or action in {
+            "capture", "inspect", "computer_inspect", "list_apps", "tool_search",
+        }:
+            return None
+
+        # Remove timing/response-only fields, but retain target, element token,
+        # coordinates, app/window and all actual action parameters.
+        volatile = {"timeout", "timeout_ms", "wait_ms", "delay_ms", "timestamp", "screenshot_id"}
+        stable_arguments = {
+            key: value for key, value in arguments.items() if key not in volatile
+        }
+        return json.dumps(
+            {"name": name, "args": stable_arguments},
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+
+    @classmethod
+    def _unverified_gui_action_message(cls, call, result: ToolResult) -> str | None:
+        """Detect a dispatch-success that explicitly says the GUI change was unverified."""
+        if not result.success or cls._gui_action_key(call) is None:
+            return None
+
+        try:
+            evidence = json.dumps(
+                {
+                    "summary": result.summary,
+                    "content": result.content,
+                    "metadata": result.metadata,
+                },
+                ensure_ascii=False,
+                default=str,
+            ).lower()
+        except Exception:
+            evidence = str(result.summary or result.content or "").lower()
+
+        markers = (
+            "activation was not verified",
+            "does not prove the intended state changed",
+            "not verified from a real checked-state transition",
+            "screen animations do not prove progress",
+            "page did not change as intended",
+            "do not perform dependent actions",
+        )
+        matched = next((marker for marker in markers if marker in evidence), None)
+        if matched is None:
+            return None
+
+        return (
+            "Computer Use returned a successful dispatch status but explicitly "
+            f"reported an unverified GUI action ({matched!r}). Treat the action "
+            "as failed; inspect the current state before proceeding."
+        )
+
+    @classmethod
+    def _normalize_unverified_gui_result(cls, call, result: ToolResult) -> ToolResult:
+        """Do not count a dispatched-but-unverified GUI action as successful."""
+        message = cls._unverified_gui_action_message(call, result)
+        if message is None:
+            return result
+
+        metadata = dict(result.metadata) if isinstance(result.metadata, dict) else {}
+        metadata.update({
+            "gui_action_unverified": True,
+            "recovery_required": True,
+            "recovery_hint": (
+                "Do not repeat this click/drag or use stale coordinates. Obtain a "
+                "fresh inspection, use the inspection tool explicitly requested by "
+                "the tool error when available, and verify the active control/state."
+            ),
+        })
+        return ToolResult(
+            success=False,
+            name=result.name or str(getattr(call, "name", "computer_use")),
+            content={
+                "error": {"type": "gui_action_unverified", "message": message},
+                "dispatch_result": result.content,
+            },
+            metadata=metadata,
+            summary=message,
         )
 
     @staticmethod
@@ -1373,6 +1475,22 @@ class Loop:
                 summary=summary,
             )
 
+        gui_key = self._gui_action_key(call)
+        if gui_key is not None and gui_key in self._failed_gui_call_keys:
+            message = (
+                "This exact Computer Use action already failed or was explicitly "
+                "reported as unverified. Do not repeat it, even after capture. "
+                "Inspect the fresh state and choose a different verified element, "
+                "target, or coordinate."
+            )
+            return ToolResult(
+                success=False,
+                name=name,
+                content={"error": {"type": "gui_action_repeat", "message": message}},
+                metadata={"runtime_gate": True, "recovery_required": True},
+                summary=f"RECOVERY BLOCKED: {message}",
+            )
+
         predicted_signature = self._predict_failure_signature(call)
         if predicted_signature:
             repeat_count = self._semantic_failure_counts.get(predicted_signature, 0)
@@ -1435,6 +1553,7 @@ class Loop:
         iteration: int,
     ) -> None:
 
+        result = self._normalize_unverified_gui_result(call, result)
         plan_before = self._read_plan_state()
         self._plan_progress.sync(
             plan_before,
@@ -1478,6 +1597,12 @@ class Loop:
             result=result,
             iteration=iteration,
         )
+
+        gui_key = self._gui_action_key(call)
+        if result.success and gui_key is not None:
+            # A different verified state-changing GUI action can legitimately
+            # make older coordinates/targets meaningful again.
+            self._failed_gui_call_keys.clear()
 
         self._plan_progress.record(
             tool_call=call,
@@ -1582,6 +1707,9 @@ class Loop:
             )
             count = previous_count + 1 if previous_revision == self.workspace_revision else 1
             self._failed_call_keys[key] = (self.workspace_revision, count)
+            gui_key = self._gui_action_key(call)
+            if gui_key is not None:
+                self._failed_gui_call_keys.add(gui_key)
             self._recovery_mode = True
 
         if self._is_observation_call(call) and str(getattr(call, "name", "")).strip().lower() != "process_poll":
@@ -1626,6 +1754,20 @@ class Loop:
                 "A foreground managed process is still running. "
                 "Do not perform unrelated work yet. Poll the process, provide "
                 "required stdin with process_write, or stop it with process_stop."
+            )
+
+        if (
+            not result.success
+            and str(result.name).strip().lower() == "computer_use"
+            and error_type not in {"invalid_tool_call", "tool_argument_error", "invalid_argument"}
+        ):
+            self._store_nudge(
+                "The last Computer Use action failed or was not verified. Do not "
+                "repeat the same click, drag, element, or coordinates. First inspect "
+                "the current screen and controls; if the tool error explicitly names "
+                "an inspection tool (for example computer_inspect), search for and "
+                "activate it, then use its fresh evidence to choose the next action. "
+                "Do not perform dependent actions until the state change is verified."
             )
 
         if (
@@ -2295,6 +2437,7 @@ class Loop:
 
         self._semantic_failure_counts.clear()
         self._failed_call_keys.clear()
+        self._failed_gui_call_keys.clear()
         self._active_process_ids.clear()
         self._recovery_mode = False
 
