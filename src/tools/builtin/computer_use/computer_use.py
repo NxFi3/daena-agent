@@ -43,6 +43,7 @@ class ComputerUseTool(Tool):
         "Controls are snapshot-scoped. For click/type, prefer target='exact visible label' when it uniquely identifies the intended control; otherwise use an element number from the latest capture, never guess an ID. Make only one Computer Use call per model turn; use action='sequence' for 2-6 predictable steps so GUI calls do not race each other. "
         "Use action='type', target='field label', text='…' to type into an accessible field. If the field is visible but missing from the controls list, use coordinate=[x,y] from the latest screenshot; the tool focuses that point before typing. For action='scroll', use coordinate=[x,y] inside the intended scrollable area when it is not inferable from current accessibility state; the driver requires an explicit scroll anchor. "
         "For continuous pointer gestures—drawing in Paint, dragging objects, selecting regions—use action='drag' with from_coordinate=[x,y] and to_coordinate=[x,y] from the latest screenshot. Each drag is a real press-move-release gesture; use separate strokes for separate drawing segments. "
+        "Before the first drag in a drawing app, capture mode='vision' (it overlays a labeled 100-pixel grid) and choose BOTH endpoints inside the drawing canvas, never on a toolbar or ribbon. A toolbar item reported as selected/focused is NOT proof the tool is active: read the application's own status text or verify visually. "
         "Use action='sequence' for 2-6 predictable steps with label targets; it refreshes state between steps and stops on an ambiguous target or failure. Keep decisions requiring visual interpretation or user input (for example verification codes) as separate turns. "
         "After meaningful actions, review the returned fresh screenshot and controls. If screen_hash_changed is false, do not repeat the same click; re-capture/re-evaluate the current window. 'Dispatched' only means an input was sent, not that it worked; confirm the visible result before continuing or claiming success. "
         "If the user replies with a value you requested (especially an OTP), first capture the current UI and resume the pending flow; do not navigate or launch another tab just because the reply is short. "
@@ -566,6 +567,81 @@ class ComputerUseTool(Tool):
         ]
         return matches[0]["checked"] if len(matches) == 1 else None
 
+    _SETTLE_ACTIONS = frozenset({
+        "click", "double_click", "right_click", "middle_click", "drag", "scroll",
+    })
+    _SETTLE_DELAYS = (0.3, 0.7)
+
+    def _capture_settled(
+        self, action: str, before_hash: Any, capture_kwargs: dict[str, Any],
+    ) -> ToolResult:
+        """Capture after an input, giving the app a bounded time to repaint.
+
+        Only re-CAPTURES; the input is never re-sent. Apps (and Wayland frame delivery)
+        often repaint a few hundred ms after a drag/click, so an immediate capture
+        wrongly looked like "nothing happened".
+        """
+        wants_pixels = (
+            action in self._SETTLE_ACTIONS
+            and isinstance(before_hash, str)
+            and str(capture_kwargs.get("mode") or "som").strip().casefold() != "ax"
+        )
+        if wants_pixels:
+            time.sleep(0.15)
+        captured = self._capture(**capture_kwargs)
+        if not wants_pixels:
+            return captured
+        for delay in self._SETTLE_DELAYS:
+            if not captured.success:
+                break
+            after_hash = captured.content.get("screenshot_hash") if isinstance(captured.content, dict) else None
+            if not isinstance(after_hash, str) or after_hash != before_hash:
+                break
+            time.sleep(delay)
+            captured = self._capture(**capture_kwargs)
+        return captured
+
+    @staticmethod
+    def _control_at_point(elements: Any, x: float, y: float) -> str | None:
+        """Label of the smallest listed control whose bounds contain (x, y)."""
+        best: str | None = None
+        best_area = 0.0
+        for item in elements if isinstance(elements, list) else []:
+            if not isinstance(item, dict) or not isinstance(item.get("bounds"), dict):
+                continue
+            try:
+                bx, by, bw, bh = (float(item["bounds"][key]) for key in ("x", "y", "w", "h"))
+            except (KeyError, TypeError, ValueError):
+                continue
+            if bw <= 0 or bh <= 0 or not (bx <= x < bx + bw and by <= y < by + bh):
+                continue
+            if best is None or bw * bh < best_area:
+                best = str(item.get("label") or item.get("role") or "control")
+                best_area = bw * bh
+        return best
+
+    # Roles for which AT-SPI SELECTED genuinely is the state (a chosen tab or row).
+    _SELECTION_STATE_ROLES = frozenset({
+        "page tab", "tab", "list item", "tree item", "option", "table cell",
+        "table row", "menu item", "combo box",
+    })
+
+    @staticmethod
+    def _selected_control_state(elements: Any, role: str, label: str) -> bool | None:
+        """Read the SELECTED flag of exactly one matching control, else None."""
+        if not isinstance(elements, list):
+            return None
+        wanted_role = str(role or "").strip().casefold()
+        wanted_label = str(label or "").strip().casefold()
+        matches = [
+            item for item in elements
+            if isinstance(item, dict)
+            and str(item.get("role") or "").strip().casefold() == wanted_role
+            and str(item.get("label") or "").strip().casefold() == wanted_label
+            and isinstance(item.get("selected"), bool)
+        ]
+        return matches[0]["selected"] if len(matches) == 1 else None
+
     def _capture(
         self,
         *,
@@ -680,7 +756,7 @@ class ComputerUseTool(Tool):
             # A failed preliminary query already contains the concrete error; reuse it
             # and go directly to the existing unfiltered recovery instead of issuing
             # the same failing inspection twice.
-            inspect_title = "" if pid is not None and window_id is not None else hint
+            inspect_title = "" if pid is not None and window_id is not None else title_hint
             if selection is not None and not selection.success:
                 inspected = selection
             else:
@@ -1015,8 +1091,14 @@ class ComputerUseTool(Tool):
                     where = ""
                 role = str(e.get("role") or "").casefold()
                 selection = ""
-                if role in {"check box", "toggle button", "radio button"} and isinstance(e.get("selected"), bool):
-                    selection = " [SELECTED]" if e["selected"] else " [not selected]"
+                if role in {"check box", "toggle button", "radio button"}:
+                    if isinstance(e.get("checked"), bool):
+                        selection = " [CHECKED]" if e["checked"] else " [unchecked]"
+                    elif isinstance(e.get("selected"), bool):
+                        # SELECTED is focus/selection, not proof the tool/option is active.
+                        selection = (
+                            " [focus-selected: NOT proof it is active]" if e["selected"] else " [not selected]"
+                        )
                 lines.append(f"#{e['id']} {e.get('role', '')} \"{label}\"{selection}{where}")
             content["elements_text"] = "\n".join(lines)
             summary += (
@@ -1101,7 +1183,35 @@ class ComputerUseTool(Tool):
         if element_id is not None:
             token, record = self._element_record(element_id)
             element_record = record
-            args["element_token"] = token
+            pixel_point = None
+            latest_target = state.get("latest_screenshot_target", {})
+            if (
+                action in click_like
+                and record.get("frame_coordinate_space") == "window"
+                and state.get("latest_screenshot_coordinate_frame") == "window"
+                and isinstance(latest_target, dict)
+                and latest_target.get("desktop_capture") is not True
+            ):
+                # Native Wayland AT-SPI click-by-token can land in the compositor
+                # titlebar because that path uses client-local bounds against a
+                # full-window screenshot. Use the now-normalized screenshot frame
+                # as pixels instead; this is the same route as a model coordinate click.
+                frame = record.get("frame")
+                if isinstance(frame, dict):
+                    try:
+                        x = float(frame["x"])
+                        y = float(frame["y"])
+                        w = float(frame.get("w", frame.get("width")))
+                        h = float(frame.get("h", frame.get("height")))
+                        if w > 0 and h > 0:
+                            pixel_point = [round(x + w / 2), round(y + h / 2)]
+                    except (KeyError, TypeError, ValueError, OverflowError):
+                        pixel_point = None
+            if pixel_point is not None:
+                args.pop("element_token", None)
+                args["coordinate"] = pixel_point
+            else:
+                args["element_token"] = token
             if action == "type_text":
                 role = str(record.get("role") or "").casefold().strip()
                 actions = record.get("actions", [])
@@ -2725,10 +2835,31 @@ class ComputerUseTool(Tool):
                         role = str(record.get("role") or "").strip().casefold()
                         if role in {"check box", "checkbox", "radio button", "toggle button", "switch"}:
                             checked_before = record.get("checked")
+                            # Native Wayland controls without a real CHECKED state
+                            # must be activated via screenshot-space pixels instead
+                            # of the broken client-local accessibility token route.
+                            if not (
+                                record.get("frame_coordinate_space") == "window"
+                                and not isinstance(checked_before, bool)
+                                and self._inspect._wayland_window_top_inset() > 0
+                            ):
+                                toggle_target = {
+                                    "role": str(record.get("role") or ""),
+                                    "label": str(record.get("label") or ""),
+                                    "checked_before": checked_before if isinstance(checked_before, bool) else None,
+                                }
+                        elif (
+                            isinstance(record.get("selected"), bool)
+                            and not isinstance(record.get("checked"), bool)
+                            and role not in self._SELECTION_STATE_ROLES
+                        ):
+                            # A button-like control that only reports SELECTED. For these
+                            # roles SELECTED is focus/selection, not "the action took effect".
                             toggle_target = {
                                 "role": str(record.get("role") or ""),
                                 "label": str(record.get("label") or ""),
-                                "checked_before": checked_before if isinstance(checked_before, bool) else None,
+                                "checked_before": None,
+                                "selected_only": True,
                             }
                 result = self._act_once(action, **kwargs)
                 if not result.success:
@@ -2743,16 +2874,31 @@ class ComputerUseTool(Tool):
                 _state_path, state = self._current_state()
                 target = state.get("latest_computer_use_target", {})
                 target = target if isinstance(target, dict) else {}
-                captured = self._capture(
-                    mode=str(kwargs.get("mode") or "som"),
-                    pid=target.get("pid"),
-                    window_id=target.get("window_id"),
-                    max_results=kwargs.get("max_results", 24),
-                    include_windows=bool(kwargs.get("include_windows", True)),
+                captured = self._capture_settled(
+                    action, before_screen_hash,
+                    dict(
+                        mode=str(kwargs.get("mode") or "som"),
+                        pid=target.get("pid"),
+                        window_id=target.get("window_id"),
+                        max_results=kwargs.get("max_results", 24),
+                        include_windows=bool(kwargs.get("include_windows", True)),
+                    ),
                 )
                 semantic_verification = None
                 semantic_no_change = False
                 semantic_unavailable = False
+                if (
+                    toggle_target is not None and toggle_target.get("selected_only")
+                    and captured.success
+                ):
+                    # Only the "became/remained selected" signature is unverifiable.
+                    # A selected-capable button that is not selected afterwards is
+                    # judged by the ordinary visual evidence.
+                    if self._selected_control_state(
+                        captured.content.get("elements", []),
+                        toggle_target["role"], toggle_target["label"],
+                    ) is not True:
+                        toggle_target = None
                 if toggle_target is not None and captured.success:
                     checked_after = self._checked_control_state(
                         captured.content.get("elements", []),
@@ -2888,6 +3034,24 @@ class ComputerUseTool(Tool):
                         elif screen_hash_changed is True:
                             guard_state.pop("last_unverified_pixel_action", None)
                         self._save_state(guard_path, guard_state)
+                if action == "drag" and screen_hash_changed is False:
+                    owner = None
+                    try:
+                        start = kwargs.get("from_coordinate")
+                        owner = self._control_at_point(
+                            captured.content.get("elements", []), float(start[0]), float(start[1]),
+                        )
+                    except (TypeError, ValueError, IndexError):
+                        owner = None
+                    drag_hint = (
+                        "The drag was delivered but the window did not change even after waiting. "
+                        + (f"Its start point lies on the control '{owner}', not on a drawing surface; "
+                           if owner else "")
+                        + "Capture mode='vision' (labeled 100px grid), choose start/end points clearly inside the "
+                        "canvas, and confirm the active tool from the app's own status text before drawing. "
+                        "Do not repeat the same drag."
+                    )
+                    metadata["recovery_hint"] = drag_hint
                 if effect_unverified and not semantic_no_change:
                     metadata["verification_warning"] = (
                         "No visible screen change followed a state-changing interaction; do not repeat the same input."

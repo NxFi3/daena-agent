@@ -13,6 +13,12 @@ from src.tools.builtin.computer_use.driver import (
 )
 
 
+# Long text is typed in bounded chunks: one huge argv/IPC payload can hit
+# EAGAIN (os error 11) or exceed the per-call timeout inside the driver.
+_TYPE_CHUNK_CHARS = 400
+_TYPE_TOTAL_BUDGET_SECONDS = 120.0
+
+
 class ComputerActTool(Tool):
     name = "computer_act"
     action = "interact"
@@ -500,6 +506,37 @@ class ComputerActTool(Tool):
                     )
 
     @staticmethod
+    def _type_in_chunks(args: dict[str, Any]) -> str:
+        """Type long text in bounded chunks; stop at the first failure, never retry."""
+        text = str(args["text"])
+        chunks = [text[i:i + _TYPE_CHUNK_CHARS] for i in range(0, len(text), _TYPE_CHUNK_CHARS)]
+        deadline = time.monotonic() + _TYPE_TOTAL_BUDGET_SECONDS
+        sent = 0
+        last_output = ""
+        for index, chunk in enumerate(chunks, start=1):
+            if time.monotonic() > deadline:
+                raise CuaDriverError(
+                    f"Typing stopped after {sent} of {len(text)} characters: total time budget exceeded. "
+                    "The text on screen is partial; do not resend the whole text."
+                )
+            chunk_args = {**args, "text": chunk}
+            if index > 1:
+                # Only the first chunk may carry a focus point; later chunks go to the focused target.
+                for key in ("x", "y", "coordinate_frame"):
+                    chunk_args.pop(key, None)
+            try:
+                last_output = call_driver("type_text", chunk_args, timeout=15)
+            except CuaDriverError as exc:
+                raise CuaDriverError(
+                    f"Typing stopped after {sent} of {len(text)} characters (chunk {index}/{len(chunks)}). "
+                    "The text on screen is partial and the failing chunk may or may not have been typed. "
+                    f"Do not resend the whole text. Original error: {exc}"
+                ) from exc
+            sent += len(chunk)
+            time.sleep(0.05)
+        return last_output
+
+    @staticmethod
     def _save_pointer_state(path: Path, state: dict[str, Any]) -> None:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -701,10 +738,22 @@ class ComputerActTool(Tool):
                 self._save_pointer_state(state_path, pointer_state)
 
             delivery_mode_escalated = False
+            chunked_typing = (
+                action == "type_text"
+                and not element_token
+                and isinstance(args.get("text"), str)
+                and len(args["text"]) > _TYPE_CHUNK_CHARS
+            )
             try:
-                output = call_driver(action, args, timeout=20)
+                output = (
+                    self._type_in_chunks(args) if chunked_typing
+                    else call_driver(action, args, timeout=20)
+                )
             except CuaDriverError as exc:
                 detail = str(exc)
+                if chunked_typing:
+                    # Part of the text may already be on screen. Never replay it.
+                    raise
                 # Auto-escalate only when the driver explicitly rejects background
                 # desktop input and recommends foreground delivery. Keep this to one
                 # internal retry to avoid making the model repeat a protected click.

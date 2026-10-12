@@ -1,0 +1,428 @@
+--- /tmp/claude-0/-home-claude/0b39e2ff-ed9c-58ba-8488-a07c2311b27a/scratchpad/orig/act.py	2026-10-13 00:56:03.582767232 +0330
++++ /tmp/claude-0/-home-claude/0b39e2ff-ed9c-58ba-8488-a07c2311b27a/scratchpad/repo/src/tools/builtin/computer_use/act.py	2026-10-13 01:11:12.289388451 +0330
+@@ -13,6 +13,12 @@
+ )
+ 
+ 
++# Long text is typed in bounded chunks: one huge argv/IPC payload can hit
++# EAGAIN (os error 11) or exceed the per-call timeout inside the driver.
++_TYPE_CHUNK_CHARS = 400
++_TYPE_TOTAL_BUDGET_SECONDS = 120.0
++
++
+ class ComputerActTool(Tool):
+     name = "computer_act"
+     action = "interact"
+@@ -500,6 +506,37 @@
+                     )
+ 
+     @staticmethod
++    def _type_in_chunks(args: dict[str, Any]) -> str:
++        """Type long text in bounded chunks; stop at the first failure, never retry."""
++        text = str(args["text"])
++        chunks = [text[i:i + _TYPE_CHUNK_CHARS] for i in range(0, len(text), _TYPE_CHUNK_CHARS)]
++        deadline = time.monotonic() + _TYPE_TOTAL_BUDGET_SECONDS
++        sent = 0
++        last_output = ""
++        for index, chunk in enumerate(chunks, start=1):
++            if time.monotonic() > deadline:
++                raise CuaDriverError(
++                    f"Typing stopped after {sent} of {len(text)} characters: total time budget exceeded. "
++                    "The text on screen is partial; do not resend the whole text."
++                )
++            chunk_args = {**args, "text": chunk}
++            if index > 1:
++                # Only the first chunk may carry a focus point; later chunks go to the focused target.
++                for key in ("x", "y", "coordinate_frame"):
++                    chunk_args.pop(key, None)
++            try:
++                last_output = call_driver("type_text", chunk_args, timeout=15)
++            except CuaDriverError as exc:
++                raise CuaDriverError(
++                    f"Typing stopped after {sent} of {len(text)} characters (chunk {index}/{len(chunks)}). "
++                    "The text on screen is partial and the failing chunk may or may not have been typed. "
++                    f"Do not resend the whole text. Original error: {exc}"
++                ) from exc
++            sent += len(chunk)
++            time.sleep(0.05)
++        return last_output
++
++    @staticmethod
+     def _save_pointer_state(path: Path, state: dict[str, Any]) -> None:
+         try:
+             path.parent.mkdir(parents=True, exist_ok=True)
+@@ -701,10 +738,22 @@
+                 self._save_pointer_state(state_path, pointer_state)
+ 
+             delivery_mode_escalated = False
++            chunked_typing = (
++                action == "type_text"
++                and not element_token
++                and isinstance(args.get("text"), str)
++                and len(args["text"]) > _TYPE_CHUNK_CHARS
++            )
+             try:
+-                output = call_driver(action, args, timeout=20)
++                output = (
++                    self._type_in_chunks(args) if chunked_typing
++                    else call_driver(action, args, timeout=20)
++                )
+             except CuaDriverError as exc:
+                 detail = str(exc)
++                if chunked_typing:
++                    # Part of the text may already be on screen. Never replay it.
++                    raise
+                 # Auto-escalate only when the driver explicitly rejects background
+                 # desktop input and recommends foreground delivery. Keep this to one
+                 # internal retry to avoid making the model repeat a protected click.
+--- /tmp/claude-0/-home-claude/0b39e2ff-ed9c-58ba-8488-a07c2311b27a/scratchpad/orig/computer_use.py	2026-10-13 00:56:03.582805187 +0330
++++ /tmp/claude-0/-home-claude/0b39e2ff-ed9c-58ba-8488-a07c2311b27a/scratchpad/repo/src/tools/builtin/computer_use/computer_use.py	2026-10-13 01:11:12.288776962 +0330
+@@ -43,6 +43,7 @@
+         "Controls are snapshot-scoped. For click/type, prefer target='exact visible label' when it uniquely identifies the intended control; otherwise use an element number from the latest capture, never guess an ID. Make only one Computer Use call per model turn; use action='sequence' for 2-6 predictable steps so GUI calls do not race each other. "
+         "Use action='type', target='field label', text='…' to type into an accessible field. If the field is visible but missing from the controls list, use coordinate=[x,y] from the latest screenshot; the tool focuses that point before typing. For action='scroll', use coordinate=[x,y] inside the intended scrollable area when it is not inferable from current accessibility state; the driver requires an explicit scroll anchor. "
+         "For continuous pointer gestures—drawing in Paint, dragging objects, selecting regions—use action='drag' with from_coordinate=[x,y] and to_coordinate=[x,y] from the latest screenshot. Each drag is a real press-move-release gesture; use separate strokes for separate drawing segments. "
++        "Before the first drag in a drawing app, capture mode='vision' (it overlays a labeled 100-pixel grid) and choose BOTH endpoints inside the drawing canvas, never on a toolbar or ribbon. A toolbar item reported as selected/focused is NOT proof the tool is active: read the application's own status text or verify visually. "
+         "Use action='sequence' for 2-6 predictable steps with label targets; it refreshes state between steps and stops on an ambiguous target or failure. Keep decisions requiring visual interpretation or user input (for example verification codes) as separate turns. "
+         "After meaningful actions, review the returned fresh screenshot and controls. If screen_hash_changed is false, do not repeat the same click; re-capture/re-evaluate the current window. 'Dispatched' only means an input was sent, not that it worked; confirm the visible result before continuing or claiming success. "
+         "If the user replies with a value you requested (especially an OTP), first capture the current UI and resume the pending flow; do not navigate or launch another tab just because the reply is short. "
+@@ -566,6 +567,81 @@
+         ]
+         return matches[0]["checked"] if len(matches) == 1 else None
+ 
++    _SETTLE_ACTIONS = frozenset({
++        "click", "double_click", "right_click", "middle_click", "drag", "scroll",
++    })
++    _SETTLE_DELAYS = (0.3, 0.7)
++
++    def _capture_settled(
++        self, action: str, before_hash: Any, capture_kwargs: dict[str, Any],
++    ) -> ToolResult:
++        """Capture after an input, giving the app a bounded time to repaint.
++
++        Only re-CAPTURES; the input is never re-sent. Apps (and Wayland frame delivery)
++        often repaint a few hundred ms after a drag/click, so an immediate capture
++        wrongly looked like "nothing happened".
++        """
++        wants_pixels = (
++            action in self._SETTLE_ACTIONS
++            and isinstance(before_hash, str)
++            and str(capture_kwargs.get("mode") or "som").strip().casefold() != "ax"
++        )
++        if wants_pixels:
++            time.sleep(0.15)
++        captured = self._capture(**capture_kwargs)
++        if not wants_pixels:
++            return captured
++        for delay in self._SETTLE_DELAYS:
++            if not captured.success:
++                break
++            after_hash = captured.content.get("screenshot_hash") if isinstance(captured.content, dict) else None
++            if not isinstance(after_hash, str) or after_hash != before_hash:
++                break
++            time.sleep(delay)
++            captured = self._capture(**capture_kwargs)
++        return captured
++
++    @staticmethod
++    def _control_at_point(elements: Any, x: float, y: float) -> str | None:
++        """Label of the smallest listed control whose bounds contain (x, y)."""
++        best: str | None = None
++        best_area = 0.0
++        for item in elements if isinstance(elements, list) else []:
++            if not isinstance(item, dict) or not isinstance(item.get("bounds"), dict):
++                continue
++            try:
++                bx, by, bw, bh = (float(item["bounds"][key]) for key in ("x", "y", "w", "h"))
++            except (KeyError, TypeError, ValueError):
++                continue
++            if bw <= 0 or bh <= 0 or not (bx <= x < bx + bw and by <= y < by + bh):
++                continue
++            if best is None or bw * bh < best_area:
++                best = str(item.get("label") or item.get("role") or "control")
++                best_area = bw * bh
++        return best
++
++    # Roles for which AT-SPI SELECTED genuinely is the state (a chosen tab or row).
++    _SELECTION_STATE_ROLES = frozenset({
++        "page tab", "tab", "list item", "tree item", "option", "table cell",
++        "table row", "menu item", "combo box",
++    })
++
++    @staticmethod
++    def _selected_control_state(elements: Any, role: str, label: str) -> bool | None:
++        """Read the SELECTED flag of exactly one matching control, else None."""
++        if not isinstance(elements, list):
++            return None
++        wanted_role = str(role or "").strip().casefold()
++        wanted_label = str(label or "").strip().casefold()
++        matches = [
++            item for item in elements
++            if isinstance(item, dict)
++            and str(item.get("role") or "").strip().casefold() == wanted_role
++            and str(item.get("label") or "").strip().casefold() == wanted_label
++            and isinstance(item.get("selected"), bool)
++        ]
++        return matches[0]["selected"] if len(matches) == 1 else None
++
+     def _capture(
+         self,
+         *,
+@@ -680,7 +756,7 @@
+             # A failed preliminary query already contains the concrete error; reuse it
+             # and go directly to the existing unfiltered recovery instead of issuing
+             # the same failing inspection twice.
+-            inspect_title = "" if pid is not None and window_id is not None else hint
++            inspect_title = "" if pid is not None and window_id is not None else title_hint
+             if selection is not None and not selection.success:
+                 inspected = selection
+             else:
+@@ -1015,8 +1091,14 @@
+                     where = ""
+                 role = str(e.get("role") or "").casefold()
+                 selection = ""
+-                if role in {"check box", "toggle button", "radio button"} and isinstance(e.get("selected"), bool):
+-                    selection = " [SELECTED]" if e["selected"] else " [not selected]"
++                if role in {"check box", "toggle button", "radio button"}:
++                    if isinstance(e.get("checked"), bool):
++                        selection = " [CHECKED]" if e["checked"] else " [unchecked]"
++                    elif isinstance(e.get("selected"), bool):
++                        # SELECTED is focus/selection, not proof the tool/option is active.
++                        selection = (
++                            " [focus-selected: NOT proof it is active]" if e["selected"] else " [not selected]"
++                        )
+                 lines.append(f"#{e['id']} {e.get('role', '')} \"{label}\"{selection}{where}")
+             content["elements_text"] = "\n".join(lines)
+             summary += (
+@@ -2730,6 +2812,19 @@
+                                 "label": str(record.get("label") or ""),
+                                 "checked_before": checked_before if isinstance(checked_before, bool) else None,
+                             }
++                        elif (
++                            isinstance(record.get("selected"), bool)
++                            and not isinstance(record.get("checked"), bool)
++                            and role not in self._SELECTION_STATE_ROLES
++                        ):
++                            # A button-like control that only reports SELECTED. For these
++                            # roles SELECTED is focus/selection, not "the action took effect".
++                            toggle_target = {
++                                "role": str(record.get("role") or ""),
++                                "label": str(record.get("label") or ""),
++                                "checked_before": None,
++                                "selected_only": True,
++                            }
+                 result = self._act_once(action, **kwargs)
+                 if not result.success:
+                     refreshed = self._recover_blocked_coordinate_action(action, result, before_state)
+@@ -2743,16 +2838,31 @@
+                 _state_path, state = self._current_state()
+                 target = state.get("latest_computer_use_target", {})
+                 target = target if isinstance(target, dict) else {}
+-                captured = self._capture(
+-                    mode=str(kwargs.get("mode") or "som"),
+-                    pid=target.get("pid"),
+-                    window_id=target.get("window_id"),
+-                    max_results=kwargs.get("max_results", 24),
+-                    include_windows=bool(kwargs.get("include_windows", True)),
++                captured = self._capture_settled(
++                    action, before_screen_hash,
++                    dict(
++                        mode=str(kwargs.get("mode") or "som"),
++                        pid=target.get("pid"),
++                        window_id=target.get("window_id"),
++                        max_results=kwargs.get("max_results", 24),
++                        include_windows=bool(kwargs.get("include_windows", True)),
++                    ),
+                 )
+                 semantic_verification = None
+                 semantic_no_change = False
+                 semantic_unavailable = False
++                if (
++                    toggle_target is not None and toggle_target.get("selected_only")
++                    and captured.success
++                ):
++                    # Only the "became/remained selected" signature is unverifiable.
++                    # A selected-capable button that is not selected afterwards is
++                    # judged by the ordinary visual evidence.
++                    if self._selected_control_state(
++                        captured.content.get("elements", []),
++                        toggle_target["role"], toggle_target["label"],
++                    ) is not True:
++                        toggle_target = None
+                 if toggle_target is not None and captured.success:
+                     checked_after = self._checked_control_state(
+                         captured.content.get("elements", []),
+@@ -2888,6 +2998,24 @@
+                         elif screen_hash_changed is True:
+                             guard_state.pop("last_unverified_pixel_action", None)
+                         self._save_state(guard_path, guard_state)
++                if action == "drag" and screen_hash_changed is False:
++                    owner = None
++                    try:
++                        start = kwargs.get("from_coordinate")
++                        owner = self._control_at_point(
++                            captured.content.get("elements", []), float(start[0]), float(start[1]),
++                        )
++                    except (TypeError, ValueError, IndexError):
++                        owner = None
++                    drag_hint = (
++                        "The drag was delivered but the window did not change even after waiting. "
++                        + (f"Its start point lies on the control '{owner}', not on a drawing surface; "
++                           if owner else "")
++                        + "Capture mode='vision' (labeled 100px grid), choose start/end points clearly inside the "
++                        "canvas, and confirm the active tool from the app's own status text before drawing. "
++                        "Do not repeat the same drag."
++                    )
++                    metadata["recovery_hint"] = drag_hint
+                 if effect_unverified and not semantic_no_change:
+                     metadata["verification_warning"] = (
+                         "No visible screen change followed a state-changing interaction; do not repeat the same input."
+--- /tmp/claude-0/-home-claude/0b39e2ff-ed9c-58ba-8488-a07c2311b27a/scratchpad/orig/driver.py	2026-10-13 00:56:03.582871645 +0330
++++ /tmp/claude-0/-home-claude/0b39e2ff-ed9c-58ba-8488-a07c2311b27a/scratchpad/repo/src/tools/builtin/computer_use/driver.py	2026-10-13 01:11:12.289765791 +0330
+@@ -199,6 +199,44 @@
+     return env
+ 
+ 
++def _kill_process_group(process: subprocess.Popen) -> None:
++    # The helper runs in its own session, so this only ever kills that one
++    # `cua-driver call` client (and anything it spawned), never the daemon,
++    # the browser, or other user processes.
++    try:
++        os.killpg(process.pid, 9)
++    except (ProcessLookupError, PermissionError, OSError):
++        try:
++            process.kill()
++        except OSError:
++            pass
++
++
++def _run_bounded(command: list[str], timeout: float) -> subprocess.CompletedProcess:
++    """Run a helper with a hard deadline, no inherited stdin, and cleanup on timeout."""
++    process = subprocess.Popen(
++        command,
++        stdin=subprocess.DEVNULL,
++        stdout=subprocess.PIPE,
++        stderr=subprocess.PIPE,
++        text=True,
++        start_new_session=True,
++    )
++    try:
++        stdout, stderr = process.communicate(timeout=timeout)
++    except subprocess.TimeoutExpired:
++        _kill_process_group(process)
++        try:
++            process.communicate(timeout=2.0)
++        except Exception:
++            pass
++        raise subprocess.TimeoutExpired(command, timeout)
++    except BaseException:
++        _kill_process_group(process)
++        raise
++    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
++
++
+ def _daemon_status(executable: str) -> tuple[bool, str]:
+     try:
+         completed = subprocess.run(
+@@ -227,15 +265,23 @@
+         socket_path = Path.home() / ".cache" / "cua-driver" / "cua-driver.sock"
+         try:
+             socket_path.parent.mkdir(parents=True, exist_ok=True)
+-            subprocess.Popen(
+-                [executable, "serve", "--socket", str(socket_path)],
+-                stdin=subprocess.DEVNULL,
+-                stdout=subprocess.DEVNULL,
+-                stderr=subprocess.DEVNULL,
+-                env=env,
+-                close_fds=True,
+-                start_new_session=True,
+-            )
++            try:
++                log_target: Any = open(socket_path.parent / "daemon.log", "ab")
++            except OSError:
++                log_target = subprocess.DEVNULL
++            try:
++                process = subprocess.Popen(
++                    [executable, "serve", "--socket", str(socket_path)],
++                    stdin=subprocess.DEVNULL,
++                    stdout=log_target,
++                    stderr=log_target,
++                    env=env,
++                    close_fds=True,
++                    start_new_session=True,
++                )
++            finally:
++                if log_target is not subprocess.DEVNULL:
++                    log_target.close()
+         except OSError as exc:
+             raise CuaDriverError(
+                 f"Cua Driver daemon could not be started automatically: {exc}"
+@@ -246,6 +292,13 @@
+             running, _detail = _daemon_status(executable)
+             if running:
+                 return
++            exit_code = process.poll()
++            if exit_code not in (None, 0):
++                raise CuaDriverError(
++                    f"Cua Driver daemon exited immediately with code {exit_code}. "
++                    "See ~/.cache/cua-driver/daemon.log and run cua-driver doctor in the "
++                    f"logged-in desktop session. Initial status: {status_text[:300]}"
++                )
+             time.sleep(0.2)
+ 
+         raise CuaDriverError(
+@@ -331,13 +384,7 @@
+ 
+     def invoke() -> subprocess.CompletedProcess[str]:
+         try:
+-            return subprocess.run(
+-                command,
+-                capture_output=True,
+-                text=True,
+-                timeout=max(1.0, min(float(timeout), 60.0)),
+-                check=False,
+-            )
++            return _run_bounded(command, max(1.0, min(float(timeout), 60.0)))
+         except subprocess.TimeoutExpired as exc:
+             raise CuaDriverError(
+                 f"Cua Driver action '{name}' timed out after {timeout:g} seconds."
+--- /tmp/claude-0/-home-claude/0b39e2ff-ed9c-58ba-8488-a07c2311b27a/scratchpad/orig/inspect.py	2026-10-13 00:56:03.582890482 +0330
++++ /tmp/claude-0/-home-claude/0b39e2ff-ed9c-58ba-8488-a07c2311b27a/scratchpad/repo/src/tools/builtin/computer_use/inspect.py	2026-10-13 01:11:12.290300620 +0330
+@@ -484,6 +484,22 @@
+         return "window" if local_hits > desktop_hits else "desktop"
+ 
+     @staticmethod
++    def _checked_from_states(item: dict[str, Any]) -> bool | None:
++        """Read CHECKED from a driver-provided AT-SPI state list (if that is its schema)."""
++        for key in ("states", "state", "state_set", "flags"):
++            states = item.get(key)
++            if isinstance(states, (list, tuple, set)) and states:
++                names = {
++                    _normal(name).replace("_", " ").replace("-", " ")
++                    for name in states if isinstance(name, str)
++                }
++                if names & {"checked", "pressed"}:
++                    return True
++                if "checkable" in names:
++                    return False
++        return None
++
++    @staticmethod
+     def _rank_elements(payload: dict[str, Any], query: str, limit: int = 8) -> list[dict[str, Any]]:
+         items = payload.get("elements", [])
+         if not isinstance(items, list):
+@@ -726,10 +742,13 @@
+                 # Checkbox/toggle selection is state, not merely a successful click.
+                 # Keep it so the model can see when a drawing tool is already active.
+                 row["selected"] = item["selected"]
+-            if isinstance(item.get("checked"), bool):
++            checked_value = item.get("checked")
++            if not isinstance(checked_value, bool):
++                checked_value = ComputerInspectTool._checked_from_states(item)
++            if isinstance(checked_value, bool):
+                 # AT-SPI's CHECKED state is distinct from SELECTED (often focus/selection).
+                 # Preserve it separately; never infer checkbox state from `selected`.
+-                row["checked"] = item["checked"]
++                row["checked"] = checked_value
+             if isinstance(frame, dict):
+                 row["frame"] = {key: frame[key] for key in ("x", "y", "w", "h") if key in frame}
+                 row["frame_coordinate_space"] = frame_space or "desktop"

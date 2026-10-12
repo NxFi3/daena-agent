@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -484,6 +485,43 @@ class ComputerInspectTool(Tool):
         return "window" if local_hits > desktop_hits else "desktop"
 
     @staticmethod
+    def _wayland_window_top_inset() -> int:
+        """Return the compositor titlebar inset for full-window Wayland screenshots.
+
+        On GNOME/Wayland, screenshots include the server-side titlebar while native
+        AT-SPI child frames are relative to the client surface. The screenshot and
+        frame_note currently claim the same origin, but Paint demonstrates a 38 px
+        mismatch. Allow tuning for different themes with DAENA_CUA_WAYLAND_TOP_INSET.
+        """
+        is_wayland = (
+            str(os.environ.get("XDG_SESSION_TYPE", "")).strip().casefold() == "wayland"
+            or bool(os.environ.get("WAYLAND_DISPLAY"))
+        )
+        if not is_wayland:
+            return 0
+        try:
+            inset = int(os.environ.get("DAENA_CUA_WAYLAND_TOP_INSET", "38"))
+        except (TypeError, ValueError):
+            inset = 38
+        return max(0, min(100, inset))
+
+    @staticmethod
+    def _checked_from_states(item: dict[str, Any]) -> bool | None:
+        """Read CHECKED from a driver-provided AT-SPI state list (if that is its schema)."""
+        for key in ("states", "state", "state_set", "flags"):
+            states = item.get(key)
+            if isinstance(states, (list, tuple, set)) and states:
+                names = {
+                    _normal(name).replace("_", " ").replace("-", " ")
+                    for name in states if isinstance(name, str)
+                }
+                if names & {"checked", "pressed"}:
+                    return True
+                if "checkable" in names:
+                    return False
+        return None
+
+    @staticmethod
     def _rank_elements(payload: dict[str, Any], query: str, limit: int = 8) -> list[dict[str, Any]]:
         items = payload.get("elements", [])
         if not isinstance(items, list):
@@ -726,12 +764,20 @@ class ComputerInspectTool(Tool):
                 # Checkbox/toggle selection is state, not merely a successful click.
                 # Keep it so the model can see when a drawing tool is already active.
                 row["selected"] = item["selected"]
-            if isinstance(item.get("checked"), bool):
+            checked_value = item.get("checked")
+            if not isinstance(checked_value, bool):
+                checked_value = ComputerInspectTool._checked_from_states(item)
+            if isinstance(checked_value, bool):
                 # AT-SPI's CHECKED state is distinct from SELECTED (often focus/selection).
                 # Preserve it separately; never infer checkbox state from `selected`.
-                row["checked"] = item["checked"]
+                row["checked"] = checked_value
             if isinstance(frame, dict):
-                row["frame"] = {key: frame[key] for key in ("x", "y", "w", "h") if key in frame}
+                normalized_frame = {key: frame[key] for key in ("x", "y", "w", "h") if key in frame}
+                if frame_space == "window":
+                    inset = ComputerInspectTool._wayland_window_top_inset()
+                    if inset and isinstance(normalized_frame.get("y"), (int, float)):
+                        normalized_frame["y"] = round(float(normalized_frame["y"]) + inset, 2)
+                row["frame"] = normalized_frame
                 row["frame_coordinate_space"] = frame_space or "desktop"
             candidates.append((score, order, row))
 

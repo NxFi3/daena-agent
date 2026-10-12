@@ -199,6 +199,44 @@ def _desktop_session_environment() -> dict[str, str]:
     return env
 
 
+def _kill_process_group(process: subprocess.Popen) -> None:
+    # The helper runs in its own session, so this only ever kills that one
+    # `cua-driver call` client (and anything it spawned), never the daemon,
+    # the browser, or other user processes.
+    try:
+        os.killpg(process.pid, 9)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            process.kill()
+        except OSError:
+            pass
+
+
+def _run_bounded(command: list[str], timeout: float) -> subprocess.CompletedProcess:
+    """Run a helper with a hard deadline, no inherited stdin, and cleanup on timeout."""
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_process_group(process)
+        try:
+            process.communicate(timeout=2.0)
+        except Exception:
+            pass
+        raise subprocess.TimeoutExpired(command, timeout)
+    except BaseException:
+        _kill_process_group(process)
+        raise
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
 def _daemon_status(executable: str) -> tuple[bool, str]:
     try:
         completed = subprocess.run(
@@ -227,15 +265,23 @@ def _ensure_daemon_running(executable: str) -> None:
         socket_path = Path.home() / ".cache" / "cua-driver" / "cua-driver.sock"
         try:
             socket_path.parent.mkdir(parents=True, exist_ok=True)
-            subprocess.Popen(
-                [executable, "serve", "--socket", str(socket_path)],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                env=env,
-                close_fds=True,
-                start_new_session=True,
-            )
+            try:
+                log_target: Any = open(socket_path.parent / "daemon.log", "ab")
+            except OSError:
+                log_target = subprocess.DEVNULL
+            try:
+                process = subprocess.Popen(
+                    [executable, "serve", "--socket", str(socket_path)],
+                    stdin=subprocess.DEVNULL,
+                    stdout=log_target,
+                    stderr=log_target,
+                    env=env,
+                    close_fds=True,
+                    start_new_session=True,
+                )
+            finally:
+                if log_target is not subprocess.DEVNULL:
+                    log_target.close()
         except OSError as exc:
             raise CuaDriverError(
                 f"Cua Driver daemon could not be started automatically: {exc}"
@@ -246,6 +292,13 @@ def _ensure_daemon_running(executable: str) -> None:
             running, _detail = _daemon_status(executable)
             if running:
                 return
+            exit_code = process.poll()
+            if exit_code not in (None, 0):
+                raise CuaDriverError(
+                    f"Cua Driver daemon exited immediately with code {exit_code}. "
+                    "See ~/.cache/cua-driver/daemon.log and run cua-driver doctor in the "
+                    f"logged-in desktop session. Initial status: {status_text[:300]}"
+                )
             time.sleep(0.2)
 
         raise CuaDriverError(
@@ -331,13 +384,7 @@ def call_driver(
 
     def invoke() -> subprocess.CompletedProcess[str]:
         try:
-            return subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                timeout=max(1.0, min(float(timeout), 60.0)),
-                check=False,
-            )
+            return _run_bounded(command, max(1.0, min(float(timeout), 60.0)))
         except subprocess.TimeoutExpired as exc:
             raise CuaDriverError(
                 f"Cua Driver action '{name}' timed out after {timeout:g} seconds."
