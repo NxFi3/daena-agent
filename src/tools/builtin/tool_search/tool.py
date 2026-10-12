@@ -10,10 +10,11 @@ class ToolSearch(Tool):
     """Find relevant runtime tools and activate their schemas for the next turn."""
 
     name = "tool_search"
+    model_exposure = "always"
     action = "search"
     description = (
-        "Search the agent's full tool catalog for an additional capability not covered by the "
-        "always-available core tools for shell commands, file operations, and managed processes. "
+        "Search the agent's full tool catalog for a capability whose schema is not currently exposed. "
+        "Some tools are always exposed; specialized capabilities are loaded on demand. "
         "Use this when the needed tool is not currently exposed. "
         "Write a short natural-language query describing the intended outcome or action, "
         "not merely the name of a tool. Matching tools are made callable on the next turn, "

@@ -9,6 +9,7 @@ class ProcessWrite(Tool):
     # ToolManager replaces this with its session-scoped ProcessManager.
     process_manager = PROCESS_MANAGER
     name = "process_write"
+    model_exposure = "always"
     action = "modify"
 
     description = (

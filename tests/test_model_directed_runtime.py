@@ -789,3 +789,116 @@ def test_tool_failure_metrics_are_grouped_by_error_type(tmp_path):
         assert metrics["tool_failures_by_error_type"] == {"file_not_found": 1}
     finally:
         loop.close()
+
+
+def test_computer_use_limits_iterations_and_blocks_repeated_navigation(tmp_path):
+    loop = make_loop(tmp_path, {
+        "max_agent_iterations": 100,
+        "max_auto_continuations": 4,
+        "computer_use_max_iterations": 7,
+    })
+    call = ToolCall(
+        name="computer_use", id="navigate-once", valid=True,
+        args={"action": "navigate", "url": "https://Example.com/login/"},
+    )
+    try:
+        allowed, blocked = loop._classify_calls([call])
+        assert allowed == [0]
+        assert blocked == {}
+        assert loop.max_iterations == 7
+        assert loop.max_auto_continuations == 0
+
+        repeated = ToolCall(
+            name="computer_use", id="navigate-again", valid=True,
+            args={"action": "navigate", "url": "https://example.com/login"},
+        )
+        allowed, blocked = loop._classify_calls([repeated])
+        assert allowed == []
+        assert blocked[0].content["error"]["type"] == "repeated_computer_navigation"
+        assert loop.get_metrics()["computer_use_repeated_navigation_blocks"] == 1
+
+        loop._reset_run_state()
+        assert loop.max_iterations == 100
+        assert loop.max_auto_continuations == 4
+        assert loop._computer_use_navigation_targets == set()
+    finally:
+        loop.close()
+
+
+def test_failed_computer_navigation_allows_one_bounded_recovery_retry(tmp_path):
+    loop = make_loop(tmp_path, {"max_agent_iterations": 50, "computer_use_max_navigations_per_host": 4})
+    url = "https://recovery.example/login"
+    try:
+        first = ToolCall(name="computer_use", id="navigate-failed", valid=True,
+                         args={"action": "navigate", "url": url})
+        allowed, blocked = loop._classify_calls([first])
+        assert allowed == [0] and blocked == {}
+        loop._apply_result(first, ToolResult(
+            success=False, name="computer_use",
+            content={"success": False, "error": {"type": "navigation_failed", "message": "DNS failure"}},
+            metadata={}, summary="Navigation failed",
+        ), 1)
+
+        retry = ToolCall(name="computer_use", id="navigate-retry", valid=True,
+                         args={"action": "navigate", "url": url})
+        allowed, blocked = loop._classify_calls([retry])
+        assert allowed == [0] and blocked == {}
+        loop._apply_result(retry, ToolResult(
+            success=False, name="computer_use",
+            content={"success": False, "error": {"type": "navigation_failed", "message": "DNS failure"}},
+            metadata={}, summary="Navigation failed again",
+        ), 2)
+
+        third = ToolCall(name="computer_use", id="navigate-loop", valid=True,
+                         args={"action": "navigate", "url": url})
+        allowed, blocked = loop._classify_calls([third])
+        assert allowed == []
+        assert blocked[0].content["error"]["type"] == "repeated_computer_navigation"
+    finally:
+        loop.close()
+
+
+def test_computer_use_calls_cannot_race_in_one_model_turn(tmp_path):
+    loop = make_loop(tmp_path)
+    calls = [
+        ToolCall(name="computer_use", id="capture", valid=True, args={"action": "capture"}),
+        ToolCall(name="computer_use", id="click", valid=True, args={"action": "click", "target": "Sign in"}),
+    ]
+    try:
+        allowed, blocked = loop._classify_calls(calls)
+        assert allowed == [0]
+        assert blocked[1].content["error"]["type"] == "multiple_computer_use_actions_in_one_turn"
+        assert loop.get_metrics()["computer_use_parallel_action_blocks"] == 1
+    finally:
+        loop.close()
+
+
+def test_computer_use_navigation_loop_stops_repeated_host_hops(tmp_path):
+    loop = make_loop(tmp_path, {
+        "max_agent_iterations": 100,
+        "computer_use_max_navigations_per_host": 3,
+    })
+    try:
+        for number, url in enumerate((
+            "https://bank.example/",
+            "https://bank.example/login",
+            "https://bank.example/auth/callback",
+        ), start=1):
+            call = ToolCall(
+                name="computer_use", id=f"bank-navigation-{number}", valid=True,
+                args={"action": "navigate", "url": url},
+            )
+            allowed, blocked = loop._classify_calls([call])
+            assert allowed == [0]
+            assert blocked == {}
+
+        fourth = ToolCall(
+            name="computer_use", id="bank-navigation-4", valid=True,
+            args={"action": "navigate", "url": "https://bank.example/account"},
+        )
+        allowed, blocked = loop._classify_calls([fourth])
+        assert allowed == []
+        assert blocked[0].content["error"]["type"] == "computer_use_navigation_loop"
+        assert loop.get_metrics()["computer_use_navigation_loop_blocks"] == 1
+    finally:
+        loop.close()

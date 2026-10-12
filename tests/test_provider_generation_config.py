@@ -72,3 +72,26 @@ def test_ollama_prepare_messages_preserves_assistant_thinking():
         "thinking": "current reasoning",
     }
     assert OllamaProvider._prepare_messages([message]) == [message]
+
+
+def test_ollama_performance_metrics_report_prompt_and_generation_costs():
+    from types import SimpleNamespace
+    from src.engine.providers.builtin.ollama.ollama import OllamaProvider
+
+    response = SimpleNamespace(
+        prompt_eval_count=1200,
+        eval_count=60,
+        prompt_eval_duration=2_000_000_000,
+        eval_duration=3_000_000_000,
+        load_duration=500_000_000,
+        total_duration=5_600_000_000,
+    )
+    metrics = OllamaProvider._performance_metrics(response)
+    assert metrics["prompt_tokens"] == 1200
+    assert metrics["completion_tokens"] == 60
+    assert metrics["prompt_eval_ms"] == 2000
+    assert metrics["generation_ms"] == 3000
+    assert metrics["model_load_ms"] == 500
+    assert metrics["total_ms"] == 5600
+    assert metrics["prompt_tokens_per_second"] == 600
+    assert metrics["generation_tokens_per_second"] == 20

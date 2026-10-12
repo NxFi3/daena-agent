@@ -70,6 +70,7 @@ class ApplyPatch(Tool):
     """
 
     name = "apply_patch"
+    model_exposure = "always"
     action = "modify"
 
     description = (

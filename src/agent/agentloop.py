@@ -179,6 +179,7 @@ class Loop:
             self.search_context_top_k = self.DEFAULT_SEARCH_CONTEXT_TOP_K
 
         self.max_iterations = self._read_max_iterations()
+        self._configured_max_iterations = self.max_iterations
         # Iteration budgets are work segments, not a demand for the user to
         # resubmit the task. Continue in the same live session a bounded number
         # of times, and stop if multiple complete segments make no verified
@@ -189,6 +190,7 @@ class Loop:
             )
         except (TypeError, ValueError):
             self.max_auto_continuations = 4
+        self._configured_max_auto_continuations = self.max_auto_continuations
         try:
             self.max_no_progress_segments = max(
                 1, min(5, int(self.config.get("max_no_progress_segments", 2)))
@@ -263,6 +265,24 @@ class Loop:
             self.recovery_review_interval = 6
             self.recovery_review_max_checks = 2
         self._recovery_review_count = 0
+
+        try:
+            self.computer_use_max_iterations = max(
+                4, min(40, int(self.config.get("computer_use_max_iterations", 16)))
+            )
+        except (TypeError, ValueError):
+            self.computer_use_max_iterations = 16
+        try:
+            self.computer_use_max_navigations_per_host = max(
+                1, min(5, int(self.config.get("computer_use_max_navigations_per_host", 3)))
+            )
+        except (TypeError, ValueError):
+            self.computer_use_max_navigations_per_host = 3
+        self._computer_use_mode_active = False
+        self._computer_use_navigation_targets: set[str] = set()
+        self._computer_use_navigation_hosts: dict[str, int] = {}
+        self._computer_use_navigation_retryable_targets: set[str] = set()
+        self._computer_use_navigation_retries: dict[str, int] = {}
 
         self.tool_definitions = self.tool.get_tools()
 
@@ -1040,6 +1060,85 @@ class Loop:
             summary=message,
         )
 
+    @staticmethod
+    def _computer_use_navigation_key(arguments: dict[str, Any]) -> str:
+        """Canonicalize a destination enough to catch exact navigation loops."""
+        raw = str(arguments.get("url") or "").strip()
+        parsed = urlparse(raw)
+        if parsed.scheme.casefold() not in {"http", "https"} or not parsed.netloc:
+            return raw
+        host = parsed.netloc.casefold()
+        path = parsed.path or "/"
+        if path != "/":
+            path = path.rstrip("/")
+        # Query order and case are preserved because some sites treat them as meaningful.
+        return f"{parsed.scheme.casefold()}://{host}{path}?{parsed.query}#{parsed.fragment}"
+
+    @staticmethod
+    def _computer_use_navigation_host(arguments: dict[str, Any]) -> str:
+        parsed = urlparse(str(arguments.get("url") or "").strip())
+        return str(parsed.hostname or "").casefold().rstrip(".")
+
+    @staticmethod
+    def _repeated_computer_navigation_result() -> ToolResult:
+        message = (
+            "Repeated navigation blocked: Daena already attempted this exact destination "
+            "during the current task. Do not navigate to it again. Use the screenshot and "
+            "controls from the latest result to continue in the current window, or report "
+            "the concrete blocker if the page is still unverified."
+        )
+        return ToolResult(
+            success=False,
+            name="computer_use",
+            content={"success": False, "error": {
+                "type": "repeated_computer_navigation", "message": message,
+            }},
+            metadata={"recovery_hint": (
+                "Use computer_use(action='capture') to inspect the current browser state; "
+                "do not retry the same navigate URL."
+            )},
+            summary=message,
+        )
+
+    @staticmethod
+    def _navigation_loop_result(host: str, limit: int) -> ToolResult:
+        message = (
+            f"Navigation loop guard: Daena has already attempted {limit} navigations to "
+            f"{host} during this task. Further navigation to this host is blocked for now. "
+            "Inspect the current browser window with capture and continue from its actual "
+            "controls/state; if the task is blocked, report the exact evidence instead of "
+            "cycling through URLs."
+        )
+        return ToolResult(
+            success=False,
+            name="computer_use",
+            content={"success": False, "error": {
+                "type": "computer_use_navigation_loop", "message": message,
+            }},
+            metadata={"recovery_hint": (
+                "Use computer_use(action='capture') and evidence from the current page. "
+                "Do not navigate to this host again in the current task."
+            )},
+            summary=message,
+        )
+
+    @staticmethod
+    def _multiple_computer_actions_result() -> ToolResult:
+        message = (
+            "Only one Computer Use action may execute per model turn, to prevent conflicting "
+            "clicks or navigations. Use action='sequence' for 2–6 predictable steps, or run "
+            "one action and inspect its fresh result before deciding the next step."
+        )
+        return ToolResult(
+            success=False,
+            name="computer_use",
+            content={"success": False, "error": {
+                "type": "multiple_computer_use_actions_in_one_turn", "message": message,
+            }},
+            metadata={"recovery_hint": message},
+            summary=message,
+        )
+
     def _classify_calls(
         self,
         parsed_calls: list,
@@ -1055,6 +1154,7 @@ class Loop:
         blocked_results: dict[int, ToolResult] = {}
         batch_signatures: set[str] = set()
         batch_mutation_signatures: set[str] = set()
+        batch_computer_use_seen = False
 
         for index, call in enumerate(parsed_calls):
             if not getattr(call, "valid", False):
@@ -1094,6 +1194,62 @@ class Loop:
                 )
                 self.metrics["tool_blocks"] = self.metrics.get("tool_blocks", 0) + 1
                 continue
+
+            if tool_name == "computer_use":
+                if batch_computer_use_seen:
+                    blocked_results[index] = self._multiple_computer_actions_result()
+                    self.metrics["computer_use_parallel_action_blocks"] = (
+                        self.metrics.get("computer_use_parallel_action_blocks", 0) + 1
+                    )
+                    continue
+                batch_computer_use_seen = True
+
+                if not self._computer_use_mode_active:
+                    self._computer_use_mode_active = True
+                    self.max_iterations = min(
+                        self.max_iterations, self.computer_use_max_iterations
+                    )
+                    # A GUI task must finish or report a blocker within this budget;
+                    # it must not silently roll into hundreds of extra model calls.
+                    self.max_auto_continuations = 0
+                    self.metrics["computer_use_iteration_budget"] = self.max_iterations
+                    self._emit_event(
+                        "computer_use_budget",
+                        max_iterations=self.max_iterations,
+                        auto_continuations=0,
+                    )
+
+                arguments = getattr(call, "args", {}) or {}
+                if isinstance(arguments, dict) and str(arguments.get("action") or "").casefold() == "navigate":
+                    navigation_key = self._computer_use_navigation_key(arguments)
+                    if navigation_key in self._computer_use_navigation_targets:
+                        retries_used = self._computer_use_navigation_retries.get(navigation_key, 0)
+                        can_recover = (
+                            navigation_key in self._computer_use_navigation_retryable_targets
+                            and retries_used < 1
+                        )
+                        if not can_recover:
+                            blocked_results[index] = self._repeated_computer_navigation_result()
+                            self.metrics["computer_use_repeated_navigation_blocks"] = (
+                                self.metrics.get("computer_use_repeated_navigation_blocks", 0) + 1
+                            )
+                            continue
+                        self._computer_use_navigation_retryable_targets.discard(navigation_key)
+                        self._computer_use_navigation_retries[navigation_key] = retries_used + 1
+                    else:
+                        self._computer_use_navigation_targets.add(navigation_key)
+                    navigation_host = self._computer_use_navigation_host(arguments)
+                    host_attempts = self._computer_use_navigation_hosts.get(navigation_host, 0)
+                    if navigation_host and host_attempts >= self.computer_use_max_navigations_per_host:
+                        blocked_results[index] = self._navigation_loop_result(
+                            navigation_host, self.computer_use_max_navigations_per_host
+                        )
+                        self.metrics["computer_use_navigation_loop_blocks"] = (
+                            self.metrics.get("computer_use_navigation_loop_blocks", 0) + 1
+                        )
+                        continue
+                    if navigation_host:
+                        self._computer_use_navigation_hosts[navigation_host] = host_attempts + 1
 
             signature = self._observation_signature(call)
 
@@ -1294,6 +1450,20 @@ class Loop:
         )
 
         tool_name = str(getattr(call, "name", result.name)).strip().lower()
+        if tool_name == "computer_use":
+            arguments = getattr(call, "args", {}) or {}
+            if isinstance(arguments, dict) and str(arguments.get("action") or "").casefold() == "navigate":
+                navigation_key = self._computer_use_navigation_key(arguments)
+                if navigation_key:
+                    if result.success:
+                        self._computer_use_navigation_retryable_targets.discard(navigation_key)
+                    else:
+                        # The current destination failed. Permit one bounded recovery
+                        # attempt to it or to an earlier destination from this task.
+                        self._computer_use_navigation_retryable_targets.update(
+                            self._computer_use_navigation_targets
+                        )
+                        self._computer_use_navigation_retryable_targets.add(navigation_key)
         if result.metadata.get("cached_observation"):
             pass
         else:
@@ -2684,10 +2854,10 @@ class Loop:
         working_context["execution_phase"] = self._phase
         working_context["available_tools"] = sorted(available_tool_names)
         working_context["workspace_guidance"] = (
-            "Use tools only when they materially help; answer ordinary knowledge questions directly. "
-            "Core tools for shell commands, file reading/writing/editing, patching, and managed-process "
-            "control are already available: call them directly when appropriate. Use tool_search only "
-            "when the required capability is not among the currently exposed tools; its matching schemas "
+            "Use tools only when they materially help: answer stable facts directly, but discover web research "
+            "for obscure real-world entities, uncertain claims, or details that may have changed. "
+            "Shell, file, patch, and managed-process tools marked always-exposed are available directly. "
+            "Use tool_search when the required capability is not currently exposed; its matching schemas "
             "become available on the next turn. If a search finds nothing, try a concrete alternate query "
             "before concluding a capability is unavailable. Do not guess filenames. Workspace inventory "
             "refreshes after tool results; include all observed entries when a complete list is requested. "
@@ -2703,8 +2873,9 @@ class Loop:
         )
         working_context["tool_choice"] = {
             "tool_search": (
-                "discover additional capabilities not covered by the core shell/file/process tools; "
-                "matching schemas are exposed on the next turn. Try a more concrete alternate query if needed."
+                "discover any needed capability whose schema is not currently exposed, such as web research, "
+                "desktop/browser control, or context retrieval; matching schemas are exposed on the next turn. "
+                "Try a more concrete alternate query if needed."
             )
         }
 
@@ -2871,6 +3042,16 @@ class Loop:
     ) -> None:
 
         self.agent_state.reset()
+
+        # Restore normal limits at the beginning of each new user task; GUI limits
+        # apply only after that task actually invokes Computer Use.
+        self.max_iterations = self._configured_max_iterations
+        self.max_auto_continuations = self._configured_max_auto_continuations
+        self._computer_use_mode_active = False
+        self._computer_use_navigation_targets.clear()
+        self._computer_use_navigation_hosts.clear()
+        self._computer_use_navigation_retryable_targets.clear()
+        self._computer_use_navigation_retries.clear()
 
         self.working_set.reset()
         self.tool.reset_tool_selection()

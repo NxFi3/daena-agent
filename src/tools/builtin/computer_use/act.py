@@ -30,12 +30,17 @@ class ComputerActTool(Tool):
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["click", "double_click", "right_click", "type_text", "press_key", "hotkey", "scroll"],
+                "enum": ["click", "double_click", "right_click", "drag", "type_text", "press_key", "hotkey", "scroll"],
                 "description": "Exactly one action to perform.",
             },
             "x": {"type": "integer", "description": "Desktop screenshot X coordinate for click, or focus-target for typing/keys."},
             "y": {"type": "integer", "description": "Desktop screenshot Y coordinate for pixel actions; use only from the latest screenshot."},
             "element_token": {"type": "string", "description": "Preferred exact UI element handle returned by computer_inspect. For click or type_text, use this instead of x/y."},
+            "from_x": {"type": "number", "description": "Start X for drag, from the latest desktop screenshot when coordinate_frame='desktop'."},
+            "from_y": {"type": "number", "description": "Start Y for drag."},
+            "to_x": {"type": "number", "description": "End X for drag."},
+            "to_y": {"type": "number", "description": "End Y for drag."},
+            "duration_ms": {"type": "integer", "minimum": 0, "maximum": 10000, "default": 500, "description": "Duration of drag gesture."},
             "text": {"type": "string", "description": "Text for type_text; may be combined with element_token from computer_inspect."},
             "key": {"type": "string", "description": "Single key for press_key, e.g. ENTER or ESC."},
             "keys": {
@@ -106,6 +111,21 @@ class ComputerActTool(Tool):
                 args["button"] = arguments.get("button", "left")
             return args
 
+        if action == "drag":
+            coordinates = ("from_x", "from_y", "to_x", "to_y")
+            if not all(isinstance(arguments.get(key), (int, float)) and not isinstance(arguments.get(key), bool) for key in coordinates):
+                raise ValueError("drag requires from_x/from_y and to_x/to_y from the latest screenshot.")
+            return {
+                **common,
+                "coordinate_frame": "desktop",
+                "from_x": arguments["from_x"],
+                "from_y": arguments["from_y"],
+                "to_x": arguments["to_x"],
+                "to_y": arguments["to_y"],
+                "duration_ms": max(0, min(10000, int(arguments.get("duration_ms", 500)))),
+                "button": arguments.get("button", "left"),
+            }
+
         if action == "type_text":
             text = arguments.get("text")
             if not isinstance(text, str):
@@ -114,7 +134,7 @@ class ComputerActTool(Tool):
             if "x" in arguments or "y" in arguments:
                 if not isinstance(arguments.get("x"), (int, float)) or not isinstance(arguments.get("y"), (int, float)):
                     raise ValueError("type_text requires both x and y when targeting a text field.")
-                args.update({"x": arguments["x"], "y": arguments["y"]})
+                args.update({"x": arguments["x"], "y": arguments["y"], "coordinate_frame": "desktop"})
             return args
 
         if action == "press_key":
@@ -125,7 +145,7 @@ class ComputerActTool(Tool):
             if "x" in arguments or "y" in arguments:
                 if not isinstance(arguments.get("x"), (int, float)) or not isinstance(arguments.get("y"), (int, float)):
                     raise ValueError("press_key requires both x and y when either is supplied.")
-                args.update({"x": arguments["x"], "y": arguments["y"]})
+                args.update({"x": arguments["x"], "y": arguments["y"], "coordinate_frame": "desktop"})
             return args
 
         if action == "hotkey":
@@ -136,17 +156,20 @@ class ComputerActTool(Tool):
             if "x" in arguments or "y" in arguments:
                 if not isinstance(arguments.get("x"), (int, float)) or not isinstance(arguments.get("y"), (int, float)):
                     raise ValueError("hotkey requires both x and y when either is supplied.")
-                args.update({"x": arguments["x"], "y": arguments["y"]})
+                args.update({"x": arguments["x"], "y": arguments["y"], "coordinate_frame": "desktop"})
             return args
 
         if action == "scroll":
             direction = str(arguments.get("direction") or "").strip().lower()
             if direction not in {"up", "down", "left", "right"}:
                 raise ValueError("scroll requires direction: up, down, left, or right.")
-            if "x" in arguments or "y" in arguments:
-                raise ValueError("Cua Driver scroll acts at the current pointer/focused target and does not accept x/y. Click the target first, then scroll.")
+            if not isinstance(arguments.get("x"), (int, float)) or not isinstance(arguments.get("y"), (int, float)):
+                raise ValueError("scroll requires x/y for a point inside the intended scroll area, from the latest capture.")
             return {
                 **common,
+                "x": arguments["x"],
+                "y": arguments["y"],
+                "coordinate_frame": "desktop",
                 "direction": direction,
                 "amount": max(1, min(20, int(arguments.get("amount", 3)))),
                 "by": "line",
@@ -255,6 +278,16 @@ class ComputerActTool(Tool):
                     pointer_state["last_click_timestamp"] = now
                     self._save_pointer_state(state_path, pointer_state)
                 # The accessibility token carries its own snapshot/window. Do not attach pixel target/frame fields.
+            elif action == "drag":
+                # Do not start a continuous gesture with coordinates from an unknown or
+                # missing screenshot. The driver maps these screen coordinates to its
+                # desktop target and owns the press/move/release lifetime.
+                capture_id = pointer_state.get("latest_capture_id")
+                if not isinstance(capture_id, str) or not capture_id:
+                    raise ValueError("No current desktop capture is recorded. Call computer_use(action='capture') before dragging.")
+                pointer_state["last_drag_timestamp"] = now
+                pointer_state["last_drag_capture_id"] = capture_id
+                self._save_pointer_state(state_path, pointer_state)
             elif action in click_actions:
                 # Pixel coordinates must refer to the latest exact desktop capture.
                 args["coordinate_frame"] = "desktop"
@@ -306,7 +339,7 @@ class ComputerActTool(Tool):
                     str(args.get("delivery_mode") or "background").casefold() == "background"
                     and "background_unavailable" in detail
                     and "foreground" in detail.casefold()
-                    and action in {"click", "double_click", "right_click", "type_text", "press_key", "hotkey", "scroll"}
+                    and action in {"click", "double_click", "right_click", "drag", "type_text", "press_key", "hotkey", "scroll"}
                 ):
                     args["delivery_mode"] = "foreground"
                     output = call_driver(action, args, timeout=20)
@@ -346,13 +379,13 @@ class ComputerActTool(Tool):
                 name=self.name,
                 content={
                     "action": action,
-                    "target_mode": "accessibility_element" if element_token else "pixel_coordinates" if action in click_actions else "focused_input",
+                    "target_mode": "accessibility_element" if element_token else "pixel_coordinates" if action in click_actions | {"drag"} else "focused_input",
                     "arguments": {key: value for key, value in args.items() if key != "session"},
                     "driver_output": output[:5000],
                 },
-                metadata={"kind": "computer_action", "action": action, "target_mode": "accessibility_element" if element_token else "pixel_coordinates" if action in click_actions else "focused_input", "delivery_mode_escalated": delivery_mode_escalated, "delivery_mode": args.get("delivery_mode", "background")},
+                metadata={"kind": "computer_action", "action": action, "target_mode": "accessibility_element" if element_token else "pixel_coordinates" if action in click_actions | {"drag"} else "focused_input", "delivery_mode_escalated": delivery_mode_escalated, "delivery_mode": args.get("delivery_mode", "background")},
                 summary=f"Computer action '{action}' was dispatched. This does not prove the intended UI state changed; observe and verify it.",
-                evidence={"action": action, "target_mode": "accessibility_element" if element_token else "pixel_coordinates" if action in click_actions else "focused_input", "driver_output": output[:1800]},
+                evidence={"action": action, "target_mode": "accessibility_element" if element_token else "pixel_coordinates" if action in click_actions | {"drag"} else "focused_input", "driver_output": output[:1800]},
                 effects=[{"action": "interact", "target": f"desktop:{action}"}],
             )
         except (CuaDriverError, ValueError, TypeError, KeyError) as exc:

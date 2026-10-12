@@ -22,6 +22,7 @@ class ReadFile(Tool):
     """
 
     name = "read_file"
+    model_exposure = "always"
     action = "inspect"
 
     # Reads are observations and can be repeated when the model needs to

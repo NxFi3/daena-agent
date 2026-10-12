@@ -20,6 +20,11 @@ class Tool(ABC):
 
     action: ClassVar[str] = "execute"
 
+    # "always" schemas are sent on every model turn; "search" schemas are loaded
+    # only after tool_search selects them. Keep large/specialized capabilities out
+    # of the default prompt without hard-coding their names in ToolManager.
+    model_exposure: ClassVar[str] = "search"
+
     allow_same_revision_repeat: ClassVar[bool] = False
 
     def duplicate_key(

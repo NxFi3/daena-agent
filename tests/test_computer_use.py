@@ -25,6 +25,13 @@ from src.tools.builtin.computer_use.computer_use import ComputerUseTool
 PNG_HEADER = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + (640).to_bytes(4, "big") + (480).to_bytes(4, "big") + b"test"
 
 
+@pytest.fixture(autouse=True)
+def _skip_live_cua_startup_for_unit_tests(monkeypatch):
+    # These tests mock the driver actions; keep them hermetic and independent of
+    # whether a real desktop daemon happens to be installed on the test runner.
+    monkeypatch.setattr(computer_use_module, "ensure_driver_running", lambda _session=None: None)
+
+
 def _event(role, event_type, content, step, metadata=None):
     return ContextEvent(
         role=role,
@@ -35,18 +42,62 @@ def _event(role, event_type, content, step, metadata=None):
     )
 
 
-def test_computer_tools_are_registered_and_visible_by_default(tmp_path):
+def test_computer_tool_is_registered_but_discoverable_by_default(tmp_path):
     manager = ToolManager({
         "guard_level": "strict",
         "security": {"workspace_only": True, "force_approve": True},
     })
     manager.set_workspace(str(tmp_path))
     try:
-        names = {item["function"]["name"] for item in manager.get_model_tools()}
-        assert "computer_use" in names
-        assert not ({"computer_observe", "computer_inspect", "computer_act"} & names)
+        model_names = {item["function"]["name"] for item in manager.get_model_tools()}
+        catalog_names = {item["function"]["name"] for item in manager.get_tools()}
+        assert "computer_use" in catalog_names
+        assert "computer_use" not in model_names
+        outcome = manager._search_and_activate_tools(
+            "control the desktop, click visible buttons, and inspect screenshots", top_k=5
+        )
+        assert "computer_use" in {item["name"] for item in outcome["matches"]}
+        exposed_after_search = {item["function"]["name"] for item in manager.get_model_tools()}
+        assert "computer_use" in exposed_after_search
+        assert not ({"computer_observe", "computer_inspect", "computer_act"} & exposed_after_search)
     finally:
         manager.close()
+
+
+def test_tool_model_exposure_can_be_overridden_in_config(tmp_path):
+    manager = ToolManager({
+        "guard_level": "strict",
+        "tools": {"exposure": {"computer_use": "always"}},
+        "security": {"workspace_only": True, "force_approve": True},
+    })
+    manager.set_workspace(str(tmp_path))
+    try:
+        names = {item["function"]["name"] for item in manager.get_model_tools()}
+        assert "computer_use" in names
+    finally:
+        manager.close()
+
+
+def test_computer_use_checks_driver_readiness_before_first_driver_call(tmp_path, monkeypatch):
+    tool = ComputerUseTool()
+    tool.set_workspace(tmp_path)
+    order = []
+
+    def ensure_ready(session=None):
+        order.append(("ensure_ready", session))
+
+    def fake_call(name, arguments=None, **kwargs):
+        order.append(f"driver:{name}")
+        assert name == "list_windows"
+        return '{"windows": []}'
+
+    monkeypatch.setattr(computer_use_module, "ensure_driver_running", ensure_ready)
+    monkeypatch.setattr(computer_use_module, "call_driver", fake_call)
+
+    result = tool.execute(action="list_windows")
+
+    assert result.success is True
+    assert order == [("ensure_ready", tool._observe._session_label()), "driver:list_windows"]
 
 
 def test_observe_saves_screenshot_and_returns_stm_reference(tmp_path, monkeypatch):
@@ -648,6 +699,23 @@ def test_missing_daemon_is_started_with_native_wayland_environment(tmp_path, mon
 
 
 
+def test_ensure_driver_running_recreates_named_session(monkeypatch):
+    calls = []
+    monkeypatch.setattr(driver_module, "driver_executable", lambda: "/usr/bin/cua-driver")
+    monkeypatch.setattr(driver_module, "_ensure_daemon_running", lambda executable: calls.append(("daemon", executable)))
+    monkeypatch.setattr(
+        driver_module, "call_driver",
+        lambda name, arguments=None, **kwargs: calls.append((name, dict(arguments or {}))) or '{"ok":true}',
+    )
+
+    driver_module.ensure_driver_running("daena-test-session")
+
+    assert calls == [
+        ("daemon", "/usr/bin/cua-driver"),
+        ("start_session", {"session": "daena-test-session"}),
+    ]
+
+
 def test_observe_explains_rootless_xwayland_capture_failure(tmp_path, monkeypatch):
     def fail_capture(name, arguments=None, *, timeout=30.0):
         assert name == "get_desktop_state"
@@ -706,15 +774,43 @@ def test_capture_retries_unfiltered_controls_when_query_is_missing_or_unreadable
         )
 
     tool._inspect.execute = fake_inspect
+    tool._ensure_window_front = lambda target: True
     result = tool._capture(mode="som", app="Firefox", query="phone number input")
 
     assert result.success is True
-    assert [c.get("query", "") for c in calls] == ["phone number input", ""]
+    assert [c.get("query", "") for c in calls] == ["", "phone number input", ""]
     assert result.content["query_fallback"] is True
     assert result.content["query_requested"] == "phone number input"
     assert result.content["element_count"] == 1
     assert "شماره تلفن همراه" in result.content["elements_text"]
     assert "unfiltered accessible controls" in result.content["selection_warning"]
+
+
+def test_scroll_driver_arguments_include_screenshot_scoped_anchor():
+    args = ComputerActTool._driver_args(
+        "scroll", {"direction": "down", "amount": 4, "x": 120, "y": 240}, "test-session"
+    )
+    assert args["x"] == 120 and args["y"] == 240
+    assert args["direction"] == "down" and args["amount"] == 4
+    assert args["coordinate_frame"] == "desktop"
+
+
+def test_scroll_anchor_uses_visible_accessible_content_region():
+    state = {"latest_accessibility_elements": {
+        "web": {"role": "document web", "in_web_content": True,
+                "frame": {"x": 80, "y": 120, "w": 900, "h": 600}},
+        "button": {"role": "push button", "in_web_content": True,
+                   "frame": {"x": 100, "y": 140, "w": 100, "h": 32}},
+    }}
+    assert ComputerUseTool._scroll_anchor_from_state(state) == [530.0, 420.0]
+
+
+def test_scroll_anchor_falls_back_to_small_visible_web_control():
+    state = {"latest_accessibility_elements": {
+        "link": {"role": "link", "label": "Learn more", "in_web_content": True,
+                 "frame": {"x": 1264, "y": 968, "w": 84, "h": 19}},
+    }}
+    assert ComputerUseTool._scroll_anchor_from_state(state) == [1306.0, 977.5]
 
 
 def test_navigate_opens_url_through_browser_cli_not_global_keyboard(tmp_path, monkeypatch):
@@ -735,6 +831,21 @@ def test_navigate_opens_url_through_browser_cli_not_global_keyboard(tmp_path, mo
         )
 
     tool._capture = fake_capture
+    window_rows = [
+        {"app_name": "Aparat — Mozilla Firefox", "title": "Aparat — Mozilla Firefox",
+         "pid": 4321, "window_id": 1234, "is_on_screen": True,
+         "width": 1280, "height": 720, "z_index": 3}
+    ]
+    window_calls = {"count": 0}
+
+    def windows_during_navigation():
+        window_calls["count"] += 1
+        # The browser window is not immediately visible after Popen; the navigation
+        # code should poll rather than fail after its first post-launch snapshot.
+        return [] if window_calls["count"] <= 2 else window_rows
+
+    tool._inspect._windows = windows_during_navigation
+    tool._ensure_window_front = lambda target: True
     monkeypatch.setattr(computer_use_module, "_desktop_session_environment",
                         lambda: {"DISPLAY": ":0", "XDG_RUNTIME_DIR": "/run/user/1000"})
     from unittest.mock import patch
@@ -743,10 +854,127 @@ def test_navigate_opens_url_through_browser_cli_not_global_keyboard(tmp_path, mo
         result = tool._navigate("https://aparat.com", 0, "Firefox")
 
     assert result.success is True
-    assert popen.call_args.args[0] == ["/usr/bin/firefox", "--new-tab", "https://aparat.com"]
-    assert captured["app"] == "firefox"
+    assert window_calls["count"] >= 3
+    assert popen.call_args.args[0] == ["/usr/bin/firefox", "--new-window", "https://aparat.com"]
+    assert captured["pid"] == 4321
+    assert captured["window_id"] == 1234
     assert result.content["browser"] == "firefox"
     assert result.content["url_requested"] == "https://aparat.com"
+
+
+def test_navigate_reuses_existing_browser_window_and_reports_actual_address(tmp_path, monkeypatch):
+    tool = ComputerUseTool()
+    tool.set_workspace(tmp_path)
+    tool.set_context_store(None, lambda: "reuse-browser-window-test")
+    tool._navigation_browser = lambda requested_app="": ("firefox", "/usr/bin/firefox")
+    initial = {
+        "app_name": "Old page — Mozilla Firefox", "title": "Old page — Mozilla Firefox",
+        "pid": 4321, "window_id": 1234, "is_on_screen": True,
+        "width": 1280, "height": 720, "z_index": 2,
+    }
+    navigated = {**initial, "title": "Hugging Face — Mozilla Firefox", "app_name": "Hugging Face — Mozilla Firefox"}
+    inventory_calls = {"count": 0}
+
+    def windows():
+        inventory_calls["count"] += 1
+        return [initial] if inventory_calls["count"] == 1 else [navigated]
+
+    tool._inspect._windows = windows
+    tool._ensure_window_front = lambda target: True
+    observed_capture = {
+        "window": {"app": navigated["app_name"], "title": navigated["title"], "pid": 4321, "window_id": 1234},
+        "mode": "som",
+        "elements": [
+            {"id": 1, "role": "combo box", "label": "Search with Google or enter address",
+             "value": "https://huggingface.co/settings/hardware", "enabled": True},
+        ],
+        "element_count": 1,
+    }
+    tool._capture = lambda **kwargs: ToolResult(
+        success=True, name="computer_use", content=dict(observed_capture),
+        metadata={"image_ref": "/tmp/.daena/screenshots/current.png", "image_mime_type": "image/png"},
+        summary="Captured current browser page.",
+    )
+    driver_calls = []
+    monkeypatch.setattr(
+        computer_use_module, "call_driver",
+        lambda name, arguments=None, **kwargs: driver_calls.append((name, dict(arguments or {}))) or '{"ok":true}',
+    )
+    from unittest.mock import patch
+    with patch.object(computer_use_module.subprocess, "Popen") as popen, \
+         patch.object(computer_use_module.time, "sleep", lambda *_: None):
+        result = tool._navigate("https://huggingface.co/settings/hardware", 0, "Firefox")
+
+    assert result.success is True
+    popen.assert_not_called()
+    assert [name for name, _ in driver_calls] == ["hotkey", "type_text", "press_key"]
+    assert result.content["navigation_reused_existing_browser_window"] is True
+    assert result.content["observed_url"] == "https://huggingface.co/settings/hardware"
+    assert result.content["navigation_status"] == "address_matches_request"
+    assert result.content["destination_verified"] is True
+
+
+def test_navigation_address_status_marks_redirect_as_unverified():
+    status, verified = ComputerUseTool._navigation_address_status(
+        "https://blubank.com/", "https://blubank.com/hi"
+    )
+    assert status == "redirected_within_same_host"
+    assert verified is False
+
+
+def test_navigation_address_status_does_not_infer_https_when_browser_hides_scheme():
+    status, verified = ComputerUseTool._navigation_address_status(
+        "https://huggingface.co/settings/hardware", "huggingface.co/settings/hardware"
+    )
+    assert status == "address_host_path_matches_scheme_unobservable"
+    assert verified is False
+
+
+def test_navigation_address_status_rejects_scheme_downgrade():
+    status, verified = ComputerUseTool._navigation_address_status(
+        "https://blubank.com/", "http://blubank.com/"
+    )
+    assert status == "scheme_changed"
+    assert verified is False
+
+
+def test_focus_ignores_auxiliary_same_process_rows_when_checking_occlusion(tmp_path, monkeypatch):
+    tool = ComputerUseTool()
+    tool.set_workspace(tmp_path)
+    tool.set_context_store(None, lambda: "same-pid-focus-test")
+    windows = [
+        {"pid": 100, "window_id": 7, "title": "Firefox", "app_name": "Firefox",
+         "is_on_screen": True, "width": 2560, "height": 1400, "z_index": 2},
+        # Driver can report an auxiliary row from the same app/process above the
+        # main row even though the accessibility target is PID-scoped.
+        {"pid": 100, "window_id": 24, "title": "", "app_name": "",
+         "is_on_screen": True, "width": 279, "height": 211, "z_index": 3},
+        {"pid": 200, "window_id": 3, "title": "Terminal", "app_name": "Terminal",
+         "is_on_screen": True, "width": 1344, "height": 937, "z_index": 1},
+    ]
+    calls = []
+    tool._inspect._windows = lambda: windows
+    monkeypatch.setattr(computer_use_module, "call_driver", lambda *args, **kwargs: calls.append(args))
+
+    assert tool._ensure_window_front(windows[0]) is True
+    assert calls == []
+
+
+def test_focus_reresolves_window_id_that_changes_during_browser_launch(tmp_path):
+    tool = ComputerUseTool()
+    tool.set_workspace(tmp_path)
+    tool.set_context_store(None, lambda: "stale-window-id-focus-test")
+    target = {"pid": 100, "window_id": 7, "title": "Hugging Face — Mozilla Firefox", "app": "Hugging Face"}
+    tool._inspect._windows = lambda: [
+        {"pid": 100, "window_id": 31, "title": "Hugging Face — Mozilla Firefox",
+         "app_name": "Hugging Face — Mozilla Firefox", "is_on_screen": True,
+         "width": 2560, "height": 1400, "z_index": 2},
+        {"pid": 200, "window_id": 3, "title": "Terminal", "app_name": "Terminal",
+         "is_on_screen": True, "width": 1344, "height": 937, "z_index": 1},
+    ]
+
+    assert tool._ensure_window_front(target) is True
+    assert target["window_id"] == 31
 
 
 def test_actions_capture_after_by_default_unless_explicitly_disabled(tmp_path):
@@ -978,12 +1206,15 @@ def test_type_on_activate_only_input_focuses_element_then_uses_keyboard(tmp_path
     result = tool._act_once("type", element=1, text="sample test text")
 
     assert result.success is True
+    assert len(calls) == 2
     assert calls[0]["action"] == "click"
-    assert calls[0]["element_token"] == "sentry:1"
+    assert calls[0]["x"] == 110
+    assert calls[0]["y"] == 26
+    assert calls[0]["delivery_mode"] == "foreground"
     assert calls[1]["action"] == "type_text"
     assert calls[1]["text"] == "sample test text"
     assert "element_token" not in calls[1]
-    assert result.metadata["target_mode"] == "accessibility_focus_then_keyboard"
+    assert result.metadata["target_mode"] == "visible_field_coordinates_then_keyboard"
 
 
 def test_type_on_input_with_setvalue_keeps_direct_element_typing(tmp_path):
@@ -1043,3 +1274,545 @@ def test_inspection_excludes_controls_outside_visible_window_bounds():
     assert "Visible login" in labels
     assert "Old background-tab login" not in labels
     assert "Off-right control" not in labels
+
+
+
+def test_stale_accessibility_handle_is_re_resolved_and_retried_once(tmp_path):
+    tool = ComputerUseTool()
+    tool.set_workspace(tmp_path)
+    tool.set_context_store(None, lambda: "stale-handle-recovery-test")
+    state_path = driver_module.pointer_state_path(tmp_path, tool._observe._session_label())
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps({
+        "latest_element_ids": {"1": "old-token"},
+        "latest_accessibility_elements": {
+            "old-token": {"role": "push button", "label": "Continue", "actions": ["click"]}
+        },
+        "latest_computer_use_target": {"pid": 123, "window_id": 456},
+    }), encoding="utf-8")
+
+    calls = []
+
+    def fake_act(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return ToolResult(
+                success=False, name="computer_act",
+                content={"error": {"message": 'stale_element_token {"code":"stale_element_token","effect":"none"}'}},
+                metadata={}, summary="stale handle", evidence={}, effects=[],
+            )
+        return ToolResult(
+            success=True, name="computer_act", content={"action": "click"},
+            metadata={}, summary="clicked", evidence={}, effects=[],
+        )
+
+    def fake_capture(**kwargs):
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["latest_element_ids"] = {"1": "fresh-token"}
+        state["latest_accessibility_elements"] = {
+            "fresh-token": {"role": "push button", "label": "Continue", "actions": ["click"]}
+        }
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        return ToolResult(
+            success=True, name="computer_use",
+            content={"elements": [{"id": 1, "role": "push button", "label": "Continue"}]},
+            metadata={}, summary="Fresh accessibility snapshot", evidence={},
+        )
+
+    tool._act.execute = fake_act
+    tool._capture = fake_capture
+    result = tool._act_once("click", element=1)
+
+    assert result.success is True
+    assert result.metadata["stale_handle_recovered"] is True
+    assert len(calls) == 2
+    assert calls[1]["element_token"] == "fresh-token"
+
+
+def test_computer_use_resolves_exact_target_label_without_a_query_capture(tmp_path):
+    tool = ComputerUseTool()
+    tool.set_workspace(tmp_path)
+    tool.set_context_store(None, lambda: "semantic-target-test")
+    state_path = driver_module.pointer_state_path(tmp_path, tool._observe._session_label())
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps({
+        "latest_element_ids": {"1": "continue-token"},
+        "latest_accessibility_elements": {
+            "continue-token": {
+                "role": "push button", "label": "Continue", "enabled": True,
+                "actions": ["press"],
+            }
+        },
+        "latest_computer_use_target": {"pid": 123, "window_id": 456},
+    }), encoding="utf-8")
+    calls = []
+
+    def fake_act(action, **kwargs):
+        calls.append((action, kwargs))
+        return ToolResult(success=True, name="computer_act", content={"action": action},
+                          metadata={}, summary="mock dispatched", evidence={}, effects=[])
+
+    tool._act.execute = fake_act
+    captures = []
+    tool._capture = lambda **kwargs: captures.append(kwargs) or ToolResult(
+        success=True, name="computer_use", content={"elements": []},
+        metadata={}, summary="fresh accessibility snapshot", evidence={},
+    )
+    result = tool.execute(action="click", target="Continue", capture_after=False)
+
+    assert result.success is True
+    assert len(calls) == 1
+    assert captures == []
+    assert calls[0][1]["element_token"] == "continue-token"
+
+
+def test_computer_use_refuses_ambiguous_semantic_target_without_dispatch(tmp_path):
+    tool = ComputerUseTool()
+    tool.set_workspace(tmp_path)
+    tool.set_context_store(None, lambda: "semantic-target-ambiguous-test")
+    state_path = driver_module.pointer_state_path(tmp_path, tool._observe._session_label())
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps({
+        "latest_element_ids": {"1": "continue-a", "2": "continue-b"},
+        "latest_accessibility_elements": {
+            "continue-a": {"role": "push button", "label": "Continue", "enabled": True, "actions": ["press"]},
+            "continue-b": {"role": "push button", "label": "Continue", "enabled": True, "actions": ["press"]},
+        },
+    }), encoding="utf-8")
+    calls = []
+    tool._act.execute = lambda action, **kwargs: calls.append((action, kwargs)) or ToolResult(
+        success=True, name="computer_act", content={}, metadata={}, summary="should not run", evidence={}, effects=[]
+    )
+    tool._capture = lambda **kwargs: ToolResult(
+        success=True, name="computer_use", content={"elements": []}, metadata={},
+        summary="fresh accessibility snapshot", evidence={},
+    )
+
+    result = tool.execute(action="click", target="Continue", capture_after=False)
+
+    assert result.success is False
+    assert calls == []
+    assert "multiple current controls" in result.summary
+
+
+def test_computer_use_sequence_batches_actions_and_stops_at_fresh_state(tmp_path):
+    tool = ComputerUseTool()
+    tool.set_workspace(tmp_path)
+    tool.set_context_store(None, lambda: "sequence-batch-test")
+    state_path = driver_module.pointer_state_path(tmp_path, tool._observe._session_label())
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    phase = {"value": "login"}
+    typed_text = {"value": ""}
+    dispatched = []
+
+    def controls_for_phase():
+        if phase["value"] == "continued":
+            rows = [{"id": 1, "token": "code-field", "role": "entry", "label": "Verification code", "actions": ["setValue"]}]
+        else:
+            rows = [
+                {"id": 1, "token": "phone-field", "role": "text field", "label": "Phone number", "actions": ["setValue"],
+                 "value": typed_text["value"] if phase["value"] == "typed" else ""},
+                {"id": 2, "token": "continue-button", "role": "push button", "label": "Continue", "actions": ["press"]},
+            ]
+        return rows
+
+    def fake_capture(*, mode="som", **kwargs):
+        rows = controls_for_phase()
+        state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+        state["latest_element_ids"] = {str(row["id"]): row["token"] for row in rows}
+        state["latest_accessibility_elements"] = {
+            row["token"]: {
+                "role": row["role"], "label": row["label"], "actions": row["actions"],
+                "value": row.get("value"), "enabled": True,
+            }
+            for row in rows
+        }
+        state["latest_computer_use_target"] = {"pid": 123, "window_id": 456, "title": "Mock"}
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        elements = [{key: value for key, value in row.items() if key != "token"} for row in rows]
+        elements_text = "\n".join(f"#{row['id']} {row['role']} {row['label']}" for row in rows)
+        content = {
+            "action": "capture", "mode": mode,
+            "window": {"pid": 123, "window_id": 456, "title": "Mock"},
+            "element_count": len(rows), "elements": elements, "elements_text": elements_text,
+        }
+        if mode != "ax":
+            content.update({"image_ref": None, "image_mime_type": "image/png", "screenshot_hash": phase["value"]})
+            state["latest_screenshot_hash"] = phase["value"]
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+        return ToolResult(success=True, name="computer_use", content=content, metadata={},
+                          summary="Mock UI state\nControls:\n" + elements_text, evidence={})
+
+    def fake_act(action, **kwargs):
+        dispatched.append((action, kwargs.get("element_token"), kwargs.get("text")))
+        if action == "type_text":
+            phase["value"] = "typed"
+            typed_text["value"] = kwargs.get("text", "")
+        elif action == "click":
+            phase["value"] = "continued"
+        return ToolResult(success=True, name="computer_act", content={"action": action},
+                          metadata={}, summary=f"{action} dispatched", evidence={}, effects=[])
+
+    tool._capture = fake_capture
+    tool._act.execute = fake_act
+    # Seed a visual screenshot so the first state-changing step has a comparable baseline.
+    fake_capture(mode="som")
+
+    result = tool.execute(action="sequence", steps=[
+        {"action": "type", "target": "Phone number", "text": "test value"},
+        {"action": "click", "target": "Continue"},
+    ])
+
+    assert result.success is True
+    assert result.content["complete"] is True
+    assert result.content["completed_steps"] == 2
+    assert [item[0] for item in dispatched] == ["type_text", "click"]
+    assert dispatched[0][1] == "phone-field"
+    assert dispatched[1][1] == "continue-button"
+    assert "Verification code" in result.content["elements_text"]
+
+
+
+def test_inspect_filters_inactive_tabs_and_other_windows_but_keeps_nested_modal_controls():
+    title = "آپارات - سرویس اشتراک ویدیو — Mozilla Firefox"
+    payload = {
+        "window_title": title,
+        "window_bounds": {"x": 0, "y": 31, "width": 2560, "height": 1409},
+        "elements": [
+            {"element_index": 0, "role": "frame", "label": title, "parent_index": None, "element_token": "sactive:0", "frame": {"x": 0, "y": 31, "w": 2560, "h": 1409}},
+            {"element_index": 1, "role": "tool bar", "label": "Browser tabs", "parent_index": 0, "element_token": "sactive:1", "in_web_content": False},
+            {"element_index": 2, "role": "page tab list", "label": "Browser tabs", "parent_index": 1, "element_token": "sactive:2", "in_web_content": False},
+            {"element_index": 3, "role": "page tab", "label": "آپارات - سرویس اشتراک ویدیو", "parent_index": 2, "selected": True, "element_token": "sactive:3", "enabled": True, "in_web_content": False, "frame": {"x": 100, "y": 0, "w": 210, "h": 40}},
+            {"element_index": 4, "role": "page tab", "label": "Diagnose Browser Login Issues", "parent_index": 2, "selected": False, "element_token": "sactive:4", "enabled": True, "in_web_content": False, "frame": {"x": 310, "y": 0, "w": 210, "h": 40}},
+            {"element_index": 5, "role": "combo box", "label": "Search with Google or enter address", "parent_index": 0, "element_token": "sactive:5", "actions": ["activate"], "enabled": True, "in_web_content": False, "frame": {"x": 300, "y": 47, "w": 1000, "h": 29}},
+            {"element_index": 6, "role": "panel", "label": "Browser content", "parent_index": 0, "element_token": "sactive:6", "in_web_content": False},
+            {"element_index": 7, "role": "scroll pane", "label": "Aparat page", "parent_index": 6, "element_token": "sactive:7", "in_web_content": True, "frame": {"x": 52, "y": 82, "w": 2508, "h": 1327}},
+            {"element_index": 8, "role": "internal frame", "label": "Aparat", "parent_index": 7, "element_token": "sactive:8", "in_web_content": True},
+            {"element_index": 10, "role": "document web", "label": "آپارات - سرویس اشتراک ویدیو", "parent_index": 8, "element_token": "sactive:10", "in_web_content": True, "frame": {"x": 52, "y": 82, "w": 2508, "h": 1327}},
+            {"element_index": 11, "role": "push button", "label": "ورود به حساب آپارات", "parent_index": 10, "element_token": "sactive:11", "actions": ["press"], "enabled": True, "in_web_content": True, "frame": {"x": 75, "y": 122, "w": 127, "h": 39}},
+            {"element_index": 12, "role": "entry", "label": "Search videos", "parent_index": 10, "element_token": "sactive:12", "actions": ["setValue"], "enabled": True, "in_web_content": True, "frame": {"x": 400, "y": 100, "w": 300, "h": 32}},
+            {"element_index": 14, "role": "dialog", "label": "Sign-in dialog", "parent_index": 10, "element_token": "sactive:14", "in_web_content": True, "frame": {"x": 1000, "y": 450, "w": 500, "h": 400}},
+            {"element_index": 15, "role": "section", "label": "Dialog content", "parent_index": 14, "element_token": "sactive:15", "in_web_content": True},
+            {"element_index": 16, "role": "internal frame", "label": "Auth Modal", "parent_index": 15, "element_token": "sactive:16", "in_web_content": True},
+            {"element_index": 17, "role": "document web", "label": "Auth Modal", "parent_index": 16, "element_token": "sactive:17", "in_web_content": True, "frame": {"x": 1079, "y": 486, "w": 455, "h": 581}},
+            {"element_index": 18, "role": "entry", "label": "موبایل یا ایمیل خود را وارد کنید", "parent_index": 17, "element_token": "sactive:18", "actions": ["activate"], "enabled": True, "in_web_content": True, "frame": {"x": 1123, "y": 634, "w": 366, "h": 46}},
+            {"element_index": 20, "role": "panel", "label": "Other browser content", "parent_index": 0, "element_token": "sactive:20", "in_web_content": False},
+            {"element_index": 21, "role": "document web", "label": "Diagnose Browser Login Issues", "parent_index": 20, "element_token": "sactive:21", "in_web_content": True, "frame": {"x": 52, "y": 82, "w": 2508, "h": 1327}},
+            {"element_index": 22, "role": "push button", "label": "Search", "parent_index": 21, "element_token": "sactive:22", "actions": ["press"], "enabled": True, "in_web_content": True, "frame": {"x": 300, "y": 120, "w": 34, "h": 35}},
+            {"element_index": 23, "role": "toggle button", "label": "Read aloud", "parent_index": 21, "element_token": "sactive:23", "actions": ["press"], "enabled": True, "in_web_content": True, "frame": {"x": 1200, "y": 600, "w": 30, "h": 30}},
+            {"element_index": 30, "role": "frame", "label": "Diagnose Browser Login Issues — Mozilla Firefox", "parent_index": None, "element_token": "sactive:30", "frame": {"x": 0, "y": 31, "w": 2560, "h": 1409}},
+            {"element_index": 31, "role": "tool bar", "label": "Browser tabs", "parent_index": 30, "element_token": "sactive:31", "in_web_content": False},
+            {"element_index": 32, "role": "page tab", "label": "Diagnose Browser Login Issues", "parent_index": 31, "selected": True, "element_token": "sactive:32", "in_web_content": False, "frame": {"x": 300, "y": 0, "w": 210, "h": 40}},
+            {"element_index": 33, "role": "document web", "label": "Diagnose Browser Login Issues", "parent_index": 30, "element_token": "sactive:33", "in_web_content": True, "frame": {"x": 52, "y": 82, "w": 2508, "h": 1327}},
+            {"element_index": 34, "role": "push button", "label": "Copy message", "parent_index": 33, "element_token": "sactive:34", "actions": ["press"], "enabled": True, "in_web_content": True, "frame": {"x": 900, "y": 800, "w": 30, "h": 30}},
+        ],
+    }
+
+    ranked = ComputerInspectTool._rank_elements(payload, "", limit=30)
+    labels = [item["label"] for item in ranked]
+    assert "ورود به حساب آپارات" in labels
+    assert "موبایل یا ایمیل خود را وارد کنید" in labels
+    assert "Search videos" in labels
+    assert "Search with Google or enter address" in labels
+    assert "Search" not in labels
+    assert "Read aloud" not in labels
+    assert "Copy message" not in labels
+
+
+def test_inspect_window_selection_prefers_frontmost_equal_relevance_window():
+    tool = ComputerInspectTool()
+    tool._windows = lambda: [
+        {"app_name": "Firefox", "title": "Aparat", "pid": 1, "window_id": 11,
+         "is_on_screen": True, "width": 2560, "height": 1440, "z_index": 0},
+        {"app_name": "Firefox", "title": "Chat page", "pid": 1, "window_id": 12,
+         "is_on_screen": True, "width": 1280, "height": 720, "z_index": 3},
+    ]
+
+    pid, window_id, title, _app = tool._resolve_target(None, None, "", "")
+
+    assert (pid, window_id, title) == (1, 12, "Chat page")
+
+
+def test_computer_use_drag_is_exposed_for_general_pointer_gestures():
+    action_schema = ComputerUseTool.parameters["properties"]["action"]
+    assert "drag" in action_schema["enum"]
+    assert "from_coordinate" in ComputerUseTool.parameters["properties"]
+    assert "to_coordinate" in ComputerUseTool.parameters["properties"]
+    sequence_step = ComputerUseTool.parameters["properties"]["steps"]["items"]
+    assert "drag" in sequence_step["properties"]["action"]["enum"]
+    assert "duration_ms" in sequence_step["properties"]
+
+
+def test_computer_use_maps_drag_coordinates_without_element_ids(tmp_path):
+    tool = ComputerUseTool()
+    tool.set_workspace(tmp_path)
+    tool.set_context_store(None, lambda: "drag-mapping-test")
+    calls = []
+
+    def fake_act(action, **kwargs):
+        calls.append((action, kwargs))
+        return ToolResult(success=True, name="computer_act", content={"action": action},
+                          metadata={}, summary="drag dispatched", evidence={}, effects=[])
+
+    def fake_capture(**kwargs):
+        return ToolResult(success=True, name="computer_use", content={
+            "action": "capture", "mode": kwargs.get("mode", "som"),
+            "window": {"title": "Paint", "pid": 7, "window_id": 8},
+            "elements": [], "element_count": 0,
+            "image_ref": None, "screenshot_hash": "same",
+        }, metadata={}, summary="Captured Paint", evidence={})
+
+    tool._act.execute = fake_act
+    tool._capture = fake_capture
+    result = tool.execute(action="drag", from_coordinate=[10, 20], to_coordinate=[80, 90],
+                          duration_ms=350, capture_after=False)
+
+    assert result.success is True
+    assert calls == [("drag", {
+        "from_x": 10.0, "from_y": 20.0, "to_x": 80.0, "to_y": 90.0,
+        "duration_ms": 350,
+    })]
+
+
+def test_computer_act_dispatches_real_drag_with_desktop_coordinates(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_call(name, arguments=None, *, timeout=30.0):
+        calls.append((name, arguments, timeout))
+        return '{"ok":true,"effect":"dispatched"}'
+
+    monkeypatch.setattr(act_module, "call_driver", fake_call)
+    tool = ComputerActTool()
+    tool.set_workspace(tmp_path)
+    tool.set_context_store(None, lambda: "act-drag-dispatch-test")
+    from src.tools.builtin.computer_use.driver import pointer_state_path
+    state_path = pointer_state_path(tmp_path, tool._session_label())
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps({"latest_capture_id": "capture-drag-test"}), encoding="utf-8")
+
+    result = tool.execute(action="drag", from_x=10, from_y=20, to_x=80, to_y=90,
+                          duration_ms=350, button="left")
+
+    assert result.success is True
+    assert calls[0][0] == "drag"
+    assert calls[0][1]["coordinate_frame"] == "desktop"
+    assert calls[0][1]["target"] == {"kind": "desktop", "display_id": "primary"}
+    assert calls[0][1]["from_x"] == 10
+    assert calls[0][1]["from_y"] == 20
+    assert calls[0][1]["to_x"] == 80
+    assert calls[0][1]["to_y"] == 90
+    assert calls[0][1]["duration_ms"] == 350
+    assert calls[0][1]["button"] == "left"
+
+
+def test_inspect_generic_window_selection_does_not_prefer_background_browser_over_front_app():
+    tool = ComputerInspectTool()
+    tool._windows = lambda: [
+        {"app_name": "Firefox", "title": "Aparat", "pid": 1, "window_id": 11,
+         "is_on_screen": True, "width": 2560, "height": 1440, "z_index": 0},
+        {"app_name": "Paint", "title": "Untitled - Paint", "pid": 2, "window_id": 22,
+         "is_on_screen": True, "width": 1280, "height": 800, "z_index": 4},
+    ]
+
+    pid, window_id, title, app = tool._resolve_target(None, None, "", "")
+
+    assert (pid, window_id, title, app) == (2, 22, "Untitled - Paint", "Paint")
+
+
+def test_computer_act_uses_desktop_coordinate_frame_for_targeted_text_input():
+    args = ComputerActTool._driver_args(
+        "type_text",
+        {"text": "typing test", "x": 450, "y": 360, "delivery_mode": "background"},
+        "type-coordinate-session",
+    )
+    assert args["coordinate_frame"] == "desktop"
+    assert args["target"] == {"kind": "desktop", "display_id": "primary"}
+    assert (args["x"], args["y"], args["text"]) == (450, 360, "typing test")
+
+
+def test_computer_use_types_into_activate_only_field_via_current_visible_bounds(tmp_path):
+    from src.tools.builtin.computer_use.driver import pointer_state_path
+
+    tool = ComputerUseTool()
+    tool.set_workspace(tmp_path)
+    tool.set_context_store(None, lambda: "activate-only-text-coordinate-test")
+    state_path = pointer_state_path(tmp_path, tool._observe._session_label())
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    token = "sabcdef12:7"
+    state_path.write_text(json.dumps({
+        "latest_element_ids": {"1": token},
+        "latest_accessibility_elements": {
+            token: {
+                "role": "entry",
+                "label": "Demo text field",
+                "actions": ["activate"],
+                "frame": {"x": 100, "y": 200, "w": 200, "h": 40},
+                "in_web_content": True,
+            }
+        },
+        "latest_accessibility_pid": 123,
+        "latest_accessibility_window_id": 456,
+    }), encoding="utf-8")
+    calls = []
+
+    def fake_act(action, **kwargs):
+        calls.append((action, kwargs))
+        return ToolResult(success=True, name="computer_act", content={
+            "action": action, "driver_output": "typed"},
+            metadata={"delivery_mode": kwargs.get("delivery_mode", "background")},
+            summary="typed", evidence={}, effects=[])
+
+    tool._act.execute = fake_act
+    result = tool._act_once("type", element=1, text="hello canvas")
+
+    assert result.success is True
+    assert len(calls) == 2
+    action, args = calls[0]
+    assert action == "click"
+    assert args["x"] == 200
+    assert args["y"] == 220
+    assert args["delivery_mode"] == "foreground"
+    action, args = calls[1]
+    assert action == "type_text"
+    assert args["text"] == "hello canvas"
+    assert "element_token" not in args
+    assert result.content["target_mode"] == "visible_field_coordinates_then_keyboard"
+
+
+def test_coordinate_type_focuses_point_before_sending_keyboard_text(tmp_path):
+    tool = ComputerUseTool()
+    tool.set_workspace(tmp_path)
+    tool.set_context_store(None, lambda: "coordinate-type-focus-test")
+    calls = []
+
+    def fake_act(action, **kwargs):
+        calls.append((action, kwargs))
+        return ToolResult(success=True, name="computer_act", content={
+            "action": action, "driver_output": "mocked"},
+            metadata={}, summary="mocked success", evidence={}, effects=[])
+
+    tool._act.execute = fake_act
+    result = tool._act_once("type", coordinate=[400, 300], text="visible input test")
+
+    assert result.success is True
+    assert [action for action, _kwargs in calls] == ["click", "type_text"]
+    assert calls[0][1] == {"x": 400, "y": 300, "delivery_mode": "foreground"}
+    assert calls[1][1] == {"text": "visible input test", "delivery_mode": "background"}
+    assert result.content["target_mode"] == "visible_coordinate_then_keyboard"
+
+
+def test_computer_use_sequence_pauses_before_submit_when_typed_value_is_unreadable(tmp_path):
+    tool = ComputerUseTool()
+    tool.set_workspace(tmp_path)
+    tool.set_context_store(None, lambda: "sequence-unverified-type-test")
+    state_path = driver_module.pointer_state_path(tmp_path, tool._observe._session_label())
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    phase = {"value": "login"}
+    dispatched = []
+
+    def fake_capture(*, mode="som", **kwargs):
+        state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+        rows = [
+            {"id": 1, "token": "phone-field", "role": "entry", "label": "Phone number",
+             "actions": ["activate"], "value": None, "enabled": True,
+             "frame": {"x": 100, "y": 200, "w": 200, "h": 40}},
+            {"id": 2, "token": "continue-button", "role": "push button", "label": "Continue",
+             "actions": ["press"], "enabled": True},
+        ]
+        state["latest_element_ids"] = {str(row["id"]): row["token"] for row in rows}
+        state["latest_accessibility_elements"] = {
+            row["token"]: {key: value for key, value in row.items() if key not in {"id", "token"}}
+            for row in rows
+        }
+        state["latest_computer_use_target"] = {"pid": 123, "window_id": 456, "title": "Mock"}
+        if mode != "ax":
+            state["latest_screenshot_hash"] = phase["value"]
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        content = {
+            "action": "capture", "mode": mode,
+            "window": {"pid": 123, "window_id": 456, "title": "Mock"},
+            "element_count": len(rows), "elements": rows,
+            "elements_text": "#1 entry Phone number\n#2 push button Continue",
+            "screenshot_hash": phase["value"] if mode != "ax" else None,
+            "image_ref": "/tmp/mock.png" if mode != "ax" else None,
+            "image_mime_type": "image/png" if mode != "ax" else None,
+        }
+        return ToolResult(success=True, name="computer_use", content=content, metadata={},
+                          summary="Mock UI state", evidence={})
+
+    def fake_act(action, **kwargs):
+        dispatched.append((action, kwargs.get("element_token"), kwargs.get("text")))
+        phase["value"] = "after-type"
+        return ToolResult(success=True, name="computer_act", content={"action": action},
+                          metadata={}, summary=f"{action} dispatched", evidence={}, effects=[])
+
+    tool._capture = fake_capture
+    tool._act.execute = fake_act
+    fake_capture(mode="som")
+    result = tool.execute(action="sequence", steps=[
+        {"action": "type", "target": "Phone number", "text": "sample value"},
+        {"action": "click", "target": "Continue"},
+    ])
+
+    assert result.success is False
+    assert result.content["complete"] is False
+    assert result.content["completed_steps"] == 1
+    assert [item[0] for item in dispatched] == ["click", "type_text"]
+    assert result.content["step_results"][0]["verification"] == "text_value_not_read_back"
+    assert "not run" in result.summary
+
+
+def test_browser_target_selection_uses_generic_page_title_and_intent_not_site_rules():
+    browser_rows = [
+        {"app_name": "Firefox", "title": "Project Wiki — Mozilla Firefox",
+         "pid": 7, "window_id": 70, "is_on_screen": True,
+         "width": 1600, "height": 900, "z_index": 2},
+        {"app_name": "Firefox", "title": "Mail — Mozilla Firefox",
+         "pid": 7, "window_id": 71, "is_on_screen": True,
+         "width": 1200, "height": 800, "z_index": 1},
+    ]
+
+    named_page = ComputerInspectTool._matching_browser_windows(browser_rows, "open Project Wiki login")
+    generic_web = ComputerInspectTool._matching_browser_windows(browser_rows, "search the web for a topic")
+
+    assert [row["window_id"] for row in named_page] == [70]
+    assert [row["window_id"] for row in generic_web] == [70, 71]
+
+
+def test_navigate_reuses_existing_same_site_root_instead_of_abandoning_form(tmp_path, monkeypatch):
+    tool = ComputerUseTool()
+    tool.set_workspace(tmp_path)
+    tool._navigation_browser = lambda requested_app="": ("firefox", "/usr/bin/firefox")
+    window = {
+        "app_name": "Notion — Mozilla Firefox", "title": "Notion — Mozilla Firefox",
+        "pid": 4321, "window_id": 1234, "is_on_screen": True,
+        "width": 1280, "height": 720, "z_index": 3,
+    }
+    tool._inspect._windows = lambda: [window]
+    activated = []
+    tool._ensure_window_front = lambda target: activated.append(target) or True
+    captured = {}
+
+    def fake_capture(**kwargs):
+        captured.update(kwargs)
+        return ToolResult(
+            success=True, name="computer_use",
+            content={"window": {"title": window["title"], "pid": 4321, "window_id": 1234},
+                     "elements": [], "element_count": 0, "mode": "som"},
+            metadata={"image_ref": "/tmp/current-form.png"},
+            summary="Current sign-in form is still open.",
+        )
+
+    tool._capture = fake_capture
+    from unittest.mock import patch
+    with patch.object(computer_use_module.subprocess, "Popen") as popen, \
+         patch.object(computer_use_module.time, "sleep", lambda *_: None):
+        result = tool._navigate("https://notion.so/", 0, "Firefox")
+
+    assert result.success is True
+    popen.assert_not_called()
+    assert activated == [window]
+    assert captured["pid"] == 4321
+    assert captured["window_id"] == 1234
+    assert result.content["navigation_reused_existing_site_window"] is True
+    assert "no duplicate tab was opened" in result.summary

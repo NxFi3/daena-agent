@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 DRIVER_TOOLS = frozenset({
+    # Session lifecycle must be recoverable after the daemon expires an idle run.
+    "start_session",
     "get_desktop_state",
     "get_cursor_position",
     "get_window_state",
@@ -21,6 +23,7 @@ DRIVER_TOOLS = frozenset({
     "click",
     "double_click",
     "right_click",
+    "drag",
     "type_text",
     "press_key",
     "hotkey",
@@ -250,6 +253,19 @@ def _ensure_daemon_running(executable: str) -> None:
             "Run the command cua-driver doctor in the logged-in desktop session "
             f"to diagnose capture access. Initial status: {status_text[:500]}"
         )
+
+
+def ensure_driver_running(session: str | None = None) -> None:
+    """Ensure the daemon and the requested lifecycle session are ready.
+
+    Cua Driver can keep the daemon running while ending an idle named session.
+    Re-create/return the session before the first action instead of letting the
+    first accessibility request fail with ``session has ended``.
+    """
+    _ensure_daemon_running(driver_executable())
+    label = str(session or "").strip()
+    if label:
+        call_driver("start_session", {"session": label}, timeout=5.0)
 
 
 def _driver_refusal_detail(output: str) -> str | None:

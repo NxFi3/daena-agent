@@ -14,6 +14,7 @@ class WriteFile(Tool):
     """Write a complete UTF-8 text file atomically."""
 
     name = "write_file"
+    model_exposure = "always"
     action = "write"
 
     MAX_CONTENT_CHARS = 512_000

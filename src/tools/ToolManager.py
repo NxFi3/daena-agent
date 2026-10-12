@@ -19,20 +19,6 @@ from src.utils.logger import get_logger
 class ToolManager:
     """Own tool discovery, normalization, policy checks and execution."""
 
-    # Keep the small, high-frequency coding/runtime primitives available on every
-    # model turn. Tool Search is for expanding capabilities, not unlocking basics.
-    CORE_TOOL_NAMES = frozenset({
-        "command_exec",
-        "read_file",
-        "write_file",
-        "edit_file",
-        "apply_patch",
-        "process_poll",
-        "process_write",
-        "process_stop",
-        "computer_use",
-    })
-
     def __init__(
         self,
         config: dict[str, Any] | None = None,
@@ -312,9 +298,14 @@ class ToolManager:
             or any(synonym in catalog_vocabulary for synonym in synonyms.get(token, ()))
         }
         coverage = len(covered_terms) / max(1, len(original_unique_tokens))
-        if coverage < 0.40:
+        # User queries often contain product names, organizations, or other entity
+        # words that cannot appear in a tool description (e.g. "search the web for
+        # BlueBank"). Unknown entity words should not drown out an otherwise clear
+        # capability request; only return no matches when the catalog has no evidence
+        # for any action/capability term in the query.
+        if not covered_terms:
             self.logger.debug(
-                "Tool search found too little catalog evidence for query %r (coverage=%.2f)",
+                "Tool search found no catalog evidence for query %r (coverage=%.2f)",
                 query, coverage,
             )
             return {
@@ -393,21 +384,36 @@ class ToolManager:
         if search_definition is None:
             return visible
 
-        core = [
-            definition for definition in visible
-            if str((definition.get("function") or {}).get("name", "")).strip().lower()
-            in self.CORE_TOOL_NAMES
-        ]
-        core_names = {
-            str((definition.get("function") or {}).get("name", "")).strip().lower()
-            for definition in core
-        }
+        # Tool classes declare exposure themselves. This makes adding or hiding a
+        # capability a metadata change, not a new name-based routing rule here.
+        tool_config = self.config.get("tools") or {}
+        exposure_overrides = tool_config.get("exposure", {}) if isinstance(tool_config, dict) else {}
+        if not isinstance(exposure_overrides, dict):
+            exposure_overrides = {}
+
+        always: list[dict] = []
+        always_names: set[str] = {"tool_search"}
+        for definition in visible:
+            name = str((definition.get("function") or {}).get("name", "")).strip().lower()
+            if not name or name == "tool_search":
+                continue
+            tool = self.toolregistry.get(name)
+            configured_exposure = exposure_overrides.get(name)
+            exposure = str(
+                configured_exposure
+                if configured_exposure in {"always", "search"}
+                else getattr(tool, "model_exposure", "search")
+            ).strip().lower()
+            if exposure == "always":
+                always.append(definition)
+                always_names.add(name)
+
         selected = [
             definition for definition in visible
             if str((definition.get("function") or {}).get("name", "")).strip().lower()
-            in set(self._active_tool_names) - core_names - {"tool_search"}
+            in set(self._active_tool_names) - always_names
         ]
-        return [search_definition, *core, *selected]
+        return [search_definition, *always, *selected]
 
     def _find_tool(self, name: str):
         return self.toolregistry.get(str(name).strip().lower())

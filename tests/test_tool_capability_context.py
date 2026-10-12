@@ -72,9 +72,10 @@ def test_context_exposes_tool_search_without_eagerly_sending_every_schema(tmp_pa
         }.issubset(captured_names)
         assert "tool_search" in rendered
         assert "available on the next turn" in rendered
-        assert "Core tools for shell commands, file reading/writing/editing" in rendered
+        assert "Shell, file, patch, and managed-process tools marked always-exposed" in rendered
         assert "web_search" not in captured_names
         assert "context_search" not in captured_names
+        assert "computer_use" not in captured_names
         assert "If a search finds nothing, try a concrete alternate query" in rendered
     finally:
         loop.close()

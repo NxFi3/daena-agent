@@ -16,6 +16,7 @@ class EditFile(Tool):
     """Replace an exact string in an existing workspace text file."""
 
     name = "edit_file"
+    model_exposure = "always"
     action = "modify"
 
     description = (

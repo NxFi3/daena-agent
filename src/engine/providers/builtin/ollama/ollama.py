@@ -198,6 +198,51 @@ class OllamaProvider(ProviderBase):
             # UI/telemetry callbacks must never break agent execution.
             logger.debug(f"Stream callback failed: {type(exc).__name__}: {exc}")
 
+    @staticmethod
+    def _performance_metrics(response: Any) -> dict[str, Any]:
+        """Extract Ollama timings without logging message or tool-call contents."""
+        def integer(name: str) -> int:
+            try:
+                return max(0, int(getattr(response, name, 0) or 0))
+            except (TypeError, ValueError):
+                return 0
+
+        prompt_tokens = integer("prompt_eval_count")
+        completion_tokens = integer("eval_count")
+        prompt_ns = integer("prompt_eval_duration")
+        completion_ns = integer("eval_duration")
+        load_ns = integer("load_duration")
+        total_ns = integer("total_duration")
+
+        def tokens_per_second(tokens: int, duration_ns: int) -> float:
+            if not duration_ns:
+                return 0.0
+            return round(tokens * 1_000_000_000 / duration_ns, 2)
+
+        return {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "prompt_eval_ms": round(prompt_ns / 1_000_000, 2),
+            "generation_ms": round(completion_ns / 1_000_000, 2),
+            "model_load_ms": round(load_ns / 1_000_000, 2),
+            "total_ms": round(total_ns / 1_000_000, 2),
+            "prompt_tokens_per_second": tokens_per_second(prompt_tokens, prompt_ns),
+            "generation_tokens_per_second": tokens_per_second(completion_tokens, completion_ns),
+        }
+
+    @staticmethod
+    def _log_performance(model_name: str, metrics: dict[str, Any]) -> None:
+        logger.info(
+            "Ollama performance | "
+            f"model={model_name} | prompt_tokens={metrics.get('prompt_tokens', 0)} | "
+            f"completion_tokens={metrics.get('completion_tokens', 0)} | "
+            f"prompt_eval_ms={metrics.get('prompt_eval_ms', 0)} | "
+            f"prompt_tps={metrics.get('prompt_tokens_per_second', 0)} | "
+            f"generation_ms={metrics.get('generation_ms', 0)} | "
+            f"generation_tps={metrics.get('generation_tokens_per_second', 0)} | "
+            f"model_load_ms={metrics.get('model_load_ms', 0)} | total_ms={metrics.get('total_ms', 0)}"
+        )
+
     def _generate_streaming(
         self,
         *,
@@ -371,6 +416,8 @@ class OllamaProvider(ProviderBase):
         prompt_tokens = int(getattr(final_chunk, "prompt_eval_count", 0) or 0)
         completion_tokens = int(getattr(final_chunk, "eval_count", 0) or 0)
         usage = prompt_tokens + completion_tokens
+        performance = self._performance_metrics(final_chunk)
+        self._log_performance(model_name, performance)
 
         self._emit_stream_event(
             callback,
@@ -382,6 +429,7 @@ class OllamaProvider(ProviderBase):
             stream_chunks=chunk_count,
             thinking_chunks=thinking_chunks,
             content_chunks=content_chunks,
+            **performance,
         )
 
         return LLMResult(
@@ -497,6 +545,8 @@ class OllamaProvider(ProviderBase):
         )
 
         total_tokens = prompt_tokens + completion_tokens
+        performance = self._performance_metrics(chat_response)
+        self._log_performance(model_name, performance)
 
         tool_calls = []
 

@@ -119,10 +119,11 @@ class ContextBuilder:
         context_config = config.get("context") or {}
         provider_name = str(getattr(self.llm, "provider_name", "") or "").strip().lower()
         preserve_thinking = context_config.get("preserve_thinking")
+        # Thinking traces are useful for diagnostics, but replaying them into
+        # every subsequent prompt inflates context and can anchor the model to
+        # stale reasoning. Preserve them only when explicitly requested.
         self.preserve_thinking = (
-            provider_name == "ollama"
-            if preserve_thinking is None
-            else bool(preserve_thinking) and provider_name == "ollama"
+            bool(preserve_thinking) and provider_name == "ollama"
         )
         self.compaction_enabled = bool(context_config.get("compaction_enabled", True))
         try:
@@ -179,6 +180,63 @@ class ContextBuilder:
             return json.loads(value)
         except (json.JSONDecodeError, TypeError, ValueError):
             return value
+
+    @staticmethod
+    def _is_computer_use_followup(task: dict[str, Any] | None) -> bool:
+        """Whether the active request needs the latest prior desktop state.
+
+        Keep stale screenshots out of unrelated requests, but carry forward the
+        last observed browser state when a user clarifies or continues a GUI task.
+        This is a context-inclusion gate, not a hard-coded workflow.
+        """
+        text = str((task or {}).get("content") or "").casefold()
+        markers = (
+            "browser", "website", "web site", "webpage", "web page", "login",
+            "log in", "sign in", "signin", "address bar", "url", "navigate",
+            "click", "button", "tab", "screenshot", "screen", "current page",
+            "this page", "that page", "on the site", "this website", "account",
+            "window", "site", "blue", "bank", "safe", "safhe", "safheh", "baz kard",
+            "baz shod", "baz kon", "browser ro", "site ro", "page ro",
+            "مرورگر", "وب‌سایت", "وب سایت", "سایت", "صفحه", "ورود", "لاگین",
+            "کلیک", "دکمه", "نوار آدرس", "آدرس", "حساب بانکی", "بانک بلو",
+        )
+        return any(marker in text for marker in markers)
+
+    @staticmethod
+    def _browser_location_from_controls(result: dict[str, Any]) -> dict[str, str] | None:
+        """Retain the address-bar value that the numbered-control text omits.
+
+        Only accept a URL-looking value from a browser location control; never
+        copy values from arbitrary form entries (which may contain credentials).
+        """
+        elements = result.get("elements")
+        if not isinstance(elements, list):
+            return None
+        for item in elements:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "").casefold().strip()
+            label = " ".join(str(item.get("label") or "").casefold().split())
+            if role not in {"combo box", "address bar", "url bar"}:
+                continue
+            is_location_control = any(
+                marker in label for marker in (
+                    "address", "location", "url", "enter address", "search with google",
+                    "نوار آدرس", "آدرس وب", "نشانی",
+                )
+            )
+            value = str(item.get("value") or "").strip()
+            if not is_location_control or not value or len(value) > 1000:
+                continue
+            candidate = value if re.match(r"^https?://", value, flags=re.IGNORECASE) else "https://" + value
+            if not re.match(
+                r"^https?://[a-z0-9.-]+(?:\:[0-9]{1,5})?(?:[/#?][^\s]*)?$",
+                candidate,
+                flags=re.IGNORECASE,
+            ):
+                continue
+            return {"label": str(item.get("label") or "")[:120], "value": value[:500]}
+        return None
 
     @staticmethod
     def _last_index(messages: list[dict[str, Any]], role: str) -> int:
@@ -253,6 +311,8 @@ class ContextBuilder:
         historical_source_ids: list[str] = []
         current_source_ids: set[str] = set()
         seen_ids: set[str] = set()
+        last_historical_computer_use: tuple[ContextEvent, dict[str, Any]] | None = None
+        last_historical_computer_use_with_screenshot: tuple[ContextEvent, dict[str, Any]] | None = None
 
         current_task_step = 0
         task_id = ""
@@ -377,6 +437,22 @@ class ContextBuilder:
                     continue
 
                 if is_historical:
+                    # A new user message starts a new run-step boundary. Historical
+                    # tool protocol must not be replayed as live tool messages, but
+                    # dropping the latest Computer Use result entirely loses the
+                    # actual browser/page state when the user clarifies a GUI task.
+                    # Keep one sanitized, explicitly stale observation for GUI follow-ups.
+                    if (
+                        tool_name == "computer_use"
+                        and self._is_computer_use_followup(task)
+                    ):
+                        last_historical_computer_use = (event, payload)
+                        raw_content = payload.get("content")
+                        raw_content = raw_content if isinstance(raw_content, dict) else {}
+                        raw_metadata = payload.get("metadata")
+                        raw_metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+                        if raw_content.get("image_ref") or raw_metadata.get("image_ref"):
+                            last_historical_computer_use_with_screenshot = (event, payload)
                     continue
 
                 tool_message: dict[str, Any] = {
@@ -446,7 +522,84 @@ class ContextBuilder:
                 current_source_ids.add(task_id)
 
         historical = historical[-self.MAX_HISTORICAL_MESSAGES:]
+        if last_historical_computer_use is not None:
+            latest_event, latest_payload = last_historical_computer_use
+            latest_result = latest_payload.get("content")
+            latest_result = latest_result if isinstance(latest_result, dict) else {}
+            latest_metadata = latest_payload.get("metadata")
+            latest_metadata = latest_metadata if isinstance(latest_metadata, dict) else {}
+
+            screenshot_entry = last_historical_computer_use_with_screenshot
+            if screenshot_entry is None:
+                latest_image_ref = latest_metadata.get("image_ref") or latest_result.get("image_ref")
+                screenshot_event = latest_event if latest_image_ref else None
+                screenshot_payload = latest_payload if latest_image_ref else None
+            else:
+                screenshot_event, screenshot_payload = screenshot_entry
+
+            image_ref = None
+            image_mime = "image/png"
+            screenshot_result: dict[str, Any] = {}
+            screenshot_metadata: dict[str, Any] = {}
+            if screenshot_payload is not None:
+                screenshot_result = screenshot_payload.get("content")
+                screenshot_result = screenshot_result if isinstance(screenshot_result, dict) else {}
+                screenshot_metadata = screenshot_payload.get("metadata")
+                screenshot_metadata = screenshot_metadata if isinstance(screenshot_metadata, dict) else {}
+                image_ref = screenshot_metadata.get("image_ref") or screenshot_result.get("image_ref")
+                image_mime = screenshot_metadata.get("image_mime_type") or screenshot_result.get("image_mime_type") or "image/png"
+
+            same_result_as_screenshot = (
+                screenshot_event is not None
+                and str(screenshot_event.id) == str(latest_event.id)
+            )
+            if image_ref and same_result_as_screenshot:
+                prefix = (
+                    f"Attached desktop screenshot is from historical Computer Use step {screenshot_event.step}, before the latest user message; it is not guaranteed to be live. "
+                    "Re-capture the current UI before clicking or typing. A successful Computer Use result proves only that its action/capture ran, not that the requested page or user task succeeded.\n\n"
+                )
+                combined_result_text = self._tool_payload(latest_payload)
+            elif image_ref:
+                prefix = (
+                    f"The attached screenshot is the last available screen from Computer Use step {screenshot_event.step}. A later Computer Use operation at step {latest_event.step} returned no fresh screenshot, so the image predates that operation and may be stale. "
+                    "Re-capture the current target window before clicking or typing. Do not treat the old image as proof of the current page.\n\n"
+                )
+                combined_result_text = (
+                    "Latest Computer Use result (may not include a new screenshot):\n"
+                    + self._tool_payload(latest_payload)
+                    + "\n\nLast available screenshot/control state:\n"
+                    + self._tool_payload(screenshot_payload)
+                )
+            else:
+                prefix = (
+                    "Latest Computer Use result from before the latest user message. No screenshot was available in the recent historical results. "
+                    "Re-capture the current desktop/target window before acting; do not navigate repeatedly or guess alternate routes.\n\n"
+                )
+                combined_result_text = self._tool_payload(latest_payload)
+
+            historical_cua_message: dict[str, Any] = {
+                "role": "user",
+                "_context_summary": True,
+                "_step": int(latest_event.step),
+                "content": prefix + combined_result_text,
+            }
+            if image_ref:
+                historical_cua_message["image_ref"] = str(image_ref)
+                historical_cua_message["image_mime_type"] = str(image_mime)
+                historical_cua_message["_screenshot_hash"] = str(
+                    screenshot_result.get("visual_hash")
+                    or screenshot_metadata.get("visual_hash")
+                    or screenshot_result.get("screenshot_hash")
+                    or screenshot_metadata.get("screenshot_hash")
+                    or ""
+                )
+            historical.append(historical_cua_message)
+
         kept_history_ids = set(historical_source_ids[-self.MAX_HISTORICAL_MESSAGES:])
+        if last_historical_computer_use is not None:
+            kept_history_ids.add(str(last_historical_computer_use[0].id))
+        if last_historical_computer_use_with_screenshot is not None:
+            kept_history_ids.add(str(last_historical_computer_use_with_screenshot[0].id))
         recalled = self._retrieved_context_message(
             retrieved_events or [],
             excluded_ids=kept_history_ids | current_source_ids,
@@ -671,8 +824,10 @@ class ContextBuilder:
                 "screen_hash_changed", "verification_warning", "capture_after",
                 "target_mode", "field_role", "focus_succeeded", "delivery_mode",
                 "delivery_mode_escalated", "cursor_position", "cursor_hint",
-                "pointer_hint", "url_requested", "browser", "destination_in_title",
-                "seconds",
+                "pointer_hint", "url_requested", "observed_url", "browser",
+                "destination_in_title", "destination_verified", "navigation_status",
+                "navigation_reused_existing_site_window", "navigation_reused_existing_browser_window",
+                "verification", "seconds",
             )
             for key in result_keys:
                 value = raw_result.get(key)
@@ -723,6 +878,16 @@ class ContextBuilder:
                     result[key] = value[:6200]
                 else:
                     result[key] = value
+
+            browser_location = self._browser_location_from_controls(raw_result)
+            if browser_location is None:
+                followup_capture = raw_result.get("capture_after")
+                if isinstance(followup_capture, dict):
+                    browser_location = self._browser_location_from_controls(followup_capture)
+            if browser_location is not None:
+                # The human-readable numbered-controls summary omits control values.
+                # Preserve only the browser address/location value, never form entries.
+                result["browser_location"] = browser_location
 
             error = raw_result.get("error")
             if error is not None:

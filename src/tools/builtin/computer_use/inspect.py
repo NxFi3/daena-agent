@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,18 @@ _ACTION_ROLES = _INPUT_ROLES | {
 }
 _BROWSER_NAMES = ("firefox", "chrome", "chromium", "brave", "edge", "browser")
 _NOISE_APPS = ("gjs", "update-notifier", "ibus-", "xdg-desktop-portal")
+_BROWSER_INTENT_PHRASES = (
+    "browser", "website", "web page", "webpage", "url", "address bar",
+    "navigate", "search", "sign in", "log in", "login", "internet",
+    "مرورگر", "وب", "سایت", "جست", "آدرس", "صفحه وب",
+)
+_QUERY_STOP_WORDS = {
+    "the", "and", "for", "with", "from", "please", "open", "go", "to",
+    "page", "site", "website", "browser", "login", "log", "sign", "in",
+    "on", "at", "my", "your", "into", "there", "this", "that", "find",
+    "visit", "navigate", "web", "url", "search", "enter", "type",
+    "در", "به", "را", "از", "برای", "روی", "یک", "این", "آن", "بازکن",
+}
 
 
 def _text(value: Any) -> str:
@@ -79,7 +92,7 @@ class ComputerInspectTool(Tool):
             },
             "window_title": {
                 "type": "string",
-                "description": "Optional visible-window title substring to select, e.g. 'Aparat'.",
+                "description": "Optional visible-window title substring to select, e.g. 'Firefox' or 'Paint'.",
             },
             "pid": {
                 "type": "integer",
@@ -134,6 +147,36 @@ class ComputerInspectTool(Tool):
         signature = _normal(f"{window.get('app_name', '')} {window.get('title', '')}")
         return any(name in signature for name in _BROWSER_NAMES)
 
+    @staticmethod
+    def _query_terms(query: str) -> set[str]:
+        normalized = _normal(query)
+        return {
+            token for token in re.findall(r"[^\W_]{3,}", normalized, flags=re.UNICODE)
+            if token not in _QUERY_STOP_WORDS
+        }
+
+    @classmethod
+    def _matching_browser_windows(
+        cls,
+        browser_rows: list[dict[str, Any]],
+        query: str,
+    ) -> list[dict[str, Any]]:
+        """Match named browser content generically; no site-specific routing rules."""
+        terms = cls._query_terms(query)
+        if terms:
+            matches = [
+                row for row in browser_rows
+                if terms & cls._query_terms(
+                    f"{row.get('title', '')} {row.get('app_name', '')}"
+                )
+            ]
+            if matches:
+                return matches
+        query_norm = _normal(query)
+        if any(phrase in query_norm for phrase in _BROWSER_INTENT_PHRASES):
+            return browser_rows
+        return []
+
     def _resolve_target(
         self,
         pid_value: Any,
@@ -161,21 +204,19 @@ class ComputerInspectTool(Tool):
                 )
                 app = _text(selected.get("app_name"))
                 title = _text(selected.get("title"))
-                # The model often mistakes a file dialog for the browser in a screenshot.
-                # For an explicit web-page query, recover to a visible browser instead of
-                # silently inspecting/clicking the file manager.
-                if (
-                    not self._is_browser(selected)
-                    and any(word in query_norm for word in ("aparat", "search", "جست"))
-                ):
+                # The model can mistake a file dialog for a browser. Recover only when
+                # the query either names content visible in a browser title or clearly
+                # expresses browser intent; do not special-case individual websites.
+                if not self._is_browser(selected):
                     browser_rows = [
                         row for row in windows
                         if self._is_browser(row) and bool(row.get("is_on_screen", True))
                         and int(row.get("width") or 0) >= 600
                         and int(row.get("height") or 0) >= 400
                     ]
-                    if browser_rows:
-                        selected = self._choose_window(browser_rows, target_title, query_norm)
+                    browser_matches = self._matching_browser_windows(browser_rows, query_norm)
+                    if browser_matches:
+                        selected = self._choose_window(browser_matches, target_title, query_norm)
                         pid = _integer(selected.get("pid"), "pid")
                         window_id = _integer(selected.get("window_id"), "window_id")
                         return pid, window_id, _text(selected.get("title")), _text(selected.get("app_name"))
@@ -216,16 +257,10 @@ class ComputerInspectTool(Tool):
                     f"No visible window title matches '{window_title}'. Visible windows: {available or 'none'}."
                 )
             selected = self._choose_window(matches, target_title, query_norm)
-        elif browser_rows:
-            # If the task names a site, prefer its titled window when one is visible.
-            site_terms = []
-            if "aparat" in query_norm or "آپارات" in query_norm:
-                site_terms = ["aparat", "آپارات"]
-            site_matches = [
-                row for row in browser_rows
-                if any(term in _normal(row.get("title")) for term in site_terms)
-            ]
-            selected = self._choose_window(site_matches or browser_rows, "", query_norm)
+        elif browser_rows and (browser_matches := self._matching_browser_windows(browser_rows, query_norm)):
+            # Follow a named page/tab or clear web intent. Otherwise, generic desktop
+            # work follows the actual foreground app (Paint, an editor, and so on).
+            selected = self._choose_window(browser_matches, "", query_norm)
         elif candidates:
             selected = self._choose_window(candidates, "", query_norm)
         else:
@@ -252,8 +287,10 @@ class ComputerInspectTool(Tool):
             hint_match = 1000 if title_hint and title_hint in title else 0
             query_match = 500 if query and query in title else 0
             area = int(window.get("width") or 0) * int(window.get("height") or 0)
-            browser = 1 if any(name in app for name in _BROWSER_NAMES) else 0
-            return hint_match + query_match + browser, area, int(window.get("z_index") or 0)
+            # Do not globally prefer browsers. Generic desktop tasks must select the
+            # foreground app (Paint, an editor, etc.); website preference is applied
+            # explicitly in _resolve_target only when the query names a website.
+            return hint_match + query_match, int(window.get("z_index") or 0), area
         return max(windows, key=score)
 
     @staticmethod
@@ -290,26 +327,34 @@ class ComputerInspectTool(Tool):
         if not isinstance(items, list):
             return []
         items = [item for item in items if isinstance(item, dict)]
-        # A browser process can expose controls from several tabs. Keep only nodes
-        # descending from the exact top-level frame represented by this snapshot.
+        # Firefox can expose controls from several native windows and browser tabs
+        # in one process-wide AT-SPI tree. Scope first to the exact top-level frame,
+        # then to that frame's selected browser tab. Nested modal/iframe documents
+        # remain usable when they descend from the active page.
         by_index = {
             item.get("element_index"): item
             for item in items if isinstance(item.get("element_index"), int)
         }
         title = _normal(payload.get("window_title"))
-        roots = {
+        frame_roots = {
             item["element_index"] for item in items
             if isinstance(item.get("element_index"), int)
             and _normal(item.get("role")) in {"frame", "window"}
             and _normal(item.get("label")) == title
+            and item.get("parent_index") is None
         }
+        if not frame_roots:
+            frame_roots = {
+                item["element_index"] for item in items
+                if isinstance(item.get("element_index"), int)
+                and _normal(item.get("role")) in {"frame", "window"}
+                and _normal(item.get("label")) == title
+            }
 
-        def belongs_to_target_window(item: dict[str, Any]) -> bool:
-            if not roots:
-                return True
+        def has_ancestor_in(item: dict[str, Any], roots: set[int]) -> bool:
             current = item
             visited: set[int] = set()
-            for _ in range(80):
+            for _ in range(100):
                 idx = current.get("element_index")
                 if isinstance(idx, int) and idx in roots:
                     return True
@@ -319,6 +364,74 @@ class ComputerInspectTool(Tool):
                 visited.add(parent)
                 current = by_index[parent]
             return False
+
+        def belongs_to_frame(item: dict[str, Any]) -> bool:
+            return not frame_roots or has_ancestor_in(item, frame_roots)
+
+        selected_tab_labels: set[str] = set()
+        for item in items:
+            if _normal(item.get("role")) not in {"page tab", "tab"} or item.get("selected") is not True:
+                continue
+            if not belongs_to_frame(item):
+                continue
+            current = item
+            visited: set[int] = set()
+            for _ in range(12):
+                parent = current.get("parent_index")
+                if not isinstance(parent, int) or parent in visited or parent not in by_index:
+                    break
+                visited.add(parent)
+                current = by_index[parent]
+                if _normal(current.get("role")) == "tool bar" and _normal(current.get("label")) == "browser tabs":
+                    label = _normal(item.get("label"))
+                    if label:
+                        selected_tab_labels.add(label)
+                    break
+
+        page_title = title
+        for suffix in (
+            " — mozilla firefox", " - mozilla firefox",
+            " — google chrome", " - google chrome",
+            " — chromium", " - chromium",
+            " — brave", " - brave",
+            " — microsoft edge", " - microsoft edge",
+        ):
+            if page_title.endswith(suffix):
+                page_title = page_title[:-len(suffix)].strip()
+                break
+        active_labels = selected_tab_labels if len(selected_tab_labels) == 1 else {page_title}
+        document_roles = {"document", "web document", "document web"}
+        page_roots = {
+            item["element_index"] for item in items
+            if isinstance(item.get("element_index"), int)
+            and _normal(item.get("role")) in document_roles
+            and _normal(item.get("label")) in active_labels
+            and belongs_to_frame(item)
+            # Only top-level page documents define a browser tab's content root.
+            and not (
+                isinstance(item.get("parent_index"), int)
+                and item.get("parent_index") in by_index
+                and _normal(by_index[item["parent_index"]].get("role")) in document_roles
+            )
+        }
+
+        def belongs_to_target_window(item: dict[str, Any]) -> bool:
+            if not belongs_to_frame(item):
+                return False
+            if not page_roots:
+                return True
+            role = _normal(item.get("role"))
+            in_page = (
+                item.get("in_web_content") is True
+                or role in document_roles
+                or role in {"internal frame", "scroll pane"}
+            )
+            if not in_page:
+                # Address bars, browser tabs, toolbars, and other browser chrome.
+                return True
+            # Main-page controls and nested modal/frame documents must descend from
+            # the active page root; other tabs are siblings and are rejected.
+            return has_ancestor_in(item, page_roots)
 
         query_norm = _normal(query)
         # AT-SPI can expose descendants from background browser tabs with large

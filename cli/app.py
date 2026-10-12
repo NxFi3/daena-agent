@@ -85,10 +85,39 @@ HELP_LINES = (
     "/clear                    clear terminal",
     "/exit                     quit Daena",
     "",
-    "While Daena is working, type normal text to redirect it.",
+    "While Daena is working, text is queued by default and processed as a new task.",
+    "/busy steer              stop the current generation and redirect with a fresh task",
+    "/busy queue              let the current task finish, then process new messages",
 )
 
 BUSY_MODES = {"steer", "interrupt", "queue"}
+DEFAULT_BUSY_MODE = "queue"
+
+
+def _route_busy_text(console, state: dict, busy_mode: str, user_text: str) -> int:
+    """Never drop text entered while a model turn is running.
+
+    Queue mode lets the active turn finish. Steer/interrupt modes request a stop
+    but still retain the submitted text as a fresh follow-up task.
+    """
+    pending = state.setdefault("pending_followups", [])
+    pending.append(user_text)
+    position = len(pending)
+
+    if busy_mode in {"steer", "interrupt"}:
+        stop_event = state.get("stop_event")
+        if stop_event is not None and not stop_event.is_set():
+            stop_event.set()
+        console.print(
+            f"[#FBBF24]↯ redirect requested — current generation will stop; "
+            f"message queued as task #{position}.[/#FBBF24]"
+        )
+    else:
+        console.print(
+            f"[#60A5FA]queued follow-up #{position}; current task will finish first.[/#60A5FA]"
+        )
+    return position
+
 
 def _load_config(path: Path) -> dict:
     with path.open("r", encoding="utf-8") as fh:
@@ -355,7 +384,15 @@ def _handle_command(
             console.print(f"[#60A5FA]busy mode = {busy_mode}[/#60A5FA]")
         elif argument in BUSY_MODES:
             busy_mode = argument
-            console.print(f"[#4ADE80]busy mode = {busy_mode}[/#4ADE80]")
+            mode_help = {
+                "queue": "new messages wait until the current task finishes",
+                "steer": "new messages interrupt the current generation and start as fresh tasks",
+                "interrupt": "new messages interrupt the current task and run afterward",
+            }
+            console.print(
+                f"[#4ADE80]busy mode = {busy_mode}[/#4ADE80] "
+                f"[dim]({mode_help[busy_mode]})[/dim]"
+            )
         else:
             console.print("[#FBBF24]Usage: /busy steer|interrupt|queue|status[/#FBBF24]")
 
@@ -523,10 +560,10 @@ def main() -> None:
     console.print(f"  [#4C3B7A]{'─' * 62}[/#4C3B7A]")
     console.print(f"  [#475569]workspace[/#475569]  [dim]{agent.workingdirectory}[/dim]")
     console.print(
-        "  [dim]Tab  commands  ·  type while busy to redirect  ·  Ctrl+C  interrupt[/dim]\n"
+        "  [dim]Tab  commands  ·  type while busy to queue  ·  /busy steer to redirect now  ·  Ctrl+C interrupt[/dim]\n"
     )
 
-    busy_mode = "steer"
+    busy_mode = DEFAULT_BUSY_MODE
 
     try:
         while True:
@@ -603,17 +640,7 @@ def main() -> None:
                         break
                     continue
 
-                if busy_mode == "interrupt":
-                    if state.get("stop_event") is not None:
-                        state["stop_event"].set()
-                    console.print("[#FBBF24]↯ interrupting — message queued for after stop.[/#FBBF24]")
-                    state["pending_followup"] = user_text
-                elif busy_mode == "queue":
-                    pending = state.setdefault("pending_followups", [])
-                    pending.append(user_text)
-                    console.print(f"[#60A5FA]queued follow-up #{len(pending)}[/#60A5FA]")
-                else:
-                    agent.steer(user_text)
+                _route_busy_text(console, state, busy_mode, user_text)
                 continue
 
             if user_text.startswith("/"):

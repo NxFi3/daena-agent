@@ -51,7 +51,7 @@ def test_search_activates_only_relevant_tool_schemas_for_next_turn(tmp_path):
         exposed = {item["function"]["name"] for item in manager.get_model_tools()}
         assert "tool_search" in exposed
         assert set(matches).issubset(exposed)
-        assert len(exposed) <= 1 + len(manager.CORE_TOOL_NAMES) + 5
+        assert len(exposed) <= 1 + 8 + 5
         assert "web_fetch" not in exposed
         assert {"command_exec", "read_file", "write_file"}.issubset(exposed)
     finally:
@@ -157,6 +157,26 @@ def test_natural_language_search_handles_common_synonyms(tmp_path):
         manager.close()
 
 
+def test_unknown_entity_terms_do_not_hide_web_search_capability(tmp_path):
+    manager = ToolManager({
+        "guard_level": "strict",
+        "security": {"workspace_only": True, "allow_network_tools": True, "force_approve": True},
+    })
+    manager.set_workspace(str(tmp_path))
+    try:
+        outcome = manager._search_and_activate_tools(
+            "search the web for information about BlueBank and retrieve official webpages",
+            top_k=5,
+        )
+        names = {item["name"] for item in outcome["matches"]}
+        assert {"web_search", "web_fetch"}.issubset(names)
+        exposed = {item["function"]["name"] for item in manager.get_model_tools()}
+        assert {"web_search", "web_fetch"}.issubset(exposed)
+        assert "computer_use" not in exposed
+    finally:
+        manager.close()
+
+
 def test_compile_cpp_query_finds_a_command_execution_capability(tmp_path):
     manager = ToolManager({
         "guard_level": "strict",
@@ -193,9 +213,13 @@ def test_computer_use_query_retrieves_computer_tools_without_changing_core_visib
         assert "computer_use" in matched
         assert not {"computer_observe", "computer_act"}.intersection(matched)
         current = {item["function"]["name"] for item in manager.get_model_tools()}
-        # Computer Use is now an always-available core capability. Tool Search
-        # may replace optional schemas as relevance changes, but must preserve core.
-        assert manager.CORE_TOOL_NAMES.issubset(current)
-        assert manager.CORE_TOOL_NAMES.issubset(previous)
+        # Specialized GUI control is discoverable, not sent on every model turn.
+        always_names = {
+            name for name in current
+            if getattr(manager.get_tool(name), "model_exposure", "search") == "always"
+        }
+        assert {"command_exec", "read_file", "write_file", "edit_file", "apply_patch"}.issubset(always_names)
+        assert "computer_use" not in previous
+        assert "computer_use" in current
     finally:
         manager.close()

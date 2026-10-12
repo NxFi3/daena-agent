@@ -11,6 +11,7 @@ class ProcessPoll(Tool):
     # ToolManager replaces this with its session-scoped ProcessManager.
     process_manager = PROCESS_MANAGER
     name = "process_poll"
+    model_exposure = "always"
     action = "inspect"
 
     # Polling is an observation of externally changing process state. The same

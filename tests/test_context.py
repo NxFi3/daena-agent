@@ -936,6 +936,15 @@ def test_lessons_survive_context_compaction_and_reset():
     assert ws.context()["lessons"] == {}
 
 
+def test_preserve_thinking_defaults_to_off_for_ollama():
+    class OllamaLike:
+        provider_name = "ollama"
+        model = FakeModel()
+
+    builder = ContextBuilder(base_config(), OllamaLike())
+    assert builder.preserve_thinking is False
+
+
 def test_preserve_thinking_only_for_current_task_and_ollama():
     class OllamaLike:
         provider_name = "ollama"
@@ -1032,6 +1041,176 @@ def test_computer_use_tool_payload_preserves_controls_and_verification():
     assert "موبایل یا ایمیل خود را وارد کنید" in payload["result"]["capture_after"]["elements_text"]
     assert "No visible change" in payload["result"]["capture_after"]["no_visible_change_warning"]
     assert "image_ref" not in payload["result"]
+
+
+def test_finglish_gui_followup_is_recognized_for_historical_browser_context():
+    builder = ContextBuilder(base_config(), FakeLLM())
+
+    assert builder._is_computer_use_followup({
+        "content": "beben alan 4 5 ta safe baz kard safe blue nemidonam moshkel chie"
+    })
+    assert not builder._is_computer_use_followup({
+        "content": "Explain how matrix multiplication works"
+    })
+
+
+def test_computer_use_payload_preserves_browser_location_without_form_values():
+    import json
+
+    builder = ContextBuilder(base_config(), FakeLLM())
+    controls = [
+        {"id": 1, "role": "combo box", "label": "Search with Google or enter address",
+         "value": "blubank.com/hi", "enabled": True},
+        {"id": 2, "role": "entry", "label": "Password", "value": "sensitive-value", "enabled": True},
+    ]
+    raw = {
+        "action": "navigate",
+        "url_requested": "https://blubank.com/",
+        "observed_url": "https://blubank.com/hi",
+        "destination_verified": False,
+        "navigation_status": "unverified",
+        "verification": "Current address differs from the requested URL; inspect before continuing.",
+        "elements": controls,
+        "elements_text": '#1 combo box "Search with Google or enter address" @ (400,60)\\n#2 entry "Password" @ (500,200)',
+    }
+    rendered = builder._tool_payload({
+        "name": "computer_use", "success": True,
+        "summary": "Navigation requested; destination not verified.",
+        "content": raw, "metadata": {}, "evidence": {}, "effects": [],
+    })
+    payload = json.loads(rendered)
+
+    assert payload["result"]["browser_location"]["value"] == "blubank.com/hi"
+    assert payload["result"]["observed_url"] == "https://blubank.com/hi"
+    assert payload["result"]["destination_verified"] is False
+    assert "Current address differs" in payload["result"]["verification"]
+    assert "sensitive-value" not in rendered
+
+
+def test_computer_use_payload_reads_browser_location_from_post_action_capture():
+    import json
+
+    builder = ContextBuilder(base_config(), FakeLLM())
+    raw = {
+        "action": "click",
+        "capture_after": {
+            "success": True,
+            "elements": [
+                {"id": 1, "role": "combo box", "label": "Search with Google or enter address",
+                 "value": "blubank.com/hi"},
+                {"id": 2, "role": "entry", "label": "Password", "value": "must-not-leak"},
+            ],
+            "elements_text": '#1 combo box "Search with Google or enter address" @ (300,60)\\n#2 entry "Password"',
+        },
+    }
+    payload = json.loads(builder._tool_payload({
+        "name": "computer_use", "success": True, "summary": "Clicked; captured new state.",
+        "content": raw, "metadata": {}, "evidence": {}, "effects": [],
+    }))
+
+    assert payload["result"]["browser_location"]["value"] == "blubank.com/hi"
+    assert "must-not-leak" not in json.dumps(payload, ensure_ascii=False)
+
+
+def test_historical_computer_use_state_survives_gui_task_clarification():
+    import json
+
+    builder = ContextBuilder(base_config(), FakeLLM())
+    earlier_task = event(ContextRole.USER, ContextType.MESSAGE, "Open a browser page", 1)
+    assistant = event(ContextRole.ASSISTANT, ContextType.MESSAGE, "", 2)
+    assistant.metadata["llm_message"] = {
+        "role": "assistant", "content": "", "tool_calls": [{
+            "id": "navigate-old", "type": "function",
+            "function": {"name": "computer_use", "arguments": '{"action":"navigate","url":"https://blubank.com/"}'},
+        }],
+    }
+    image_ref = "/tmp/.daena/screenshots/old-browser-state.png"
+    old_result = event(ContextRole.TOOL, ContextType.TOOL_RESULT, json.dumps({
+        "name": "computer_use", "tool_call_id": "navigate-old", "success": True,
+        "summary": "Navigation requested; current page captured.", "evidence": {}, "effects": [],
+        "content": {
+            "action": "navigate", "url_requested": "https://blubank.com/",
+            "elements": [{"id": 1, "role": "combo box", "label": "Search with Google or enter address", "value": "blubank.com/hi"}],
+            "elements_text": '#1 combo box "Search with Google or enter address" @(400,60)',
+            "image_ref": image_ref, "image_mime_type": "image/png", "visual_hash": "hash-old",
+        },
+        "metadata": {"image_ref": image_ref, "image_mime_type": "image/png", "visual_hash": "hash-old"},
+    }, ensure_ascii=False), 3)
+    clarified_task = event(ContextRole.USER, ContextType.MESSAGE, "Continue on this website and find the login page", 4)
+
+    messages = builder._build_conversation(
+        events=[earlier_task, assistant, old_result, clarified_task],
+        task={"id": str(clarified_task.id), "content": clarified_task.content, "step": clarified_task.step},
+    )
+    carried = next(message for message in messages if message.get("image_ref") == image_ref)
+
+    assert "historical Computer Use step" in carried["content"]
+    assert "Re-capture the current UI before clicking or typing" in carried["content"]
+    assert '"browser_location"' in carried["content"]
+    assert "blubank.com/hi" in carried["content"]
+    assert messages[-1]["content"] == clarified_task.content
+
+
+def test_historical_computer_use_keeps_last_valid_screenshot_when_latest_action_failed():
+    import json
+
+    builder = ContextBuilder(base_config(), FakeLLM())
+    first_task = event(ContextRole.USER, ContextType.MESSAGE, "Open the bank website", 1)
+    image_ref = "/tmp/.daena/screenshots/last-valid-page.png"
+    successful_capture = event(ContextRole.TOOL, ContextType.TOOL_RESULT, json.dumps({
+        "name": "computer_use", "tool_call_id": "capture-A", "success": True,
+        "summary": "Captured bank page.",
+        "content": {
+            "action": "navigate", "url_requested": "https://blubank.com/",
+            "elements": [{"id": 1, "role": "combo box",
+                          "label": "Search with Google or enter address",
+                          "value": "blubank.com/hi"}],
+            "elements_text": '#1 combo box "Search with Google or enter address"',
+            "image_ref": image_ref, "image_mime_type": "image/png",
+        },
+        "metadata": {"image_ref": image_ref, "image_mime_type": "image/png"},
+    }, ensure_ascii=False), 2)
+    failed_action = event(ContextRole.TOOL, ContextType.TOOL_RESULT, json.dumps({
+        "name": "computer_use", "tool_call_id": "capture-B", "success": False,
+        "summary": "Browser inspection failed.",
+        "content": {"action": "capture", "error": {
+            "type": "computer_use_failed", "message": "session has ended"
+        }},
+        "metadata": {},
+    }, ensure_ascii=False), 3)
+    clarified_task = event(ContextRole.USER, ContextType.MESSAGE, "Continue on this bank website", 4)
+
+    messages = builder._build_conversation(
+        events=[first_task, successful_capture, failed_action, clarified_task],
+        task={"id": str(clarified_task.id), "content": clarified_task.content, "step": clarified_task.step},
+    )
+    carried = next(message for message in messages if message.get("image_ref") == image_ref)
+
+    assert "screenshot is the last available screen from Computer Use step 2" in carried["content"]
+    assert "Latest Computer Use result" in carried["content"]
+    assert "session has ended" in carried["content"]
+    assert "blubank.com/hi" in carried["content"]
+    assert messages[-1]["content"] == clarified_task.content
+
+
+def test_historical_computer_use_screenshot_is_not_added_to_unrelated_task():
+    import json
+
+    builder = ContextBuilder(base_config(), FakeLLM())
+    earlier_task = event(ContextRole.USER, ContextType.MESSAGE, "Open a browser page", 1)
+    old_result = event(ContextRole.TOOL, ContextType.TOOL_RESULT, json.dumps({
+        "name": "computer_use", "success": True, "summary": "Captured browser.",
+        "content": {"action": "capture", "image_ref": "/tmp/.daena/screenshots/old.png"},
+        "metadata": {"image_ref": "/tmp/.daena/screenshots/old.png"},
+    }), 2)
+    new_task = event(ContextRole.USER, ContextType.MESSAGE, "Explain matrix multiplication", 3)
+
+    messages = builder._build_conversation(
+        events=[earlier_task, old_result, new_task],
+        task={"id": str(new_task.id), "content": new_task.content, "step": new_task.step},
+    )
+
+    assert not any(message.get("image_ref") for message in messages)
 
 
 def test_tool_protocol_keeps_interleaved_screenshot_observations():

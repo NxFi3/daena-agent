@@ -48,6 +48,7 @@ class CommandExec(Tool):
     process_manager = PROCESS_MANAGER
 
     name = "command_exec"
+    model_exposure = "always"
     action = "run"
 
     DEFAULT_YIELD_TIME_MS = 1_000

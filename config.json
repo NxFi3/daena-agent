@@ -2,23 +2,24 @@
   "llm": {
     "provider": "ollama",
     "provider_config": {
-      "model_name": "gpt-oss:20b",
+      "model_name": "qwen3.6:35b-a3b-q4_K_M",
       "generation_config": {
         "temperature": 0.3,
         "num_thread": 16,
-        "think": "low"
+        "think": "low",
+        "num_ctx": 16384
       }
     }
   },
   "context": {
-    "preserve_thinking": true,
+    "preserve_thinking": false,
     "safe_margin": -1,
-    "recent_event_limit": 80,
+    "recent_event_limit": 20,
     "compaction_enabled": true,
-    "compaction_target_tokens": 8192,
-    "max_prompt_tokens": 65536,
-    "compaction_trigger_ratio": 0.78,
-    "screenshot_history_frames": 3
+    "compaction_target_tokens": 4096,
+    "max_prompt_tokens": 12288,
+    "compaction_trigger_ratio": 0.62,
+    "screenshot_history_frames": 1
   },
   "guard_level": "strict",
   "tools": {
@@ -44,16 +45,18 @@
       "model_name": "BAAI/bge-reranker-v2-m3"
     }
   },
-  "max_agent_iterations": 300,
-  "max_auto_continuations": 4,
+  "max_agent_iterations": 120,
+  "max_auto_continuations": 2,
   "max_no_progress_segments": 2,
   "completion_review": {
     "enabled": true,
-    "max_retries": 5,
-    "recovery_interval": 6,
-    "max_recovery_checks": 2
+    "max_retries": 1,
+    "recovery_interval": 4,
+    "max_recovery_checks": 1
   },
   "experience": {
     "enabled": false
-  }
+  },
+  "computer_use_max_iterations": 16,
+  "computer_use_max_navigations_per_host": 3
 }
