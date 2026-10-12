@@ -805,6 +805,15 @@ class ContextBuilder:
         effects = event_content.get("effects")
         tool_name = str(event_content.get("name") or "").strip().lower()
 
+        # Recovery guidance belongs in the model-facing context, not only in
+        # runtime metadata/CLI diagnostics. Keep it bounded and attach it only
+        # to failed operations so it cannot override a successful observation.
+        metadata = event_content.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        recovery_hint = ""
+        if not bool(event_content.get("success", False)):
+            recovery_hint = str(metadata.get("recovery_hint") or "").strip()[:1200]
+
         # Computer Use is unlike a simple status-returning tool: its selected
         # controls and post-action snapshot are the evidence the model needs for
         # the *next* decision. Do not squeeze those fields into ToolResult's
@@ -892,6 +901,8 @@ class ContextBuilder:
             error = raw_result.get("error")
             if error is not None:
                 result["error"] = error
+            if recovery_hint:
+                result["recovery_hint"] = recovery_hint
             compact = {
                 "success": bool(event_content.get("success", False)),
                 "summary": summary,
@@ -924,6 +935,8 @@ class ContextBuilder:
             compact: dict[str, Any] = {
                 "success": bool(event_content.get("success", False)),
             }
+            if recovery_hint:
+                compact["recovery_hint"] = recovery_hint
             if summary:
                 compact["summary"] = summary
             if isinstance(effects, list) and effects:
@@ -953,6 +966,8 @@ class ContextBuilder:
             dict(inner) if isinstance(inner, dict) else {"message": str(inner or "")}
         )
         payload["success"] = bool(event_content.get("success", False))
+        if recovery_hint:
+            payload["recovery_hint"] = recovery_hint
 
         blocks: list[str] = []
         for key in ("content", "stdout", "stderr"):
@@ -1178,10 +1193,101 @@ class ContextBuilder:
         working_set: dict[str, Any] | None,
         observation: dict[str, Any] | None,
         recent_actions: dict[str, Any] | None,
+        task: dict[str, Any] | None = None,
     ) -> str:
-        # Keep decision-critical state first. The final budget truncation should
-        # never hide the latest failed verification behind an artifact list.
-        state: dict[str, Any] = {}
+        # Keep decision-critical state first. This is a versioned, provider-neutral
+        # contract: goal/status, recent outcomes, process receipts and verification
+        # are represented consistently even when history is compacted.
+        state: dict[str, Any] = {"schema_version": "daena.runtime_context.v1"}
+        agent_data = agent_state if isinstance(agent_state, dict) else {}
+        working_data = working_set if isinstance(working_set, dict) else {}
+
+        if isinstance(task, dict):
+            try:
+                task_step = int(task.get("step", 0) or 0)
+            except (TypeError, ValueError):
+                task_step = 0
+            active_task = {
+                "id": self._truncate(str(task.get("id") or ""), 80),
+                "step": task_step,
+                "objective": self._truncate(str(task.get("content") or "").strip(), 600),
+                # AgentState.status describes the last tool, not the user task lifecycle.
+                "status": "in_progress",
+                "phase": str(working_data.get("execution_phase") or "explore"),
+            }
+            try:
+                active_task["iteration"] = max(0, int(agent_data.get("iteration", 0) or 0))
+            except (TypeError, ValueError):
+                active_task["iteration"] = 0
+            state["active_task"] = active_task
+
+        actions_source = []
+        if isinstance(recent_actions, dict) and isinstance(recent_actions.get("items"), list):
+            actions_source = recent_actions["items"]
+        elif isinstance(working_data.get("recent_actions"), list):
+            actions_source = working_data["recent_actions"]
+
+        def action_receipt(item: Any) -> dict[str, Any] | None:
+            if not isinstance(item, dict):
+                return None
+            receipt = {
+                key: item.get(key)
+                for key in ("iteration", "tool", "action", "target", "outcome")
+                if item.get(key) not in (None, "")
+            }
+            summary = str(item.get("summary") or "").strip()
+            if summary:
+                receipt["summary"] = self._truncate(summary, 180)
+            return receipt or None
+
+        recent_receipts = [receipt for item in actions_source[-6:] if (receipt := action_receipt(item))]
+        process_data = working_data.get("processes")
+        process_receipts: list[dict[str, Any]] = []
+        if isinstance(process_data, dict):
+            for process_id, item in list(process_data.items())[-4:]:
+                if not isinstance(item, dict):
+                    continue
+                receipt = {"process_id": str(item.get("process_id") or process_id)}
+                for key in ("status", "exit_code", "success", "iteration"):
+                    if item.get(key) is not None:
+                        receipt[key] = item[key]
+                for key, limit in (("command", 220), ("workdir", 180)):
+                    if item.get(key) not in (None, ""):
+                        receipt[key] = self._truncate(str(item[key]), limit)
+                process_receipts.append(receipt)
+
+        verification_data = working_data.get("verification")
+        verification_receipt: dict[str, Any] = {}
+        if isinstance(verification_data, dict) and verification_data:
+            for key in ("tool", "success", "exit_code", "status", "timed_out"):
+                if verification_data.get(key) is not None:
+                    verification_receipt[key] = verification_data[key]
+            for key, limit in (("command", 220), ("workdir", 180), ("output_excerpt", 500), ("diagnostic_excerpt", 400)):
+                if verification_data.get(key) not in (None, ""):
+                    verification_receipt[key] = self._truncate(str(verification_data[key]), limit)
+
+        running_process_ids = [
+            item["process_id"] for item in process_receipts
+            if str(item.get("status") or "").casefold() == "running"
+        ]
+        latest_receipt = recent_receipts[-1] if recent_receipts else None
+        decision_state: dict[str, Any] = {
+            "last_action": latest_receipt,
+            "pending_process_ids": running_process_ids,
+            "last_verification": {
+                key: verification_receipt[key]
+                for key in ("success", "exit_code", "status", "timed_out")
+                if key in verification_receipt
+            },
+            "recovery_guidance": [
+                "Use the newest observed result as evidence; do not repeat a successful action without a reason.",
+                "Check pending process IDs before starting a duplicate process.",
+                "After a repeated failure, inspect the specific diagnostic and change the relevant input or method.",
+                "Distinguish completed work, current blockers, and unverified claims.",
+            ],
+        }
+        if latest_receipt or running_process_ids or verification_receipt:
+            state["decision_state"] = decision_state
 
         if isinstance(agent_state, dict):
             state["agent"] = {
@@ -1444,7 +1550,43 @@ class ContextBuilder:
             if len(rendered) <= self.MAX_EXECUTION_STATE_CHARS:
                 return rendered
 
-        return self._truncate(rendered, self.MAX_EXECUTION_STATE_CHARS)
+        # Never cut a serialized JSON object in the middle: malformed runtime
+        # state is worse than a slightly larger prompt. Strip optional descriptions
+        # and long diagnostic fields, while keeping the schema/task anchor valid.
+        for key in ("tool_capabilities", "tool_guidance", "workspace_guidance", "decision_state"):
+            if key in state:
+                state.pop(key, None)
+                state["omitted_for_space"] = True
+                rendered = json.dumps(state, ensure_ascii=False, default=str)
+                if len(rendered) <= self.MAX_EXECUTION_STATE_CHARS:
+                    return rendered
+
+        active_task = state.get("active_task")
+        if isinstance(active_task, dict) and isinstance(active_task.get("objective"), str):
+            active_task["objective"] = self._truncate(active_task["objective"], 240)
+        last_failed = state.get("last_failed_verification")
+        if isinstance(last_failed, dict):
+            for key in ("output_excerpt", "diagnostic_excerpt", "command", "workdir"):
+                if isinstance(last_failed.get(key), str):
+                    last_failed[key] = self._truncate(last_failed[key], 240)
+        verification = state.get("verification")
+        if isinstance(verification, dict):
+            for key in ("output_excerpt", "diagnostic_excerpt", "command", "workdir"):
+                if isinstance(verification.get(key), str):
+                    verification[key] = self._truncate(verification[key], 180)
+        rendered = json.dumps(state, ensure_ascii=False, default=str)
+        if len(rendered) <= self.MAX_EXECUTION_STATE_CHARS:
+            return rendered
+
+        # A pathological state still must be valid and retain the active goal.
+        minimal = {
+            "schema_version": "daena.runtime_context.v1",
+            "active_task": state.get("active_task", {}),
+            "agent": state.get("agent", {}),
+            "phase": state.get("phase", ""),
+            "omitted_for_space": True,
+        }
+        return json.dumps(minimal, ensure_ascii=False, default=str)
 
     def _populate_window(
         self,
@@ -2093,6 +2235,7 @@ class ContextBuilder:
             working_set=working_set,
             observation=observation,
             recent_actions=recent_actions,
+            task=task,
         )
 
         self._populate_window(

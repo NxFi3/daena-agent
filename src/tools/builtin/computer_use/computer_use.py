@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
@@ -43,13 +44,14 @@ class ComputerUseTool(Tool):
         "Use action='type', target='field label', text='…' to type into an accessible field. If the field is visible but missing from the controls list, use coordinate=[x,y] from the latest screenshot; the tool focuses that point before typing. For action='scroll', use coordinate=[x,y] inside the intended scrollable area when it is not inferable from current accessibility state; the driver requires an explicit scroll anchor. "
         "For continuous pointer gestures—drawing in Paint, dragging objects, selecting regions—use action='drag' with from_coordinate=[x,y] and to_coordinate=[x,y] from the latest screenshot. Each drag is a real press-move-release gesture; use separate strokes for separate drawing segments. "
         "Use action='sequence' for 2-6 predictable steps with label targets; it refreshes state between steps and stops on an ambiguous target or failure. Keep decisions requiring visual interpretation or user input (for example verification codes) as separate turns. "
-        "After meaningful actions, inspect the returned fresh screenshot and controls. If screen_hash_changed is false, do not repeat the same click; re-capture/re-evaluate the current window. 'Dispatched' only means an input was sent, not that it worked; verify the visible result before continuing or claiming success. "
+        "After meaningful actions, review the returned fresh screenshot and controls. If screen_hash_changed is false, do not repeat the same click; re-capture/re-evaluate the current window. 'Dispatched' only means an input was sent, not that it worked; confirm the visible result before continuing or claiming success. "
         "If the user replies with a value you requested (especially an OTP), first capture the current UI and resume the pending flow; do not navigate or launch another tab just because the reply is short. "
         "Never reuse an old element number after capture changes, never repeat an action after timeout/no-op, and never keep trying guessed coordinates. "
-        "The tool aligns the target window before capture; if it cannot align screenshot and controls or the driver refuses/times out, report the concrete error rather than guessing. If a scroll lacks a usable anchor, it reports that explicitly so a fresh screenshot can supply one. "
-        "Use mode='ax' for controls only and mode='vision' when visual pixels are needed or controls are inaccessible. If the app is not open, use action='launch', app='<application>' instead of clicking the taskbar. "
+        "The tool captures a selected native window directly and pairs its screenshot with controls from that PID/window_id; it does not bring the app forward just to take a screenshot. If exact-window capture or target resolution fails, report the concrete driver error rather than mixing another app's pixels with these controls. Full-desktop coordinates are reserved for explicitly desktop-level tasks. If a scroll lacks a usable anchor, capture the target window and choose a point in its actual content. "
+        "Use mode='ax' for controls only and mode='vision' when visual pixels are needed or controls are inaccessible. If the task names a specific app, pass its actual app name through app or a partial window_title on the first capture; never invent a full title. If selection fails, use the returned visible-window list and retry with a real matching title or shorter app-name substring before any input. If the app is not open, use action='launch', app='<application>' instead of clicking the taskbar. "
         "If a capture reports zero numbered controls, element=N cannot be used; use a fresh screenshot and a clearly visible coordinate target only when appropriate. "
-        "For URLs, action='navigate' opens the destination in a browser and returns the selected window's fresh screenshot and controls; use it instead of clicking/typing into the address bar, which may append to existing text. Do not immediately call capture again unless the returned state is stale or ambiguous. If navigation fails, inspect the returned state and retry only when the evidence supports a recovery. Repeating the exact same URL without a preceding failed attempt is blocked, so inspect the current page and continue from evidence instead. "
+        "For URLs, action='navigate' opens the destination in a browser and returns the selected window's fresh screenshot and controls; use it instead of clicking/typing into the address bar, which may append to existing text. Do not immediately call capture again unless the returned state is stale or ambiguous. If navigation fails, review the returned state and retry only when the evidence supports a recovery. Repeating the exact same URL without a preceding failed attempt is blocked, so review the current page and continue from evidence instead. "
+        "Coordinates use the frame explicitly reported by the screenshot: window-local pixels for a selected app, and desktop pixels only for an explicit full-desktop capture. They are pixels of the actual returned screenshot, not coordinates scaled to a chat preview. If accessibility returns zero or one control, the screenshot has a labeled 100-pixel x/y grid; use the labels and intersections instead of estimating from memory. A red ring marks the previous click when it belongs to this exact window. Input is bound to the captured PID/window_id and normally uses background delivery; focus is escalated only when the driver explicitly says background input is unavailable. If a required control is absent from accessibility results, use a point clearly visible in that exact annotated screenshot. After an unchanged screenshot, the same coordinate is blocked; inspect the fresh grid and choose a distinct supported target or stop. "
         "The red ring marks the last agent click, not the live cursor. This is the only Computer Use tool exposed to the model."
     )
     parameters = {
@@ -122,7 +124,7 @@ class ComputerUseTool(Tool):
             },
             "query": {
                 "type": "string",
-                "description": "Optional target label filter for capture, e.g. 'address bar' or 'جست‌و‌جو در آپارات'. Leave empty to list controls.",
+                "description": "Optional target label filter for capture, e.g. 'address bar' or 'جست‌و‌جو در آپارات'. Leave empty to return available controls.",
             },
             "element": {
                 "type": "integer",
@@ -134,7 +136,7 @@ class ComputerUseTool(Tool):
                 "items": {"type": "number"},
                 "minItems": 2,
                 "maxItems": 2,
-                "description": "[x,y] from the latest full-desktop screenshot: use for coordinate-only click/type targets or as an anchor inside the intended scroll area. Never estimate coordinates from a typical layout.",
+                "description": "[x,y] in the coordinate frame reported by the latest screenshot (window-local for a selected app; desktop coordinates only for a full-desktop capture). Use only clearly visible points, never a guessed layout.",
             },
             "capture_after": {
                 "type": "boolean",
@@ -143,7 +145,7 @@ class ComputerUseTool(Tool):
             },
             "window_title": {
                 "type": "string",
-                "description": "Optional visible-window title substring to disambiguate inspect/focus.",
+                "description": "Optional visible-window title substring to choose the intended app window.",
             },
             "pid": {
                 "type": "integer",
@@ -308,6 +310,53 @@ class ComputerUseTool(Tool):
         except OSError:
             pass
 
+    def _refresh_window_geometry(self, target: dict[str, Any]) -> bool:
+        """Refresh exact target geometry without raising it or stealing user focus.
+
+        A PID/window pair is the action target, not merely a hint about which
+        coordinates to send to the desktop. Re-resolve only within the same
+        process and only when the title match is unambiguous.
+        """
+        try:
+            pid = int(target.get("pid"))
+            window_id = int(target.get("window_id"))
+        except (TypeError, ValueError, OverflowError):
+            raise CuaDriverError("Cannot target the observed window: valid pid/window_id are missing.")
+
+        rows = self._inspect._windows()
+        current = next((
+            row for row in rows
+            if int(row.get("pid") or 0) == pid
+            and int(row.get("window_id") or 0) == window_id
+            and row.get("is_on_screen", True)
+        ), None)
+        if current is None:
+            candidates = [
+                row for row in rows
+                if int(row.get("pid") or 0) == pid
+                and row.get("is_on_screen", True)
+                and int(row.get("width") or 0) >= 250
+                and int(row.get("height") or 0) >= 150
+            ]
+            title = " ".join(str(target.get("title") or target.get("app") or "").casefold().split())
+            if title:
+                titled = [
+                    row for row in candidates
+                    if title in " ".join(f"{row.get('title', '')} {row.get('app_name', '')}".casefold().split())
+                    or " ".join(f"{row.get('title', '')} {row.get('app_name', '')}".casefold().split()) in title
+                ]
+                if len(titled) == 1:
+                    current = titled[0]
+            if current is None and len(candidates) == 1:
+                current = candidates[0]
+        if current is None:
+            raise CuaDriverError(
+                f"Cannot refresh target PID={pid}, window_id={window_id}: the same visible window could not be resolved safely. "
+                "Capture the intended window again; no input was sent."
+            )
+        target.update(current)
+        return True
+
     def _ensure_window_front(self, target: dict[str, Any]) -> bool:
         """Activate the exact target window when it is covered, then verify z-order."""
         try:
@@ -459,6 +508,40 @@ class ComputerUseTool(Tool):
         return token, record
 
     @staticmethod
+    def _window_local_frame(
+        frame: Any, target: dict[str, Any], screenshot_width: Any, screenshot_height: Any,
+    ) -> dict[str, Any] | None:
+        """Convert AT-SPI screen-space bounds to the delivered window screenshot frame."""
+        if not isinstance(frame, dict):
+            return None
+        bounds = target.get("bounds") if isinstance(target.get("bounds"), dict) else target
+        try:
+            screen_x, screen_y, screen_w, screen_h = (
+                float(bounds[key]) for key in ("x", "y", "width", "height")
+            )
+            shot_w, shot_h = float(screenshot_width), float(screenshot_height)
+            x = float(frame["x"])
+            y = float(frame["y"])
+            w = float(frame.get("w", frame.get("width")))
+            h = float(frame.get("h", frame.get("height")))
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return dict(frame)
+        if screen_w <= 0 or screen_h <= 0 or shot_w <= 0 or shot_h <= 0 or w < 0 or h < 0:
+            return dict(frame)
+        scale_x, scale_y = shot_w / screen_w, shot_h / screen_h
+        local = dict(frame)
+        local.update({
+            "x": round((x - screen_x) * scale_x, 2),
+            "y": round((y - screen_y) * scale_y, 2),
+            "w": round(w * scale_x, 2),
+            "h": round(h * scale_y, 2),
+        })
+        # Remove alternative geometry keys so downstream code has one canonical shape.
+        local.pop("width", None)
+        local.pop("height", None)
+        return local
+
+    @staticmethod
     def _reading_order(row: Any) -> tuple[float, float]:
         """Sort controls top-to-bottom (20px bands), then left-to-right."""
         frame = row.get("frame") if isinstance(row, dict) else None
@@ -466,6 +549,22 @@ class ComputerUseTool(Tool):
             return (round(float(frame["y"]) / 20), float(frame["x"]))
         except (TypeError, KeyError, ValueError):
             return (1e9, 0.0)
+
+    @staticmethod
+    def _checked_control_state(elements: Any, role: str, label: str) -> bool | None:
+        """Read a real AT-SPI checked state; `selected` may only mean focused."""
+        if not isinstance(elements, list):
+            return None
+        wanted_role = str(role or "").strip().casefold()
+        wanted_label = str(label or "").strip().casefold()
+        matches = [
+            item for item in elements
+            if isinstance(item, dict)
+            and str(item.get("role") or "").strip().casefold() == wanted_role
+            and str(item.get("label") or "").strip().casefold() == wanted_label
+            and isinstance(item.get("checked"), bool)
+        ]
+        return matches[0]["checked"] if len(matches) == 1 else None
 
     def _capture(
         self,
@@ -482,24 +581,26 @@ class ComputerUseTool(Tool):
         mode = str(mode or "som").strip().casefold()
         if mode not in {"som", "vision", "ax"}:
             raise ValueError("mode must be 'som', 'vision', or 'ax'.")
-        hint = str(window_title or app or "").strip()
+        title_hint = str(window_title or "").strip()
+        app_hint = str(app or "").strip()
         elements: list[dict[str, Any]] = []
         element_id_map: dict[str, str] = {}
         target: dict[str, Any] | None = None
         inspection_error: str | None = None
 
-        # Select the target first. On desktops with several browser windows, an
-        # accessibility tree can describe a covered window while the screenshot shows
-        # another app. Activate the selected native window before taking either view.
+        # Select the target first. On desktops with several app windows, an
+        # accessibility tree can describe a covered window while a desktop screenshot
+        # shows another app. Capture the selected native window directly to keep both views aligned.
         observed: ToolResult | None = None
         inspected: ToolResult | None = None
         query_fallback_used = False
         selection: ToolResult | None = None
         selection_target_ready = False
-        if mode != "vision" or hint or pid is not None or window_id is not None:
+        if mode != "vision" or title_hint or app_hint or pid is not None or window_id is not None:
             selection = self._inspect.execute(
                 query="",
-                window_title=hint,
+                window_title=title_hint,
+                app_name_hint=app_hint,
                 pid=pid,
                 window_id=window_id,
                 max_results=1,
@@ -519,20 +620,61 @@ class ComputerUseTool(Tool):
             target = selected_window
             pid = selected_window.get("pid")
             window_id = selected_window.get("window_id")
-            # If this fails, fail the capture closed instead of mixing a hidden app's
-            # accessibility controls with another window's pixels.
-            self._ensure_window_front(selected_window)
-            # _ensure_window_front may safely re-resolve a browser window id that
-            # changed while the browser was starting; use the updated target for both
-            # the screenshot and the follow-up accessibility read.
+            # Refresh native geometry but do not raise the window. The screenshot
+            # below is captured directly from this PID/window pair, so it cannot show
+            # a different foreground app while controls describe the requested one.
+            self._refresh_window_geometry(selected_window)
             pid = selected_window.get("pid")
             window_id = selected_window.get("window_id")
             selection_target_ready = True
 
         if mode != "ax":
-            observed = self._observe.execute(include_windows=include_windows)
+            # Hermes-style target-specific capture: when a native window is known,
+            # request its own screenshot in window-local coordinates. Reserve the
+            # composited desktop path for tasks that intentionally target the whole
+            # desktop or when no native window has been selected.
+            if target is not None and pid is not None and window_id is not None:
+                observed = self._observe.execute(
+                    include_windows=False, pid=pid, window_id=window_id,
+                )
+            else:
+                observed = self._observe.execute(include_windows=include_windows)
+            if not observed.success and target is not None and pid is not None and window_id is not None:
+                failure = observed.content.get("error", {})
+                failure = failure if isinstance(failure, dict) else {}
+                detail = str(failure.get("message") or observed.summary or "").casefold()
+                # Some Wayland/compositor combinations cannot prove a window-scoped
+                # screenshot's surface identity. Only in that explicit capture failure
+                # may we escalate: foreground the already-verified target, then capture
+                # the desktop so pixels and controls once again describe the same app.
+                capture_frame_unavailable = any(marker in detail for marker in (
+                    "surface_identity_unproven",
+                    "window screenshot frame is unavailable",
+                    "did not write a readable screenshot for the selected window",
+                ))
+                if capture_frame_unavailable:
+                    try:
+                        self._ensure_window_front(target)
+                        observed = self._observe.execute(include_windows=include_windows)
+                    except (CuaDriverError, ValueError, TypeError) as exc:
+                        return ToolResult(
+                            success=False, name=self.name,
+                            content={"action": "capture", "error": {
+                                "type": "window_capture_and_fallback_failed",
+                                "message": f"Exact-window capture failed ({detail}); verified foreground fallback also failed: {exc}",
+                            }},
+                            summary="Capture stopped because neither the exact window nor a verified foreground screenshot was available.",
+                        )
             if not observed.success:
                 return self._copy_result(observed, "capture")
+            if isinstance(target, dict):
+                coordinate_frame = str(
+                    observed.content.get("coordinate_frame")
+                    or observed.metadata.get("coordinate_frame")
+                    or "desktop"
+                ).strip().casefold()
+                if coordinate_frame in {"window", "desktop"}:
+                    target["coordinate_frame"] = coordinate_frame
 
         if mode != "vision":
             # A failed preliminary query already contains the concrete error; reuse it
@@ -542,8 +684,8 @@ class ComputerUseTool(Tool):
             if selection is not None and not selection.success:
                 inspected = selection
             else:
-                # A fresh read after activation makes the control IDs and screenshot refer
-                # to the same window/tab state. Once selected, pin this exact native window.
+                # A fresh read after the target-specific capture makes the control IDs
+                # and screenshot refer to the same window/tab state. Keep this native target pinned.
                 inspected = self._inspect.execute(
                     query=str(query or ""),
                     window_title=inspect_title,
@@ -577,11 +719,20 @@ class ComputerUseTool(Tool):
                     )
 
             if inspected.success:
-                target = (
+                inspected_target = (
                     inspected.content.get("window")
                     if isinstance(inspected.content, dict)
                     else None
                 )
+                if isinstance(inspected_target, dict):
+                    if not isinstance(target, dict):
+                        target = dict(inspected_target)
+                    else:
+                        # Refresh identity fields without losing coordinates captured
+                        # from the native window inventory during focus verification.
+                        for key in ("app", "app_name", "title", "pid", "window_id"):
+                            if inspected_target.get(key) is not None:
+                                target[key] = inspected_target[key]
                 source_elements = (
                     inspected.content.get("elements", [])
                     if isinstance(inspected.content, dict)
@@ -596,6 +747,17 @@ class ComputerUseTool(Tool):
                             continue
                         number = len(elements) + 1
                         element_id_map[str(number)] = str(row["element_token"])
+                        element_frame = row.get("frame")
+                        if (
+                            isinstance(target, dict)
+                            and target.get("coordinate_frame") == "window"
+                            and observed is not None
+                            and row.get("frame_coordinate_space", "desktop") != "window"
+                        ):
+                            element_frame = self._window_local_frame(
+                                element_frame, target,
+                                observed.content.get("width"), observed.content.get("height"),
+                            )
                         elements.append(
                             {
                                 "id": number,
@@ -604,13 +766,35 @@ class ComputerUseTool(Tool):
                                 "actions": row.get("actions", []),
                                 "enabled": bool(row.get("enabled", True)),
                                 "in_web_content": bool(row.get("in_web_content", False)),
+                                **({"selected": row["selected"]} if isinstance(row.get("selected"), bool) else {}),
+                                **({"checked": row["checked"]} if isinstance(row.get("checked"), bool) else {}),
                                 **({"value": row["value"]} if row.get("value") else {}),
-                                **({"bounds": row["frame"]} if isinstance(row.get("frame"), dict) else {}),
+                                **({"bounds": element_frame} if isinstance(element_frame, dict) else {}),
                             }
                         )
                 state_path, state = self._current_state()
                 # Element numbers are scoped to one capture. Replacing this map
                 # invalidates every old number, exactly as in Hermes' wrapper.
+                if (
+                    isinstance(target, dict)
+                    and target.get("coordinate_frame") == "window"
+                    and observed is not None
+                ):
+                    access_map = state.get("latest_accessibility_elements")
+                    if isinstance(access_map, dict):
+                        for access_record in access_map.values():
+                            if (
+                                isinstance(access_record, dict)
+                                and isinstance(access_record.get("frame"), dict)
+                                and access_record.get("frame_coordinate_space", "desktop") != "window"
+                            ):
+                                converted_frame = self._window_local_frame(
+                                    access_record["frame"], target,
+                                    observed.content.get("width"), observed.content.get("height"),
+                                )
+                                if converted_frame is not None:
+                                    access_record["frame"] = converted_frame
+                                    access_record["frame_coordinate_space"] = "window"
                 state["latest_element_ids"] = element_id_map
                 state["latest_computer_use_target"] = target or {}
                 state["latest_computer_use_mode"] = mode
@@ -625,7 +809,30 @@ class ComputerUseTool(Tool):
         if mode == "vision":
             state_path, state = self._current_state()
             state["latest_element_ids"] = {}
+            # A vision-only capture can switch the target window. Never let an old
+            # AX map supply a scroll anchor or keyboard target for that new screenshot.
+            state["latest_accessibility_elements"] = {}
+            state.pop("latest_accessibility_pid", None)
+            state.pop("latest_accessibility_window_id", None)
+            state.pop("latest_accessibility_window_title", None)
+            state.pop("latest_accessibility_captured_at", None)
             self._save_state(state_path, state)
+
+        coordinate_grid_overlay = False
+        # When accessibility gives the model no useful toolbar controls, annotate
+        # the exact screenshot rather than asking a vision model to estimate pixels
+        # from memory. Hash-based no-op verification continues to use the raw PNG hash.
+        if mode != "ax" and observed is not None and (mode == "vision" or len(elements) <= 1):
+            image_ref = (
+                observed.metadata.get("image_ref")
+                or observed.content.get("image_ref")
+            )
+            if image_ref:
+                coordinate_grid_overlay = self._observe._overlay_coordinate_grid(Path(str(image_ref)))
+                if coordinate_grid_overlay:
+                    visual_hash = hashlib.sha256(Path(str(image_ref)).read_bytes()).hexdigest()
+                    observed.content["visual_hash"] = visual_hash
+                    observed.metadata["visual_hash"] = visual_hash
 
         no_controls = mode != "vision" and not elements
         content: dict[str, Any] = {
@@ -634,6 +841,7 @@ class ComputerUseTool(Tool):
             "window": target,
             "element_count": len(elements) if mode != "vision" else 0,
             "elements": elements if mode != "vision" else [],
+            "coordinate_grid_overlay": coordinate_grid_overlay,
             "note": "Element IDs are valid only until the next capture. Use computer_use(action='click', element=N), never an element_token.",
         }
         if no_controls:
@@ -657,6 +865,11 @@ class ComputerUseTool(Tool):
                     or observed.content.get("image_mime_type", "image/png"),
                     "width": observed.content.get("width"),
                     "height": observed.content.get("height"),
+                    "coordinate_frame": observed.content.get("coordinate_frame")
+                    or observed.metadata.get("coordinate_frame")
+                    or "desktop",
+                    "capture_id": observed.content.get("capture_id")
+                    or observed.metadata.get("capture_id"),
                     "screenshot_hash": observed.content.get("screenshot_hash"),
                     "visual_hash": observed.content.get("visual_hash"),
                     "windows": observed.content.get("windows", ""),
@@ -705,21 +918,87 @@ class ComputerUseTool(Tool):
                         f"y=0..{screenshot_height - 1}."
                     )
             summary = (
-                "Captured the desktop but 0 numbered controls are available, so element=N will FAIL. "
+                f"Captured {((target or {}).get('title') or 'the desktop')} but 0 numbered controls are available, so element=N will FAIL. "
                 + (f"Inspection said: {inspection_error} " if inspection_error else "")
                 + "Use action='launch' to open an app, or use coordinate=[x,y] only when the intended point is clearly visible in this exact screenshot."
                 + resolution
             )
         elif mode == "vision":
-            summary = "Captured desktop screenshot (vision-only mode; no element IDs were generated)."
+            summary = (
+                f"Captured {((target or {}).get('title') or 'desktop')} screenshot "
+                "(vision-only mode; no element IDs were generated)."
+            )
         else:
             summary = f"Captured {(target or {}).get('title') or (target or {}).get('app') or 'desktop'}: {len(elements)} numbered UI controls."
 
+        if coordinate_grid_overlay:
+            summary += (
+                "\nCoordinate grid: labeled x/y lines every 100 pixels are overlaid on this exact screenshot. "
+                "Read window-local coordinates from the labels; do not estimate or scale the image."
+            )
         if query_fallback_used and inspection_error:
             summary += (
                 "\nNOTICE: the requested query did not match; these are the unfiltered accessible controls. "
                 "Choose by the displayed label and role, not by element number alone."
             )
+
+        # Record the screenshot's own target and native dimensions for the coordinate
+        # guard. AX-only snapshots may change the accessibility target, but never
+        # relabel an older screenshot as belonging to that other window.
+        state_path, state = self._current_state()
+        if mode != "ax":
+            screenshot_target = dict(target) if isinstance(target, dict) else {}
+            if screenshot_target:
+                try:
+                    x, y, width, height = (float(screenshot_target[key]) for key in ("x", "y", "width", "height"))
+                    if width > 0 and height > 0:
+                        screenshot_target["bounds"] = {"x": x, "y": y, "width": width, "height": height}
+                except (KeyError, TypeError, ValueError):
+                    screenshot_target.pop("bounds", None)
+            else:
+                screenshot_target = {"desktop_capture": True}
+            state["latest_screenshot_target"] = screenshot_target
+            state["latest_screenshot_coordinate_frame"] = str(
+                screenshot_target.get("coordinate_frame") or "desktop"
+            )
+            if observed is not None:
+                try:
+                    state["latest_screenshot_width"] = int(observed.content.get("width"))
+                    state["latest_screenshot_height"] = int(observed.content.get("height"))
+                except (TypeError, ValueError):
+                    state.pop("latest_screenshot_width", None)
+                    state.pop("latest_screenshot_height", None)
+                state["latest_screenshot_captured_at"] = time.time()
+                state["latest_screenshot_hash"] = observed.content.get("screenshot_hash")
+        if isinstance(target, dict):
+            state["latest_computer_use_target"] = dict(target)
+        elif mode != "ax":
+            # An un-targeted full-desktop screenshot must not retain a stale native
+            # target from a previous app/window.
+            state["latest_computer_use_target"] = {}
+        self._save_state(state_path, state)
+
+        bounds = state.get("latest_screenshot_target", {}).get("bounds") if isinstance(state.get("latest_screenshot_target"), dict) else None
+        if mode != "ax" and observed is not None:
+            width, height = observed.content.get("width"), observed.content.get("height")
+            if isinstance(width, int) and isinstance(height, int):
+                coordinate_frame = str(
+                    (target or {}).get("coordinate_frame") or "desktop"
+                ).casefold()
+                if coordinate_frame == "window":
+                    summary += (
+                        f"\nCoordinate frame: window-local pixels ({width}x{height}); "
+                        "use coordinates from this exact window screenshot. Input is bound to this window's PID/window_id."
+                    )
+                elif isinstance(bounds, dict):
+                    summary += (
+                        f"\nCoordinate frame: native desktop pixels ({width}x{height}). "
+                        f"Selected window bounds: x={bounds.get('x')}..{float(bounds.get('x', 0)) + float(bounds.get('width', 0)):.0f}, "
+                        f"y={bounds.get('y')}..{float(bounds.get('y', 0)) + float(bounds.get('height', 0)):.0f}. "
+                        "Coordinate input outside these bounds is rejected before dispatch."
+                    )
+                else:
+                    summary += f"\nCoordinate frame: native desktop pixels ({width}x{height}); keep every point inside the screenshot."
 
         # Put the actual control list in the text the model reads. Small models do not
         # reliably dig through structured `content`, so they used to guess element=1.
@@ -734,7 +1013,11 @@ class ComputerUseTool(Tool):
                     where = f" @({int(float(b['x']) + float(b['w']) / 2)},{int(float(b['y']) + float(b['h']) / 2)})"
                 except (KeyError, TypeError, ValueError):
                     where = ""
-                lines.append(f"#{e['id']} {e.get('role', '')} \"{label}\"{where}")
+                role = str(e.get("role") or "").casefold()
+                selection = ""
+                if role in {"check box", "toggle button", "radio button"} and isinstance(e.get("selected"), bool):
+                    selection = " [SELECTED]" if e["selected"] else " [not selected]"
+                lines.append(f"#{e['id']} {e.get('role', '')} \"{label}\"{selection}{where}")
             content["elements_text"] = "\n".join(lines)
             summary += (
                 "\nControls (pick by LABEL, not by guess):\n" + content["elements_text"]
@@ -760,6 +1043,11 @@ class ComputerUseTool(Tool):
                 "accessibility_error": inspection_error,
             },
         )
+
+    @staticmethod
+    def _validate_coordinate_safety(action: str, args: dict[str, Any], state: dict[str, Any]) -> None:
+        """Use the same pixel-safety contract as the final native-input boundary."""
+        ComputerActTool.validate_pixel_coordinates(action, args, state)
 
     def _act_once(self, action: str, **kwargs: Any) -> ToolResult:
         action = str(action or "").strip().casefold()
@@ -887,6 +1175,74 @@ class ComputerUseTool(Tool):
             for key, value in args.items()
             if key in allowed and value is not None
         }
+        # Refresh pointer state after label resolution/capture and validate before a
+        # driver call can move or click the real desktop.
+        _fresh_state_path, fresh_state = self._current_state()
+        self._validate_coordinate_safety(action, args, fresh_state)
+        screenshot_target = fresh_state.get("latest_screenshot_target")
+        screenshot_target = screenshot_target if isinstance(screenshot_target, dict) else {}
+        has_pixel_points = (
+            any(key in args for key in ("x", "y"))
+            or any(key in args for key in ("from_x", "from_y", "to_x", "to_y"))
+        )
+        if has_pixel_points and screenshot_target and screenshot_target.get("desktop_capture") is not True:
+            # Refresh geometry immediately before dispatch but never steal focus.
+            # The action carries this exact PID/window id into Cua Driver.
+            target_before = dict(screenshot_target)
+            target_now = dict(screenshot_target)
+            self._refresh_window_geometry(target_now)
+            old_bounds = target_before.get("bounds")
+            if not isinstance(old_bounds, dict):
+                raise ValueError("Blocked coordinate input: no verified bounds were saved for the screenshot target. Capture again.")
+            try:
+                old_rect = tuple(float(old_bounds[key]) for key in ("x", "y", "width", "height"))
+                new_rect = tuple(float(target_now[key]) for key in ("x", "y", "width", "height"))
+            except (KeyError, TypeError, ValueError):
+                raise ValueError("Blocked coordinate input: current target-window geometry is unavailable. Capture again.")
+            old_pid, new_pid = target_before.get("pid"), target_now.get("pid")
+            old_window_id, new_window_id = target_before.get("window_id"), target_now.get("window_id")
+            # Native screenshot IDs are snapshot-scoped. A matching title is not
+            # enough to reuse pixels/tokens after the driver assigns a new window ID.
+            same_window = (
+                old_pid is not None and str(old_pid) == str(new_pid)
+                and old_window_id is not None and str(old_window_id) == str(new_window_id)
+            )
+            if not same_window:
+                raise ValueError(
+                    "Blocked coordinate input: the observed window identity changed after the screenshot. "
+                    "No input was dispatched; capture the current target and choose coordinates from that view."
+                )
+            if abs(old_rect[2] - new_rect[2]) > 1.0 or abs(old_rect[3] - new_rect[3]) > 1.0:
+                raise ValueError(
+                    "Blocked coordinate input: the target window was resized after the screenshot. "
+                    "No input was dispatched; capture the resized window and recompute coordinates."
+                )
+
+            # Desktop-frame pixels must move with the window. Window-local
+            # pixels remain valid when only the window's screen position changes.
+            dx = new_rect[0] - old_rect[0]
+            dy = new_rect[1] - old_rect[1]
+            if abs(dx) > 0.01 or abs(dy) > 0.01:
+                coordinate_frame = str(
+                    target_before.get("coordinate_frame")
+                    or fresh_state.get("latest_screenshot_coordinate_frame")
+                    or "desktop"
+                ).strip().casefold()
+                if coordinate_frame != "window":
+                    for x_key, y_key in (("x", "y"), ("from_x", "from_y"), ("to_x", "to_y")):
+                        if x_key in args and y_key in args:
+                            args[x_key] = round(float(args[x_key]) + dx)
+                            args[y_key] = round(float(args[y_key]) + dy)
+                rebased_target = dict(target_now)
+                rebased_target["bounds"] = {
+                    "x": new_rect[0], "y": new_rect[1],
+                    "width": new_rect[2], "height": new_rect[3],
+                }
+                fresh_state["latest_screenshot_target"] = rebased_target
+                fresh_state["latest_computer_use_target"] = dict(target_now)
+                self._save_state(_fresh_state_path, fresh_state)
+                # Revalidate screen and window bounds after translating desktop points.
+                self._validate_coordinate_safety(action, args, fresh_state)
         if typing_fallback_token is not None and typing_fallback_text is not None:
             # When AT-SPI exposes an input only as "activate", its AX click route may
             # fail on Wayland (or focus a different native surface). Use the exact
@@ -1806,9 +2162,253 @@ class ComputerUseTool(Tool):
                 f"Target label {target!r} matches multiple current controls {matches}; "
                 "use a more specific visible label. No action was dispatched."
             )
+        _state_path, current_state = self._current_state()
+        listed = current_state.get("latest_element_ids", {})
+        available = current_state.get("latest_accessibility_elements", {})
+        labels = []
+        if isinstance(listed, dict) and isinstance(available, dict):
+            for number, token in list(listed.items())[:12]:
+                record = available.get(str(token), {})
+                if isinstance(record, dict):
+                    labels.append(f"#{number} {record.get('role', '')} {record.get('label', '')!r}")
         raise ValueError(
-            f"No current accessible control uniquely matches target label {target!r}. "
-            "Read the latest controls and use an exact visible label or a separate visual action."
+            f"No current accessible control uniquely matches target label {target!r}. No action was dispatched. "
+            f"Controls actually available: {', '.join(labels) if labels else '(none)'}. "
+            "Do not retry this missing label or invent an element ID. Capture the current target in vision mode, "
+            "then use coordinates only when the control is clearly visible inside the reported native window bounds; "
+            "otherwise stop and report that this control is not accessible."
+        )
+
+    def _recover_unresolved_target(
+        self, action: str, target_label: str, error: ValueError,
+    ) -> ToolResult:
+        """Return the current annotated screen when AX cannot resolve a visible label.
+
+        A missing accessibility label is not evidence that a control is absent visually.
+        Give the model one fresh screenshot of the *same verified native window* so it
+        can reason from pixels, rather than making it issue the same doomed label click.
+        No native input is dispatched from this recovery path.
+        """
+        _state_path, state = self._current_state()
+        target = state.get("latest_computer_use_target")
+        if not isinstance(target, dict) or not target:
+            target = state.get("latest_screenshot_target")
+        target = target if isinstance(target, dict) else {}
+        pid = target.get("pid")
+        window_id = target.get("window_id")
+        fresh: ToolResult | None = None
+        if pid is not None and window_id is not None:
+            try:
+                fresh = self._capture(
+                    mode="som", pid=pid, window_id=window_id,
+                    max_results=24, include_windows=False,
+                )
+            except (CuaDriverError, ValueError, TypeError, KeyError) as capture_error:
+                fresh = ToolResult(
+                    success=False, name=self.name,
+                    content={"error": {"type": "fresh_observation_failed", "message": str(capture_error)}},
+                    summary=f"Fresh target screenshot failed: {capture_error}",
+                )
+
+        # Some desktop backends expose transient window handles. If the exact
+        # PID/handle pair cannot be recaptured, re-resolve by the verified app and
+        # title instead of dropping to whichever window happens to be foreground.
+        if fresh is None or not fresh.success:
+            app_hint = str(target.get("app") or target.get("app_name") or "").strip()
+            title_hint = str(target.get("title") or "").strip()
+            if app_hint or title_hint:
+                try:
+                    fresh = self._capture(
+                        mode="som", app=app_hint, window_title=title_hint,
+                        max_results=24, include_windows=False,
+                    )
+                except (CuaDriverError, ValueError, TypeError, KeyError) as capture_error:
+                    fresh = ToolResult(
+                        success=False, name=self.name,
+                        content={"error": {"type": "fresh_observation_failed", "message": str(capture_error)}},
+                        summary=f"Fresh target screenshot by app/title failed: {capture_error}",
+                    )
+
+        recovery_hint = (
+            "The requested label is not present in the accessibility snapshot and no input was sent. "
+            "Inspect the freshly attached screenshot and its labeled coordinate grid; use a coordinate only "
+            "when the intended control is clearly visible in that exact screenshot. Otherwise stop and report the blocker."
+        )
+        message = str(error)
+        if fresh is not None and fresh.success:
+            content = dict(fresh.content)
+            content.update({
+                "action": action,
+                "success": False,
+                "target_label": target_label,
+                "error": {"type": "target_not_accessible", "message": message},
+                "recovery_hint": recovery_hint,
+                "input_dispatched": False,
+            })
+            metadata = dict(fresh.metadata)
+            metadata.update({"action": action, "effect_verified": False, "input_dispatched": False})
+            return ToolResult(
+                success=False,
+                name=self.name,
+                content=content,
+                metadata=metadata,
+                summary=(
+                    f"Could not resolve visible label {target_label!r}; no input was sent. "
+                    "Captured a fresh screenshot of the same window for visual recovery. "
+                    + recovery_hint + "\n" + str(fresh.summary)
+                ),
+                evidence={"kind": "computer_use_recovery", "target_label": target_label,
+                          "screenshot": content.get("image_ref"), "window": content.get("window")},
+            )
+
+        capture_detail = ""
+        if fresh is not None:
+            capture_detail = f" Fresh screenshot also failed: {fresh.summary}"
+        elif pid is None or window_id is None:
+            capture_detail = " No verified native window identity is available for a safe screenshot recovery."
+        return ToolResult(
+            success=False,
+            name=self.name,
+            content={
+                "action": action, "success": False, "target_label": target_label,
+                "error": {"type": "target_not_accessible", "message": message + capture_detail},
+                "recovery_hint": recovery_hint, "input_dispatched": False,
+            },
+            metadata={"action": action, "effect_verified": False, "input_dispatched": False},
+            summary=f"Could not resolve {target_label!r}: {message}. No input was sent.{capture_detail} {recovery_hint}",
+        )
+
+    def _recover_blocked_coordinate_action(
+        self, action: str, failure: ToolResult, previous_state: dict[str, Any],
+    ) -> ToolResult | None:
+        """Refresh the exact app after a safety guard refused stale pixel input.
+
+        This is limited to explicit pre-dispatch refusals. Ambiguous timeouts and
+        driver errors are never retried, and the original click/drag is never replayed.
+        """
+        error = failure.content.get("error") if isinstance(failure.content, dict) else None
+        detail = str(error.get("message", "") if isinstance(error, dict) else "")
+        detail = detail or failure.summary
+        lowered = detail.casefold()
+        # Cua Driver returns a structured {code, effect} payload for native input
+        # failures. A foreground_timeout with effect=none is a verified no-dispatch
+        # refusal even though its wording does not include "No input was dispatched".
+        driver_payload: dict[str, Any] = {}
+        payload_start = detail.find("{")
+        if payload_start >= 0:
+            try:
+                candidate, _end = json.JSONDecoder().raw_decode(detail[payload_start:])
+                if isinstance(candidate, dict):
+                    driver_payload = candidate
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+        driver_code = str(driver_payload.get("code") or "").casefold()
+        driver_effect = str(driver_payload.get("effect") or "").casefold()
+        verified_no_effect_timeout = (
+            driver_effect == "none"
+            and driver_code in {"foreground_timeout", "foreground_unavailable"}
+        )
+        explicit_no_dispatch = "no input was dispatched" in lowered
+        if not explicit_no_dispatch and not verified_no_effect_timeout:
+            return None
+        known_stale_frame = any(marker in lowered for marker in (
+            "window identity changed after the screenshot",
+            "target window was resized after the screenshot",
+            "no verified bounds were saved for the screenshot target",
+            "current desktop capture is recorded",
+            "latest screenshot has no verified native dimensions",
+            "screenshot freshness is unknown",
+        ))
+        if not known_stale_frame and not verified_no_effect_timeout:
+            return None
+
+        target = previous_state.get("latest_computer_use_target")
+        if not isinstance(target, dict) or not target:
+            target = previous_state.get("latest_screenshot_target")
+        target = target if isinstance(target, dict) else {}
+        app_hint = str(target.get("app") or target.get("app_name") or "").strip()
+        title_hint = str(target.get("title") or "").strip()
+        if not app_hint and not title_hint:
+            return None
+        try:
+            fresh = self._capture(
+                mode="som", app=app_hint, window_title=title_hint,
+                max_results=24, include_windows=False,
+            )
+        except (CuaDriverError, ValueError, TypeError, KeyError) as exc:
+            return None
+        if not fresh.success:
+            return None
+
+        # A previous click/keypress timed out before dispatch. Re-capturing an app
+        # on Wayland may restore the app that was foreground before capture, making
+        # the very next action-scoped activation time out again. For this specific
+        # repeated activation failure, leave the verified target in front after the
+        # fresh capture. Never replay the input in this recovery path.
+        focus_brought_to_front = False
+        if verified_no_effect_timeout:
+            observed_window = fresh.content.get("window") if isinstance(fresh.content, dict) else None
+            observed_window = observed_window if isinstance(observed_window, dict) else {}
+            target_pid = observed_window.get("pid", target.get("pid"))
+            target_window_id = observed_window.get("window_id", target.get("window_id"))
+            try:
+                if target_pid is not None:
+                    focus_args: dict[str, Any] = {"pid": int(target_pid)}
+                    if target_window_id is not None:
+                        focus_args["window_id"] = int(target_window_id)
+                    call_driver("bring_to_front", focus_args, timeout=8)
+                    focus_brought_to_front = True
+            except (CuaDriverError, TypeError, ValueError, OverflowError):
+                # Keep the fresh screenshot and the original concrete failure even
+                # when the compositor declines focus activation.
+                focus_brought_to_front = False
+
+        if focus_brought_to_front:
+            recovery_hint = (
+                "The driver reported a foreground activation timeout with effect=none, so no click/key was sent. "
+                "A fresh screenshot of the same verified application is attached, and that window was brought "
+                "to the front after capture. Use only coordinates visible in this newest screenshot. Do not blindly "
+                "repeat the previous point; if the next action times out again, stop and report the driver failure."
+            )
+        elif verified_no_effect_timeout:
+            recovery_hint = (
+                "The driver reported a foreground activation timeout with effect=none, so no click/key was sent. "
+                "A fresh screenshot of the same verified application is attached, but bringing that window forward "
+                "did not succeed. Do not retry the same point or guess coordinates; report the focus/driver blocker."
+            )
+        else:
+            recovery_hint = (
+                "The attempted pixel action was blocked before input was sent. A fresh screenshot of the same app "
+                "is attached; use only coordinates from this newest screenshot. Do not repeat the prior coordinates."
+            )
+
+        content = dict(fresh.content)
+        content.update({
+            "action": action,
+            "success": False,
+            "error": {
+                "type": "foreground_activation_timeout" if verified_no_effect_timeout else "stale_coordinate_frame",
+                "message": detail,
+            },
+            "input_dispatched": False,
+            "focus_brought_to_front": focus_brought_to_front,
+            "recovery_hint": recovery_hint,
+        })
+        metadata = dict(fresh.metadata)
+        metadata.update({"action": action, "effect_verified": False, "input_dispatched": False,
+                         "focus_brought_to_front": focus_brought_to_front})
+        return ToolResult(
+            success=False, name=self.name, content=content, metadata=metadata,
+            summary=(
+                "No mouse/keyboard input was sent; the driver confirmed that no GUI input was dispatched. "
+                "Refreshed the same verified application and attached its current screenshot. "
+                + ("The target was brought to the front after capture. " if focus_brought_to_front else "")
+                + recovery_hint + "\n" + fresh.summary
+            ),
+            evidence={"kind": "computer_use_recovery", "action": action,
+                      "screenshot": content.get("image_ref"), "window": content.get("window"),
+                      "focus_brought_to_front": focus_brought_to_front,
+                      "driver_code": driver_code or None, "driver_effect": driver_effect or None},
         )
 
     def _execute_sequence(
@@ -2102,12 +2702,39 @@ class ComputerUseTool(Tool):
                         raise ValueError("target='visible label' is supported only for click/type actions; drag uses from_coordinate/to_coordinate.")
                     if kwargs.get("element") is not None:
                         raise ValueError("Supply either target='visible label' or element=N, not both.")
-                    # Reuse the last model-visible accessibility snapshot. Refresh only if
-                    # the label is absent; stale-token failures have their own one-shot recovery.
-                    kwargs["element"] = self._resolve_target_id(target_label)
+                    # Reuse the last model-visible accessibility snapshot. If a label is
+                    # missing, return a fresh annotated screenshot of the same window so
+                    # vision can recover; never dispatch a speculative click as fallback.
+                    try:
+                        kwargs["element"] = self._resolve_target_id(target_label)
+                    except ValueError as exc:
+                        return self._recover_unresolved_target(action, target_label, exc)
                 before_state = self._current_state()[1]
                 before_screen_hash = before_state.get("latest_screenshot_hash")
+                # An accessibility click may only focus a toggle. `selected` is not
+                # equivalent to AT-SPI CHECKED, so track all toggle clicks and verify
+                # with an explicit checked state when the platform exposes one.
+                toggle_target = None
+                if action in {"click", "double_click", "right_click"} and kwargs.get("element") is not None:
+                    numeric_id = str(kwargs.get("element"))
+                    id_map = before_state.get("latest_element_ids", {})
+                    token_map = before_state.get("latest_accessibility_elements", {})
+                    token = id_map.get(numeric_id) if isinstance(id_map, dict) else None
+                    record = token_map.get(token) if isinstance(token_map, dict) and token else None
+                    if isinstance(record, dict):
+                        role = str(record.get("role") or "").strip().casefold()
+                        if role in {"check box", "checkbox", "radio button", "toggle button", "switch"}:
+                            checked_before = record.get("checked")
+                            toggle_target = {
+                                "role": str(record.get("role") or ""),
+                                "label": str(record.get("label") or ""),
+                                "checked_before": checked_before if isinstance(checked_before, bool) else None,
+                            }
                 result = self._act_once(action, **kwargs)
+                if not result.success:
+                    refreshed = self._recover_blocked_coordinate_action(action, result, before_state)
+                    if refreshed is not None:
+                        return refreshed
                 if not result.success or not bool(kwargs.get("capture_after", True)):
                     return self._copy_result(result, action)
 
@@ -2123,6 +2750,28 @@ class ComputerUseTool(Tool):
                     max_results=kwargs.get("max_results", 24),
                     include_windows=bool(kwargs.get("include_windows", True)),
                 )
+                semantic_verification = None
+                semantic_no_change = False
+                semantic_unavailable = False
+                if toggle_target is not None and captured.success:
+                    checked_after = self._checked_control_state(
+                        captured.content.get("elements", []),
+                        toggle_target["role"], toggle_target["label"],
+                    )
+                    checked_before = toggle_target.get("checked_before")
+                    state_available = isinstance(checked_before, bool) and isinstance(checked_after, bool)
+                    # For a click action, a real CHECKED transition is stronger evidence
+                    # than a screenshot hash, cursor position, or AT-SPI SELECTED state.
+                    verified = state_available and checked_after != checked_before
+                    semantic_verification = {
+                        **toggle_target,
+                        "checked_after": checked_after,
+                        "checked_state_available": state_available,
+                        "verified": verified,
+                        "verification_method": "atspi_checked_transition" if state_available else "unavailable",
+                    }
+                    semantic_no_change = state_available and not verified
+                    semantic_unavailable = not state_available
                 after_state = self._current_state()[1]
                 after_screen_hash = after_state.get("latest_screenshot_hash")
                 capture_mode = str(kwargs.get("mode") or "som").strip().casefold()
@@ -2133,6 +2782,20 @@ class ComputerUseTool(Tool):
                 )
                 content = dict(result.content)
                 content["action"] = action
+                visual_effect_required = action in {
+                    "click", "double_click", "right_click", "drag", "type_text", "scroll"
+                }
+                effect_unverified = visual_effect_required and screen_hash_changed is False
+                if semantic_verification is not None:
+                    content["semantic_verification"] = semantic_verification
+                content["verification_status"] = (
+                    "semantic_state_unchanged" if semantic_no_change
+                    else "semantic_state_unavailable" if semantic_unavailable
+                    else "semantic_verified" if semantic_verification is not None and semantic_verification.get("verified") is True
+                    else "no_visible_change" if effect_unverified
+                    else "visible_change" if screen_hash_changed is True
+                    else "unavailable"
+                )
                 content["capture_after"] = {
                     "success": captured.success,
                     "screen_hash_changed": screen_hash_changed,
@@ -2167,19 +2830,80 @@ class ComputerUseTool(Tool):
                     metadata["image_mime_type"] = captured.content.get(
                         "image_mime_type", "image/png"
                     )
-                if screen_hash_changed is False:
+                if semantic_no_change or semantic_unavailable:
+                    effect_unverified = True
+                    if semantic_unavailable:
+                        metadata["verification_warning"] = (
+                            f"The {toggle_target['role']} '{toggle_target['label']}' exposes no trustworthy checked state in the current accessibility snapshot. "
+                            "A selected/focus outline or screenshot change is not proof that it activated."
+                        )
+                        metadata["recovery_hint"] = (
+                            f"Activation of '{toggle_target['label']}' is unverified because the accessibility snapshot exposes no real checked state. "
+                            "Do not perform a dependent drag or destructive action. Inspect a fresh screenshot/status indicator; if the control still did not activate, stop and report the CUA input issue."
+                        )
+                    else:
+                        metadata["verification_warning"] = (
+                            f"The checked state of '{toggle_target['label']}' did not change after the click. "
+                            "A focus outline or screenshot change is not proof of activation."
+                        )
+                        metadata["recovery_hint"] = (
+                            f"The checked state of '{toggle_target['label']}' did not change after the click. "
+                            "Do not perform a dependent drag or destructive action. Re-inspect the fresh UI and report the CUA input failure if still unchanged."
+                        )
+                elif semantic_verification is not None and semantic_verification.get("verified") is True:
+                    effect_unverified = False
+                    metadata["effect_verified"] = True
+                if screen_hash_changed is False and not (semantic_verification is not None and semantic_verification.get("verified") is True):
                     metadata["verification_warning"] = (
                         "No screenshot pixel change was detected; the intended effect is not verified. "
                         "Do not repeat the same click."
                     )
                 metadata["capture_after"] = True
+                metadata["effect_verified"] = (
+                    True if semantic_verification is not None and semantic_verification.get("verified") is True
+                    else False if semantic_no_change or semantic_unavailable
+                    else not effect_unverified if screen_hash_changed is not None else None
+                )
+                if action in {"click", "double_click", "right_click"} and result.content.get("target_mode") == "pixel_coordinates":
+                    action_args = result.content.get("arguments")
+                    action_args = action_args if isinstance(action_args, dict) else {}
+                    if (
+                        isinstance(action_args.get("x"), (int, float))
+                        and isinstance(action_args.get("y"), (int, float))
+                    ):
+                        guard_path, guard_state = self._current_state()
+                        target_state = guard_state.get("latest_screenshot_target")
+                        target_state = target_state if isinstance(target_state, dict) else {}
+                        if effect_unverified and isinstance(after_screen_hash, str):
+                            guard_state["last_unverified_pixel_action"] = {
+                                "x": int(action_args["x"]),
+                                "y": int(action_args["y"]),
+                                "pid": action_args.get("pid") or target_state.get("pid"),
+                                "window_id": action_args.get("window_id") or target_state.get("window_id"),
+                                "coordinate_frame": action_args.get("coordinate_frame")
+                                or target_state.get("coordinate_frame") or "desktop",
+                                "after_screenshot_hash": after_screen_hash,
+                                "timestamp": time.time(),
+                            }
+                        elif screen_hash_changed is True:
+                            guard_state.pop("last_unverified_pixel_action", None)
+                        self._save_state(guard_path, guard_state)
+                if effect_unverified and not semantic_no_change:
+                    metadata["verification_warning"] = (
+                        "No visible screen change followed a state-changing interaction; do not repeat the same input."
+                    )
                 return ToolResult(
-                    success=result.success and captured.success,
+                    # A dispatched mouse gesture is not a successful UI transition.
+                    # Return failure for unverified visible actions so the agent's
+                    # recovery path handles the observation instead of looping.
+                    success=result.success and captured.success and not effect_unverified,
                     name=self.name,
                     content=content,
                     metadata=metadata,
                     summary=(
-                        ("WARNING: No screenshot pixel change detected; do not repeat the same click. "
+                        (f"WARNING: {toggle_target['label']} activation was not verified from a real checked-state transition; do not perform dependent actions. "
+                         if semantic_no_change or semantic_unavailable else
+                         "WARNING: No screenshot pixel change detected; the intended effect remains unverified. Do not repeat the same input. "
                          if screen_hash_changed is False else "")
                         + f"Action '{action}' was dispatched and the latest screen was captured. "
                         "This does not prove the intended state changed; inspect the screenshot and fresh controls.\n"

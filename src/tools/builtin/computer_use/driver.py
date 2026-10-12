@@ -300,7 +300,12 @@ def _driver_refusal_detail(output: str) -> str | None:
     code = str(payload.get("code") or "").strip()
     is_error = payload.get("isError") is True
     has_refusal = bool(payload.get("refusal"))
-    if is_error or has_refusal or status in {"refused", "error", "failed"} or effect == "refused" or code:
+    explicit_negative = (
+        payload.get("ok") is False
+        or payload.get("success") is False
+        or payload.get("delivered") is False
+    )
+    if is_error or has_refusal or explicit_negative or status in {"refused", "error", "failed"} or effect == "refused" or code:
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     return None
 

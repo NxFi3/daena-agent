@@ -170,9 +170,30 @@ def test_unknown_entity_terms_do_not_hide_web_search_capability(tmp_path):
         )
         names = {item["name"] for item in outcome["matches"]}
         assert {"web_search", "web_fetch"}.issubset(names)
+        assert "computer_use" not in names
+        assert "command_exec" not in names
         exposed = {item["function"]["name"] for item in manager.get_model_tools()}
         assert {"web_search", "web_fetch"}.issubset(exposed)
         assert "computer_use" not in exposed
+    finally:
+        manager.close()
+
+
+def test_tool_search_does_not_fill_top_k_with_weakly_related_desktop_tools(tmp_path):
+    manager = ToolManager({
+        "guard_level": "strict",
+        "security": {"workspace_only": True, "force_approve": True},
+    })
+    manager.set_workspace(str(tmp_path))
+    try:
+        outcome = manager._search_and_activate_tools(
+            "Use computer tools to draw a simple house in the open desktop window, inspect screenshot and verify drawing",
+            top_k=8,
+        )
+        names = [item["name"] for item in outcome["matches"]]
+        assert names[0] == "computer_use"
+        assert names == ["computer_use"]
+        assert outcome["active_tools"] == ["computer_use"]
     finally:
         manager.close()
 
@@ -221,5 +242,54 @@ def test_computer_use_query_retrieves_computer_tools_without_changing_core_visib
         assert {"command_exec", "read_file", "write_file", "edit_file", "apply_patch"}.issubset(always_names)
         assert "computer_use" not in previous
         assert "computer_use" in current
+    finally:
+        manager.close()
+
+
+def test_tool_discovery_accumulates_capabilities_across_a_multi_tool_task(tmp_path):
+    manager = ToolManager({
+        "guard_level": "strict",
+        "security": {"workspace_only": True, "allow_network_tools": True, "force_approve": True},
+    })
+    manager.set_workspace(str(tmp_path))
+    try:
+        web = manager._search_and_activate_tools(
+            "search current public web pages and retrieve a known URL", top_k=5,
+        )
+        assert {"web_search", "web_fetch"}.issubset({row["name"] for row in web["matches"]})
+
+        desktop = manager._search_and_activate_tools(
+            "control desktop applications, click visible GUI controls, inspect screenshots", top_k=1,
+        )
+        assert [row["name"] for row in desktop["matches"]] == ["computer_use"]
+        exposed = {row["function"]["name"] for row in manager.get_model_tools()}
+        assert {"web_search", "web_fetch", "computer_use"}.issubset(exposed)
+        assert len(manager._active_tool_names) <= 8
+    finally:
+        manager.close()
+
+
+def test_tool_discovery_accumulation_is_bounded_and_resets_between_tasks(tmp_path):
+    manager = ToolManager({
+        "guard_level": "strict",
+        "security": {"workspace_only": True, "allow_network_tools": True, "force_approve": True},
+    })
+    manager.set_workspace(str(tmp_path))
+    try:
+        queries = [
+            "search current public web pages and retrieve a known URL",
+            "control desktop applications, click visible GUI controls, inspect screenshots",
+            "retrieve relevant context from prior conversations and memory",
+            "read a PDF document and extract its text",
+            "generate a chart from a data file",
+            "perform a database query and inspect records",
+        ]
+        for query in queries:
+            manager._search_and_activate_tools(query, top_k=5)
+            assert len(manager._active_tool_names) <= 8
+            assert len(set(manager._active_tool_names)) == len(manager._active_tool_names)
+        manager.reset_tool_selection()
+        assert manager._active_tool_names == []
+        assert "computer_use" not in {row["function"]["name"] for row in manager.get_model_tools()}
     finally:
         manager.close()

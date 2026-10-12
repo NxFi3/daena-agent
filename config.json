@@ -58,5 +58,6 @@
     "enabled": false
   },
   "computer_use_max_iterations": 16,
-  "computer_use_max_navigations_per_host": 3
+  "computer_use_max_navigations_per_host": 3,
+  "computer_use_max_unverified_failures": 3
 }

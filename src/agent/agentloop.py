@@ -68,6 +68,12 @@ class Loop:
     ) -> None:
 
         self.config = config
+        try:
+            self.computer_action_failure_budget = max(
+                2, min(6, int(self.config.get("computer_use_max_unverified_failures", 3)))
+            )
+        except (TypeError, ValueError):
+            self.computer_action_failure_budget = 3
         self.guard_level = str(self.config.get("guard_level", "strict")).strip().lower()
         if self.guard_level not in {"strict", "light"}:
             self.guard_level = "strict"
@@ -254,6 +260,12 @@ class Loop:
         self._completion_review_retries = 0
         self._tool_turns_since_recovery = 0
         self._consecutive_tool_failures = 0
+        self._computer_action_failures_without_progress = 0
+        # A failed app-targeted capture is not useful if the identical target is
+        # requested again without any successful GUI action that could change
+        # window availability. Store the failure per run and unlock it on progress.
+        self._computer_ui_epoch = 0
+        self._failed_computer_capture_signatures: dict[str, int] = {}
         try:
             self.recovery_review_interval = max(
                 2, min(8, int(review_config.get("recovery_interval", 6)))
@@ -1139,6 +1151,36 @@ class Loop:
             summary=message,
         )
 
+    @staticmethod
+    def _repeated_failed_computer_capture_result() -> ToolResult:
+        message = (
+            "This exact app/window-targeted Computer Use capture already failed because "
+            "the requested window was not visible. The desktop has not changed through "
+            "a successful GUI action, so repeating the same capture cannot add evidence. "
+            "Use the latest window inventory or launch/open the intended application, "
+            "then capture it again after that state change."
+        )
+        return ToolResult(
+            success=False,
+            name="computer_use",
+            content={
+                "success": False,
+                "error": {
+                    "type": "repeated_failed_computer_capture",
+                    "message": message,
+                },
+            },
+            metadata={
+                "recovery_hint": (
+                    "Do not repeat the same targeted capture unchanged. Use list_windows "
+                    "or list_apps to identify real visible applications, or action='launch' "
+                    "for the intended app. Retry the capture only after a successful GUI "
+                    "action could have changed which windows are available."
+                ),
+            },
+            summary=message,
+        )
+
     def _classify_calls(
         self,
         parsed_calls: list,
@@ -1203,6 +1245,23 @@ class Loop:
                     )
                     continue
                 batch_computer_use_seen = True
+
+                arguments = getattr(call, "args", {}) or {}
+                action = str(arguments.get("action") or "").strip().casefold() if isinstance(arguments, dict) else ""
+                targeted_capture = (
+                    action == "capture"
+                    and isinstance(arguments, dict)
+                    and bool(str(arguments.get("app") or "").strip() or str(arguments.get("window_title") or "").strip())
+                )
+                if targeted_capture:
+                    signature = self._observation_signature(call)
+                    failed_epoch = self._failed_computer_capture_signatures.get(signature)
+                    if failed_epoch is not None and failed_epoch == self._computer_ui_epoch:
+                        blocked_results[index] = self._repeated_failed_computer_capture_result()
+                        self.metrics["repeated_failed_computer_capture_blocks"] = (
+                            self.metrics.get("repeated_failed_computer_capture_blocks", 0) + 1
+                        )
+                        continue
 
                 if not self._computer_use_mode_active:
                     self._computer_use_mode_active = True
@@ -1452,7 +1511,32 @@ class Loop:
         tool_name = str(getattr(call, "name", result.name)).strip().lower()
         if tool_name == "computer_use":
             arguments = getattr(call, "args", {}) or {}
-            if isinstance(arguments, dict) and str(arguments.get("action") or "").casefold() == "navigate":
+            action = str(arguments.get("action") or "").strip().casefold() if isinstance(arguments, dict) else ""
+            observational_actions = {"capture", "observe", "inspect", "list_apps", "list_windows", "wait"}
+            if action == "capture" and not result.success and isinstance(arguments, dict):
+                target_is_explicit = bool(
+                    str(arguments.get("app") or "").strip()
+                    or str(arguments.get("window_title") or "").strip()
+                )
+                content = result.content if isinstance(result.content, dict) else {}
+                error = content.get("error")
+                error_type = str(error.get("type") or "").strip().casefold() if isinstance(error, dict) else ""
+                error_message = str(error.get("message") or "").casefold() if isinstance(error, dict) else ""
+                if (
+                    target_is_explicit
+                    and error_type == "computer_inspect_failed"
+                    and "no visible window matches" in error_message
+                ):
+                    signature = self._observation_signature(call)
+                    if signature:
+                        self._failed_computer_capture_signatures[signature] = self._computer_ui_epoch
+            elif result.success and action not in observational_actions:
+                # A successful GUI input may have opened or changed the target window;
+                # it is now reasonable to retry a previously missing window capture.
+                self._computer_ui_epoch += 1
+                self._failed_computer_capture_signatures.clear()
+
+            if action == "navigate":
                 navigation_key = self._computer_use_navigation_key(arguments)
                 if navigation_key:
                     if result.success:
@@ -1553,6 +1637,25 @@ class Loop:
             failures_by_type[error_type] = int(failures_by_type.get(error_type, 0)) + 1
             if status != "running":
                 self._phase = "recover"
+
+        if tool_name == "computer_use":
+            call_args = getattr(call, "args", {}) or {}
+            action = str(call_args.get("action") or "").strip().casefold() if isinstance(call_args, dict) else ""
+            observational_actions = {"capture", "observe", "inspect", "list_apps", "list_windows", "wait"}
+            if action not in observational_actions:
+                content = result.content if isinstance(result.content, dict) else {}
+                verified = (
+                    result.metadata.get("effect_verified") is True
+                    or str(content.get("verification_status") or "").casefold() == "visible_change"
+                    or (result.success and action in {"launch", "navigate", "sequence"})
+                )
+                if verified:
+                    self._computer_action_failures_without_progress = 0
+                elif not result.success:
+                    self._computer_action_failures_without_progress += 1
+                self.metrics["computer_action_failures_without_progress"] = (
+                    self._computer_action_failures_without_progress
+                )
 
         self.metrics["active_processes"] = len(self._active_process_ids)
 
@@ -1955,6 +2058,17 @@ class Loop:
                 summary=str(result.summary or ""),
                 content=result.content if isinstance(result.content, (str, dict, list)) else str(result.content),
             )
+            if self._computer_action_failures_without_progress >= self.computer_action_failure_budget:
+                reason = (
+                    f"Computer Use stopped after {self.computer_action_failure_budget} unsuccessful input attempts "
+                    "without verified progress. No further desktop input was sent. Start from a fresh observation "
+                    "and use a materially different, evidence-based action."
+                )
+                self.agent_state.fail(reason)
+                self.metrics["completed"] = False
+                self.metrics["stop_reason"] = "computer_use_no_progress"
+                self.logger.warning(reason)
+                return True
 
         # Keep validation feedback after every tool call/result pair in a batch;
         # inserting a user event between a model tool call and its result is invalid.
@@ -3082,6 +3196,9 @@ class Loop:
         self._tool_turns_since_recovery = 0
         self._recovery_review_count = 0
         self._consecutive_tool_failures = 0
+        self._computer_action_failures_without_progress = 0
+        self._computer_ui_epoch = 0
+        self._failed_computer_capture_signatures.clear()
         self._run_started_at = None
         self.metrics = {
             "iterations": 0,

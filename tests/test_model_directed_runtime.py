@@ -769,6 +769,50 @@ def test_csv_identical_column_advisory_ignores_empty_or_varied_values(tmp_path):
         loop.close()
 
 
+def test_computer_use_stall_budget_ignores_observations_but_stops_repeated_failed_inputs(tmp_path):
+    loop = make_loop(tmp_path, {"computer_use_max_unverified_failures": 3})
+    call = ToolCall(
+        name="computer_use", id="failed-click", valid=True,
+        args={"action": "click", "coordinate": [400, 300]},
+    )
+    capture_call = ToolCall(
+        name="computer_use", id="observe-between-failures", valid=True,
+        args={"action": "capture", "mode": "vision"},
+    )
+    failed = ToolResult(
+        success=False, name="computer_use",
+        content={"action": "click", "error": {"type": "test_failure", "message": "no dispatch"}},
+        summary="Click failed",
+    )
+    captured = ToolResult(
+        success=True, name="computer_use", content={"action": "capture"}, summary="Fresh screenshot",
+    )
+    try:
+        loop._classify_calls = lambda calls: (list(range(len(calls))), {})
+        loop._execute_allowed_calls = lambda normalized_tool_calls, allowed_indices: (
+            [normalized_tool_calls[index] for index in allowed_indices],
+            [failed for _ in allowed_indices],
+        )
+        assert loop._execute_tool_calls([call], iteration=1) is False
+
+        loop._execute_allowed_calls = lambda normalized_tool_calls, allowed_indices: (
+            [normalized_tool_calls[index] for index in allowed_indices], [captured],
+        )
+        assert loop._execute_tool_calls([capture_call], iteration=2) is False
+        assert loop._computer_action_failures_without_progress == 1
+
+        loop._execute_allowed_calls = lambda normalized_tool_calls, allowed_indices: (
+            [normalized_tool_calls[index] for index in allowed_indices], [failed],
+        )
+        assert loop._execute_tool_calls([call], iteration=3) is False
+        assert loop._execute_tool_calls([call], iteration=4) is True
+        assert loop._computer_action_failures_without_progress == 3
+        assert loop.metrics["stop_reason"] == "computer_use_no_progress"
+        assert "without verified progress" in loop.agent_state.error
+    finally:
+        loop.close()
+
+
 def test_tool_failure_metrics_are_grouped_by_error_type(tmp_path):
     loop = make_loop(tmp_path)
     try:
@@ -787,6 +831,75 @@ def test_tool_failure_metrics_are_grouped_by_error_type(tmp_path):
         metrics = loop.get_metrics()
         assert metrics["tool_failures"] == 1
         assert metrics["tool_failures_by_error_type"] == {"file_not_found": 1}
+    finally:
+        loop.close()
+
+
+def test_failed_targeted_capture_requires_gui_progress_before_retry(tmp_path):
+    loop = make_loop(tmp_path)
+    capture = ToolCall(
+        name="computer_use",
+        id="capture-missing-app",
+        valid=True,
+        args={"action": "capture", "app": "Paint", "mode": "som"},
+    )
+    list_windows = ToolCall(
+        name="computer_use",
+        id="list-windows-after-failure",
+        valid=True,
+        args={"action": "list_windows"},
+    )
+    launch = ToolCall(
+        name="computer_use",
+        id="launch-app",
+        valid=True,
+        args={"action": "launch", "app": "Paint"},
+    )
+    failed_capture = ToolResult(
+        success=False,
+        name="computer_use",
+        content={
+            "action": "capture",
+            "error": {
+                "type": "computer_inspect_failed",
+                "message": "No visible window matches requested application 'Paint'.",
+            },
+        },
+        metadata={"recovery_hint": "Inspect actual windows or launch the application."},
+        summary="Requested application is not visible.",
+    )
+    listed_windows = ToolResult(
+        success=True,
+        name="computer_use",
+        content={"action": "list_windows"},
+        summary="Listed visible windows.",
+    )
+    launched = ToolResult(
+        success=True,
+        name="computer_use",
+        content={"action": "launch"},
+        summary="Application launch succeeded.",
+    )
+    try:
+        allowed, blocked = loop._classify_calls([capture])
+        assert allowed == [0] and blocked == {}
+        loop._apply_result(capture, failed_capture, iteration=1)
+
+        allowed, blocked = loop._classify_calls([list_windows])
+        assert allowed == [0] and blocked == {}
+        loop._apply_result(list_windows, listed_windows, iteration=2)
+
+        allowed, blocked = loop._classify_calls([capture])
+        assert allowed == []
+        assert blocked[0].content["error"]["type"] == "repeated_failed_computer_capture"
+        assert "launch" in blocked[0].metadata["recovery_hint"]
+
+        allowed, blocked = loop._classify_calls([launch])
+        assert allowed == [0] and blocked == {}
+        loop._apply_result(launch, launched, iteration=3)
+
+        allowed, blocked = loop._classify_calls([capture])
+        assert allowed == [0] and blocked == {}
     finally:
         loop.close()
 

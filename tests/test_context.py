@@ -1,3 +1,4 @@
+import json
 from uuid import uuid4
 
 from src.context.contextbuilder import ContextBuilder
@@ -1283,3 +1284,75 @@ def test_computer_use_payload_keeps_all_numbered_controls_in_valid_json():
     assert len(result["elements_text"].splitlines()) == 24
     assert "#22 entry موبایل یا ایمیل خود را وارد کنید" in result["elements_text"]
     assert "elements" not in result  # don't duplicate the same control list
+
+
+def test_runtime_context_schema_keeps_objective_and_recovery_receipts():
+    builder = ContextBuilder.__new__(ContextBuilder)
+    task = {
+        "id": "task-123", "step": 44,
+        "content": "Draw a house in the currently open Paint window and verify the final screenshot.",
+    }
+    working = {
+        "execution_phase": "recover",
+        "processes": {
+            "proc-9": {"process_id": "proc-9", "status": "running", "command": ["python", "app.py"]},
+            "proc-8": {"process_id": "proc-8", "status": "exited", "exit_code": 0},
+        },
+        "verification": {"success": False, "exit_code": 1, "status": "exited", "output_excerpt": "AssertionError: screenshot unchanged"},
+        "last_failed_verification": {"success": False, "exit_code": 1, "output_excerpt": "AssertionError: screenshot unchanged"},
+    }
+    recent_actions = {"items": [
+        {"iteration": 2, "tool": "computer_use", "action": "capture", "outcome": "success", "summary": "Paint window is visible."},
+        {"iteration": 3, "tool": "computer_use", "action": "drag", "target": "roof edge", "outcome": "success", "summary": "Screenshot changed."},
+    ]}
+    rendered = builder._compact_execution_state(
+        agent_state={"status": "succeeded", "iteration": 3},
+        progress={"items": ["Opened Paint", "Drew roof"]},
+        working_set=working, observation=None, recent_actions=recent_actions, task=task,
+    )
+    state = json.loads(rendered)
+    assert state["schema_version"] == "daena.runtime_context.v1"
+    assert state["active_task"]["id"] == "task-123"
+    assert state["active_task"]["step"] == 44
+    assert state["active_task"]["objective"] == task["content"]
+    assert state["active_task"]["status"] == "in_progress"
+    assert state["active_task"]["phase"] == "recover"
+    assert state["decision_state"]["last_action"]["target"] == "roof edge"
+    assert state["decision_state"]["pending_process_ids"] == ["proc-9"]
+    assert state["decision_state"]["last_verification"]["exit_code"] == 1
+    assert "do not repeat a successful action" in " ".join(state["decision_state"]["recovery_guidance"])
+
+
+def test_runtime_context_overflow_remains_valid_json_and_keeps_active_goal():
+    builder = ContextBuilder.__new__(ContextBuilder)
+    task = {"id": "large-task", "step": 9, "content": "Finish the actual user goal; do not restart the whole task."}
+    working = {
+        "workspace_inventory": [
+            {"path": f"src/huge_module_{i:03d}.py", "type": "file", "size": i * 1024}
+            for i in range(200)
+        ],
+        "workspace_file_count": 200, "workspace_directory_count": 25,
+        "artifacts": {
+            f"artifact_{i}.json": {"status": "modified", "known": True, "preview": "payload-" + ("z" * 900)}
+            for i in range(8)
+        },
+        "facts": [f"fact-{i}-" + ("x" * 600) for i in range(10)],
+        "last_failed_verification": {
+            "command": ["pytest", "-q"], "success": False, "exit_code": 1,
+            "output_excerpt": "ASSERTION FAILURE: expected visible roof, no changed pixels. " + ("diagnostic " * 300),
+        },
+        "verification": {"success": False, "exit_code": 1, "status": "exited"},
+    }
+    rendered = builder._compact_execution_state(
+        agent_state={"status": "idle", "iteration": 9},
+        progress={"items": ["A" * 300 for _ in range(15)]}, working_set=working,
+        observation={"items": [{"summary": "observation " * 200, "success": False}] * 3},
+        recent_actions={"items": [{"tool": "computer_use", "outcome": "failure", "summary": "No screen change " * 100}] * 10},
+        task=task,
+    )
+    state = json.loads(rendered)
+    assert state["schema_version"] == "daena.runtime_context.v1"
+    assert state["active_task"]["objective"] == task["content"]
+    assert "last_failed_verification" in state
+    assert isinstance(state["last_failed_verification"], dict)
+    assert len(rendered) <= builder.MAX_EXECUTION_STATE_CHARS or state.get("omitted_for_space") is True

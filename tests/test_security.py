@@ -90,6 +90,20 @@ def test_safe_command_is_approved(tmp_path):
     assert checked.security_rule == "workspace_command"
 
 
+def test_command_string_receives_argv_schema_error(tmp_path):
+    service = make_service(tmp_path)
+    call = ToolCall(
+        name="command_exec", id="bad-command-string", valid=True,
+        args={"command": "which gimp", "workdir": str(tmp_path)},
+    )
+
+    checked = service.check(call)
+
+    assert checked.approved is False
+    assert checked.security_rule == "command_args_type"
+    assert "argv list of strings" in checked.security_reason
+
+
 def test_dangerous_executable_is_blocked(tmp_path):
     service = make_service(tmp_path)
     call = ToolCall(

@@ -11,15 +11,27 @@ class FakeConsole:
         self.messages.append(str(message))
 
 
-def test_busy_mode_defaults_to_queue_so_new_tasks_are_not_lost():
-    assert DEFAULT_BUSY_MODE == "queue"
+def test_busy_mode_defaults_to_steer_so_a_stalled_task_does_not_block_new_input():
+    assert DEFAULT_BUSY_MODE == "steer"
     stop_event = Event()
     state = {"stop_event": stop_event}
     console = FakeConsole()
 
-    _route_busy_text(console, state, DEFAULT_BUSY_MODE, "what is bluebank?")
+    _route_busy_text(console, state, DEFAULT_BUSY_MODE, "use computer use tool")
 
-    assert state["pending_followups"] == ["what is bluebank?"]
+    assert state["pending_followups"] == ["use computer use tool"]
+    assert stop_event.is_set()
+    assert "message queued as task #1" in console.messages[-1]
+
+
+def test_queue_mode_still_allows_users_to_wait_for_the_current_task():
+    console = FakeConsole()
+    stop_event = Event()
+    state = {"stop_event": stop_event}
+
+    _route_busy_text(console, state, "queue", "first question")
+
+    assert state["pending_followups"] == ["first question"]
     assert not stop_event.is_set()
     assert "will finish first" in console.messages[-1]
 

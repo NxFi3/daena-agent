@@ -57,3 +57,40 @@ def test_tool_payload_keeps_large_but_bounded_listing_output_readable():
     decoded = json.loads(rendered)
     assert "tok0000" in decoded["result"]["content"]
     assert "tok0023" in decoded["result"]["content"]
+
+
+def test_failed_tool_recovery_hint_is_preserved_for_the_model():
+    event_content = {
+        "name": "web_fetch",
+        "success": False,
+        "summary": "Could not retrieve the page.",
+        "evidence": {},
+        "content": {"error": {"type": "network_error", "message": "connection failed"}},
+        "metadata": {"recovery_hint": "Search for the official domain, then retry once."},
+    }
+
+    builder = object.__new__(ContextBuilder)
+    decoded = json.loads(builder._tool_payload(event_content))
+
+    assert decoded["success"] is False
+    assert decoded["recovery_hint"] == "Search for the official domain, then retry once."
+
+
+def test_computer_use_recovery_hint_is_preserved_with_visual_result():
+    event_content = {
+        "name": "computer_use",
+        "success": False,
+        "summary": "The target control was not found.",
+        "content": {
+            "action": "click",
+            "error": {"type": "target_not_found", "message": "No matching accessible control."},
+            "elements_text": "#1 scroll bar",
+        },
+        "metadata": {"recovery_hint": "Use a fresh screenshot and visible coordinates instead of repeating the missing label."},
+    }
+
+    builder = object.__new__(ContextBuilder)
+    decoded = json.loads(builder._tool_payload(event_content))
+
+    assert decoded["result"]["recovery_hint"].startswith("Use a fresh screenshot")
+    assert decoded["result"]["error"]["type"] == "target_not_found"

@@ -177,16 +177,72 @@ class ComputerInspectTool(Tool):
             return browser_rows
         return []
 
+    @classmethod
+    def _matching_app_windows(
+        cls, windows: list[dict[str, Any]], app_name_hint: str,
+    ) -> list[dict[str, Any]]:
+        """Match application intent against app identity, not arbitrary page titles.
+
+        Browser inventories sometimes expose the active tab title as app_name. A page
+        titled "Paint A House — Mozilla Firefox" must not win a request to capture
+        the native Paint application merely because its page title contains "Paint".
+        """
+        requested = _normal(app_name_hint).strip()
+        if not requested:
+            return windows
+
+        browser_families = {
+            "firefox": ("firefox", "firefox-esr", "mozilla firefox"),
+            "mozilla firefox": ("firefox", "firefox-esr", "mozilla firefox"),
+            "chrome": ("chrome", "google chrome", "chromium", "chromium-browser"),
+            "google chrome": ("chrome", "google chrome", "chromium", "chromium-browser"),
+            "chromium": ("chrome", "google chrome", "chromium", "chromium-browser"),
+            "brave": ("brave", "brave browser"),
+            "edge": ("edge", "microsoft edge"),
+            "microsoft edge": ("edge", "microsoft edge"),
+        }
+        family = next((values for key, values in browser_families.items() if requested == key), None)
+        if family is not None:
+            return [
+                row for row in windows
+                if cls._is_browser(row)
+                and any(alias in _normal(f"{row.get('app_name', '')} {row.get('title', '')}") for alias in family)
+            ]
+
+        aliases = {
+            "files": ("files", "nautilus", "dolphin", "thunar", "file manager"),
+            "file manager": ("files", "nautilus", "dolphin", "thunar", "file manager"),
+            "terminal": ("terminal", "gnome-terminal", "konsole", "xterm", "ptyxis"),
+            "vscode": ("vscode", "visual studio code", "code"),
+            "visual studio code": ("vscode", "visual studio code", "code"),
+        }
+        needles = aliases.get(requested, (requested,))
+        # For ordinary applications, app_name is the identity field. Searching the
+        # whole window title is unsafe: a terminal running `python paint_app.py`
+        # would otherwise be mistaken for Paint just because its title contains the
+        # script filename. Fall back to title only when the inventory has no app name.
+        def identity(row: dict[str, Any]) -> str:
+            app_name = _normal(row.get("app_name"))
+            return app_name or _normal(row.get("title"))
+
+        return [
+            row for row in windows
+            if not cls._is_browser(row)
+            and any(needle in identity(row) for needle in needles)
+        ]
+
     def _resolve_target(
         self,
         pid_value: Any,
         window_id_value: Any,
         window_title: str,
         query: str,
+        app_name_hint: str = "",
     ) -> tuple[int, int | None, str, str]:
         session = self._session_label()
         windows = self._windows()
         target_title = _normal(window_title)
+        app_hint = _normal(app_name_hint)
         query_norm = _normal(query)
 
         if pid_value is not None:
@@ -204,10 +260,16 @@ class ComputerInspectTool(Tool):
                 )
                 app = _text(selected.get("app_name"))
                 title = _text(selected.get("title"))
+                # An explicit application hint is stronger than page-title/query
+                # heuristics: never switch away from the requested application here.
+                if app_hint and not self._matching_app_windows([selected], app_name_hint):
+                    raise ValueError(
+                        f"The selected window '{title}' does not belong to requested application "
+                        f"'{app_name_hint}'. Capture was refused rather than selecting a similarly named browser tab."
+                    )
                 # The model can mistake a file dialog for a browser. Recover only when
-                # the query either names content visible in a browser title or clearly
-                # expresses browser intent; do not special-case individual websites.
-                if not self._is_browser(selected):
+                # no explicit application was requested and the query clearly names web content.
+                if not app_hint and not self._is_browser(selected):
                     browser_rows = [
                         row for row in windows
                         if self._is_browser(row) and bool(row.get("is_on_screen", True))
@@ -242,7 +304,27 @@ class ComputerInspectTool(Tool):
         ]
         browser_rows = [row for row in candidates if self._is_browser(row)]
 
-        if target_title:
+        if app_hint:
+            app_matches = self._matching_app_windows(candidates, app_name_hint)
+            if target_title:
+                app_matches = [
+                    row for row in app_matches
+                    if target_title in _normal(row.get("title"))
+                    or target_title in _normal(row.get("app_name"))
+                ]
+            if not app_matches:
+                available = "; ".join(
+                    f"{_text(row.get('app_name'))}: {_text(row.get('title'))}"
+                    for row in candidates[:8]
+                )
+                requested = f"application '{app_name_hint}'"
+                if window_title:
+                    requested += f" and window title '{window_title}'"
+                raise ValueError(
+                    f"No visible window matches requested {requested}. Visible windows: {available or 'none'}."
+                )
+            selected = self._choose_window(app_matches, target_title, query_norm)
+        elif target_title:
             matches = [
                 row for row in candidates
                 if target_title in _normal(row.get("title"))
@@ -320,6 +402,86 @@ class ComputerInspectTool(Tool):
         if payload.get("code") or payload.get("isError"):
             raise CuaDriverError(json.dumps(payload, ensure_ascii=False)[:1000])
         return payload
+
+    @staticmethod
+    def _accessibility_frame_space(
+        payload: dict[str, Any], items: list[dict[str, Any]],
+    ) -> str | None:
+        """Infer whether AT-SPI bounds are screen-space or window-local.
+
+        Cua Driver normalizes some native toolkit trees to window-local coordinates,
+        while browser AT-SPI trees may expose screen-space bounds. The native window
+        placement is always screen-space, so comparing local child frames to that
+        rectangle hides controls whenever the window is not positioned at (0, 0).
+        """
+        bounds = payload.get("window_bounds")
+        if not isinstance(bounds, dict):
+            return None
+        try:
+            bx, by, bw, bh = (
+                float(bounds[key]) for key in ("x", "y", "width", "height")
+            )
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
+        if bw <= 0 or bh <= 0:
+            return None
+
+        title = _normal(payload.get("window_title"))
+        # A top-level frame matching native screen bounds is strong evidence that
+        # its descendants use screen coordinates. A root at (0, 0) is window-local.
+        for item in items:
+            if (
+                _normal(item.get("role")) not in {"frame", "window"}
+                or _normal(item.get("label")) != title
+                or not isinstance(item.get("frame"), dict)
+            ):
+                continue
+            frame = item["frame"]
+            try:
+                fx, fy, fw, fh = (
+                    float(frame.get(key, frame.get(alt)))
+                    for key, alt in (
+                        ("x", "left"), ("y", "top"),
+                        ("w", "width"), ("h", "height"),
+                    )
+                )
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if (
+                abs(fx - bx) <= 2 and abs(fy - by) <= 2
+                and abs(fw - bw) <= 2 and abs(fh - bh) <= 2
+            ):
+                return "desktop"
+            if (
+                abs(fx) <= 2 and abs(fy) <= 2
+                and abs(fw - bw) <= 2 and abs(fh - bh) <= 2
+            ):
+                return "window"
+
+        declared = _normal(payload.get("coordinate_frame"))
+        if declared in {"window", "window-local", "window local"}:
+            return "window"
+        if declared in {"desktop", "screen", "screen-space"}:
+            return "desktop"
+
+        def intersects(frame: Any, rect: tuple[float, float, float, float]) -> bool:
+            if not isinstance(frame, dict):
+                return False
+            try:
+                x = float(frame.get("x", frame.get("left")))
+                y = float(frame.get("y", frame.get("top")))
+                w = float(frame.get("w", frame.get("width")))
+                h = float(frame.get("h", frame.get("height")))
+            except (TypeError, ValueError, OverflowError):
+                return False
+            left, top, right, bottom = rect
+            return w > 0 and h > 0 and x + w > left and x < right and y + h > top and y < bottom
+
+        desktop_rect = (bx, by, bx + bw, by + bh)
+        local_rect = (0.0, 0.0, bw, bh)
+        desktop_hits = sum(intersects(item.get("frame"), desktop_rect) for item in items)
+        local_hits = sum(intersects(item.get("frame"), local_rect) for item in items)
+        return "window" if local_hits > desktop_hits else "desktop"
 
     @staticmethod
     def _rank_elements(payload: dict[str, Any], query: str, limit: int = 8) -> list[dict[str, Any]]:
@@ -434,10 +596,11 @@ class ComputerInspectTool(Tool):
             return has_ancestor_in(item, page_roots)
 
         query_norm = _normal(query)
-        # AT-SPI can expose descendants from background browser tabs with large
-        # negative/otherwise off-screen coordinates. A score penalty alone leaves
-        # them selectable, so reject bounds that cannot be clicked in this window.
+        # Reject descendants outside the target window, comparing rectangles
+        # in the same coordinate space. Native toolkit frames may be window-local
+        # even though window_bounds contains the window's desktop placement.
         window_bounds = payload.get("window_bounds")
+        frame_space = ComputerInspectTool._accessibility_frame_space(payload, items)
         visible_rect = None
         if isinstance(window_bounds, dict):
             try:
@@ -446,8 +609,11 @@ class ComputerInspectTool(Tool):
                 vw = float(window_bounds.get("width", 0))
                 vh = float(window_bounds.get("height", 0))
                 if vw > 0 and vh > 0:
-                    visible_rect = (vx, vy, vx + vw, vy + vh)
-            except (TypeError, ValueError):
+                    if frame_space == "window":
+                        visible_rect = (0.0, 0.0, vw, vh)
+                    else:
+                        visible_rect = (vx, vy, vx + vw, vy + vh)
+            except (TypeError, ValueError, OverflowError):
                 visible_rect = None
         address_query = any(
             hint in query_norm
@@ -556,8 +722,17 @@ class ComputerInspectTool(Tool):
             }
             if value and value != label:
                 row["value"] = value[:100]
+            if isinstance(item.get("selected"), bool):
+                # Checkbox/toggle selection is state, not merely a successful click.
+                # Keep it so the model can see when a drawing tool is already active.
+                row["selected"] = item["selected"]
+            if isinstance(item.get("checked"), bool):
+                # AT-SPI's CHECKED state is distinct from SELECTED (often focus/selection).
+                # Preserve it separately; never infer checkbox state from `selected`.
+                row["checked"] = item["checked"]
             if isinstance(frame, dict):
                 row["frame"] = {key: frame[key] for key in ("x", "y", "w", "h") if key in frame}
+                row["frame_coordinate_space"] = frame_space or "desktop"
             candidates.append((score, order, row))
 
         candidates.sort(key=lambda item: (-item[0], item[1]))
@@ -577,8 +752,9 @@ class ComputerInspectTool(Tool):
             window_title = _text(window_title)[:160]
             max_results = max(1, min(30, _integer(max_results, "max_results")))
             session = self._session_label()
+            app_name_hint = _text(_kwargs.get("app_name_hint"))[:120]
             target_pid, target_window_id, inventory_title, app_name = self._resolve_target(
-                pid, window_id, window_title, query
+                pid, window_id, window_title, query, app_name_hint=app_name_hint
             )
 
             payload = self._read_snapshot(target_pid, target_window_id, query, session)
@@ -613,6 +789,9 @@ class ComputerInspectTool(Tool):
                     "value": row.get("value", ""),
                     "actions": row.get("actions", []),
                     "frame": row.get("frame"),
+                    "frame_coordinate_space": row.get("frame_coordinate_space", "desktop"),
+                    **({"selected": row["selected"]} if isinstance(row.get("selected"), bool) else {}),
+                    **({"checked": row["checked"]} if isinstance(row.get("checked"), bool) else {}),
                     "in_web_content": row["in_web_content"],
                 }
                 for row in elements

@@ -22,10 +22,11 @@ class ComputerObserveTool(Tool):
     name = "computer_observe"
     action = "observe"
     description = (
-        "Observe the current desktop through Cua Driver. Save a real PNG screenshot under "
-        "the active workspace's .daena/screenshots directory and return a persistent image "
-        "reference which the runtime attaches to the next vision-capable model call. Use "
-        "before choosing coordinates or verifying an action. When available, the saved image "
+        "Observe the current desktop or a specific native window through Cua Driver. When pid/window_id are "
+        "provided, capture that exact window without activating it and return window-local coordinates; otherwise "
+        "capture the full desktop. Save a real PNG under the active workspace's .daena/screenshots directory and "
+        "return a persistent image reference for the next vision-capable model call. Use before choosing coordinates "
+        "or verifying an action. When available, the saved image "
         "includes a red ring at Daena's last click and, when available, a separate marker for the cursor "
         "position reported by Cua Driver. The cursor marker includes the driver's source label (synthetic "
         "does not guarantee the physical user's pointer). The driver must be connected to the logged-in desktop."
@@ -36,7 +37,17 @@ class ComputerObserveTool(Tool):
             "include_windows": {
                 "type": "boolean",
                 "default": True,
-                "description": "Include a compact list of visible windows when available.",
+                "description": "Include a compact list of visible windows when available (full-desktop capture only).",
+            },
+            "pid": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Optional native PID to capture one specific window without activating it. Provide together with window_id.",
+            },
+            "window_id": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Optional native window ID from the latest visible-window inventory; provide together with pid.",
             }
         },
         "additionalProperties": False,
@@ -61,13 +72,26 @@ class ComputerObserveTool(Tool):
                 raw = "default"
         return session_label_from_id(raw)
 
-    def _overlay_last_agent_pointer(self, image_path: Path) -> bool:
-        """Draw a small ring at Daena's last successful click; the live OS cursor may be omitted by capture APIs."""
+    def _overlay_last_agent_pointer(
+        self, image_path: Path, *, expected_pid: int | None = None,
+        expected_window_id: int | None = None,
+    ) -> bool:
+        """Mark the previous click, but never transfer screen coordinates across windows."""
         if Image is None or ImageDraw is None:
             return False
         state_path = pointer_state_path(self.workspace_root, self._session_label())
         try:
             state = json.loads(state_path.read_text(encoding="utf-8"))
+            if expected_pid is not None or expected_window_id is not None:
+                target = state.get("last_agent_click_target")
+                if not isinstance(target, dict):
+                    return False
+                if (
+                    str(target.get("pid")) != str(expected_pid)
+                    or str(target.get("window_id")) != str(expected_window_id)
+                    or str(target.get("coordinate_frame") or "") != "window"
+                ):
+                    return False
             x, y = int(state["x"]), int(state["y"])
             with Image.open(image_path) as source:
                 image = source.convert("RGB")
@@ -89,6 +113,44 @@ class ComputerObserveTool(Tool):
             image.save(image_path, format="PNG")
             return True
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+            return False
+
+    def _overlay_coordinate_grid(self, image_path: Path, spacing: int = 100) -> bool:
+        """Draw labeled window-local coordinate lines for visually ambiguous UIs."""
+        if Image is None or ImageDraw is None:
+            return False
+        spacing = max(50, min(200, int(spacing)))
+        try:
+            with Image.open(image_path) as source:
+                image = source.convert("RGBA")
+            width, height = image.size
+            grid = Image.new("RGBA", image.size, (0, 0, 0, 0))
+            draw = ImageDraw.Draw(grid)
+
+            for x in range(0, width, spacing):
+                draw.line((x, 0, x, height - 1), fill=(0, 115, 150, 62), width=1)
+                label = f"x={x}"
+                bbox = draw.textbbox((x + 3, 2), label)
+                draw.rounded_rectangle(
+                    (bbox[0] - 2, bbox[1] - 1, bbox[2] + 2, bbox[3] + 1),
+                    radius=2, fill=(8, 24, 32, 205),
+                )
+                draw.text((x + 3, 2), label, fill=(235, 250, 255, 255))
+
+            for y in range(0, height, spacing):
+                draw.line((0, y, width - 1, y), fill=(0, 115, 150, 62), width=1)
+                label = f"y={y}"
+                bbox = draw.textbbox((3, y + 3), label)
+                draw.rounded_rectangle(
+                    (bbox[0] - 2, bbox[1] - 1, bbox[2] + 2, bbox[3] + 1),
+                    radius=2, fill=(8, 24, 32, 205),
+                )
+                draw.text((3, y + 3), label, fill=(235, 250, 255, 255))
+
+            image = Image.alpha_composite(image, grid).convert("RGB")
+            image.save(image_path, format="PNG")
+            return True
+        except (OSError, ValueError, TypeError):
             return False
 
     def _overlay_cursor_position(self, image_path: Path, position: dict[str, Any] | None) -> bool:
@@ -126,7 +188,162 @@ class ComputerObserveTool(Tool):
         except (OSError, ValueError, TypeError, KeyError):
             return False
 
+    def _execute_window_capture(self, pid: Any, window_id: Any) -> ToolResult:
+        """Capture pixels from the exact native window, without activating it.
+
+        This mirrors Hermes' key invariant: the pixels and accessibility snapshot
+        refer to one PID/window pair. Cua Driver reports coordinates in this
+        screenshot's window-local frame, even when another app is in front.
+        """
+        try:
+            if isinstance(pid, bool) or isinstance(window_id, bool):
+                raise ValueError("Window capture requires a real pid and window_id.")
+            target_pid, target_window_id = int(pid), int(window_id)
+            if target_pid <= 0 or target_window_id <= 0:
+                raise ValueError("Window capture requires positive pid and window_id.")
+        except (TypeError, ValueError, OverflowError) as exc:
+            return ToolResult(
+                success=False, name=self.name,
+                content={"error": {"type": "invalid_window_target", "message": str(exc)}},
+                summary=f"Window screenshot refused: {exc}",
+            )
+
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
+        session_label = self._session_label()
+        session_dir = hashlib.sha256(session_label.encode("utf-8")).hexdigest()[:16]
+        screenshot_dir = (self.workspace_root / ".daena" / "screenshots" / session_dir).resolve()
+        image_path = (screenshot_dir / f"window_{timestamp}.png").resolve()
+        try:
+            screenshot_dir.mkdir(parents=True, exist_ok=True)
+            output = call_driver("get_window_state", {
+                "session": session_label,
+                "pid": target_pid,
+                "window_id": target_window_id,
+                "include_accessibility_tree": False,
+                "include_screenshot": True,
+                "screenshot_out_file": str(image_path),
+            }, timeout=30)
+            try:
+                payload = json.loads(output)
+            except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                raise CuaDriverError(f"Cua Driver returned invalid window-capture JSON: {exc}") from exc
+            if not isinstance(payload, dict):
+                raise CuaDriverError("Cua Driver returned no structured window-capture metadata.")
+            if payload.get("screenshot_frame_valid") is False:
+                detail = payload.get("screenshot_error") or payload.get("frame_note") or "the driver could not verify the screenshot frame"
+                raise CuaDriverError(f"Window screenshot frame is unavailable: {detail}")
+            if not image_path.is_file() or image_path.stat().st_size <= 24:
+                reported = payload.get("screenshot_file_path")
+                raise CuaDriverError(
+                    "Cua Driver did not write a readable screenshot for the selected window"
+                    + (f" (reported path: {reported})" if reported else "")
+                )
+
+            width, height = png_dimensions(image_path)
+            width = int(payload.get("screenshot_width") or width or 0)
+            height = int(payload.get("screenshot_height") or height or 0)
+            if width <= 0 or height <= 0:
+                raise CuaDriverError("The selected-window screenshot has no verified dimensions.")
+            screenshot_hash = hashlib.sha256(image_path.read_bytes()).hexdigest()
+            capture_id = payload.get("capture_id")
+            if not isinstance(capture_id, str) or not capture_id.strip():
+                raise CuaDriverError("Cua Driver did not provide a capture_id for the window screenshot.")
+
+            state_path = pointer_state_path(self.workspace_root, session_label)
+            try:
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+                if not isinstance(state, dict):
+                    state = {}
+            except (OSError, ValueError, TypeError):
+                state = {}
+            state.update({
+                "latest_capture_id": capture_id,
+                "latest_screenshot_hash": screenshot_hash,
+                "latest_screenshot_coordinate_frame": "window",
+            })
+            try:
+                state_path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = state_path.with_suffix(".tmp")
+                temporary.write_text(json.dumps(state), encoding="utf-8")
+                temporary.replace(state_path)
+            except OSError:
+                pass
+
+            # Mark the prior click only when it belongs to this exact native
+            # window. The coordinate grid is added by ComputerUse when the AX
+            # tree cannot expose enough controls to guide the model.
+            pointer_overlay = self._overlay_last_agent_pointer(
+                image_path, expected_pid=target_pid, expected_window_id=target_window_id,
+            )
+            visual_hash = hashlib.sha256(image_path.read_bytes()).hexdigest()
+
+            raw_bounds = payload.get("window_bounds")
+            bounds = raw_bounds if isinstance(raw_bounds, dict) else {}
+            window = {
+                "app": str(payload.get("app_name") or ""),
+                "app_name": str(payload.get("app_name") or ""),
+                "title": str(payload.get("window_title") or payload.get("app_name") or ""),
+                "pid": target_pid,
+                "window_id": target_window_id,
+                "bounds": {
+                    "x": bounds.get("x", 0), "y": bounds.get("y", 0),
+                    "width": bounds.get("width", width), "height": bounds.get("height", height),
+                },
+            }
+            size_bytes = image_path.stat().st_size
+            captured_at = datetime.now(timezone.utc).isoformat()
+            content = {
+                "image_ref": str(image_path),
+                "image_mime_type": str(payload.get("screenshot_mime_type") or "image/png"),
+                "width": width, "height": height, "size_bytes": size_bytes,
+                "screenshot_hash": screenshot_hash, "visual_hash": visual_hash,
+                "pointer_overlay": "last_agent_click" if pointer_overlay else None,
+                "capture_id": capture_id, "coordinate_frame": "window", "window": window,
+                "windows": "[]",
+            }
+            return ToolResult(
+                success=True, name=self.name, content=content,
+                metadata={
+                    "kind": "screen_observation", "image_ref": str(image_path),
+                    "image_mime_type": content["image_mime_type"], "width": width, "height": height,
+                    "size_bytes": size_bytes, "screenshot_hash": screenshot_hash,
+                    "visual_hash": visual_hash,
+                    "pointer_overlay": "last_agent_click" if pointer_overlay else None,
+                    "coordinate_frame": "window", "capture_id": capture_id,
+                    "window": window, "captured_at": captured_at,
+                },
+                summary=(
+                    f"Captured {window['title'] or 'the selected window'} directly "
+                    f"({width}x{height}); coordinates are window-local. The window was not activated."
+                    + (" Previous click is marked with a red ring." if pointer_overlay else "")
+                ),
+                evidence={
+                    "kind": "screen_observation", "image_ref": str(image_path),
+                    "width": width, "height": height, "capture_id": capture_id,
+                    "coordinate_frame": "window", "window": window,
+                },
+            )
+        except (OSError, CuaDriverError, TypeError, ValueError) as exc:
+            return ToolResult(
+                success=False, name=self.name,
+                content={"error": {"type": "window_capture_failed", "message": str(exc)}},
+                metadata={"recovery_hint": (
+                    "The exact-window screenshot could not be verified. Do not pair its controls with a desktop image "
+                    "or guess coordinates. Check the returned driver error; use an explicitly verified desktop capture only as a recovery."
+                )},
+                summary=f"Could not capture the selected window without switching focus: {exc}",
+            )
+
     def execute(self, include_windows: bool = True, **_kwargs: Any) -> ToolResult:
+        pid, window_id = _kwargs.get("pid"), _kwargs.get("window_id")
+        if pid is not None or window_id is not None:
+            if pid is None or window_id is None:
+                return ToolResult(
+                    success=False, name=self.name,
+                    content={"error": {"type": "invalid_window_target", "message": "Window capture requires both pid and window_id."}},
+                    summary="Window screenshot refused because the target was incomplete.",
+                )
+            return self._execute_window_capture(pid, window_id)
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
         session_label = self._session_label()
         session_dir = hashlib.sha256(session_label.encode("utf-8")).hexdigest()[:16]

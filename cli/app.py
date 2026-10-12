@@ -85,13 +85,13 @@ HELP_LINES = (
     "/clear                    clear terminal",
     "/exit                     quit Daena",
     "",
-    "While Daena is working, text is queued by default and processed as a new task.",
-    "/busy steer              stop the current generation and redirect with a fresh task",
+    "While Daena is working, new text redirects the current generation by default and is preserved as a fresh task.",
+    "/busy steer              stop the current generation and redirect with a fresh task (default)",
     "/busy queue              let the current task finish, then process new messages",
 )
 
 BUSY_MODES = {"steer", "interrupt", "queue"}
-DEFAULT_BUSY_MODE = "queue"
+DEFAULT_BUSY_MODE = "steer"
 
 
 def _route_busy_text(console, state: dict, busy_mode: str, user_text: str) -> int:
@@ -560,7 +560,7 @@ def main() -> None:
     console.print(f"  [#4C3B7A]{'─' * 62}[/#4C3B7A]")
     console.print(f"  [#475569]workspace[/#475569]  [dim]{agent.workingdirectory}[/dim]")
     console.print(
-        "  [dim]Tab  commands  ·  type while busy to queue  ·  /busy steer to redirect now  ·  Ctrl+C interrupt[/dim]\n"
+        "  [dim]Tab  commands  ·  type while busy to redirect  ·  /busy queue to wait  ·  Ctrl+C interrupt[/dim]\n"
     )
 
     busy_mode = DEFAULT_BUSY_MODE

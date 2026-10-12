@@ -343,9 +343,33 @@ class ToolManager:
                 ranked.append((score, doc))
 
         ranked.sort(key=lambda item: (-item[0], item[1]["name"]))
-        selected = ranked[:limit]
+        tools_config = self.config.get("tools") or {}
+        try:
+            relative_threshold = float(tools_config.get("search_minimum_relative_score", 0.50))
+        except (AttributeError, TypeError, ValueError):
+            relative_threshold = 0.50
+        relative_threshold = max(0.05, min(0.90, relative_threshold))
+        strongest_score = ranked[0][0] if ranked else 0.0
+        relevant = [
+            item for item in ranked
+            if item[0] >= strongest_score * relative_threshold
+        ]
+        # Always retain the strongest match when a catalog match exists; otherwise,
+        # do not fill top_k with low-evidence tools simply to reach the requested count.
+        selected = (relevant or ranked[:1])[:limit]
         if selected:
-            self._active_tool_names = [doc["name"] for _, doc in selected]
+            # Discovery is cumulative within a task: a web lookup followed by a GUI
+            # action must not make the web tools disappear from the next model turn.
+            # Keep the newest matches first, then retain prior capabilities in recency
+            # order, with a hard ceiling so the provider schema cannot grow forever.
+            matched_names = [doc["name"] for _, doc in selected]
+            previous_names = [name for name in self._active_tool_names if name not in matched_names]
+            try:
+                max_active = int(tools_config.get("max_active_search_tools", 8))
+            except (AttributeError, TypeError, ValueError):
+                max_active = 8
+            max_active = max(1, min(8, max_active))
+            self._active_tool_names = (matched_names + previous_names)[:max_active]
             self._last_tool_search_query = query
             matches = [
                 {

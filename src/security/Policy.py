@@ -236,7 +236,14 @@ class SecurityPolicy:
 
     def _check_command(self, args: dict[str, Any], sandbox) -> SecurityDecision:
         command = args.get("command")
-        if not isinstance(command, list) or not command:
+        if not isinstance(command, list):
+            return SecurityDecision(
+                False,
+                "command must be an argv list of strings, not a shell command string. "
+                "Pass e.g. [\"which\", \"gimp\"] as separate arguments; do not wrap the whole command in one string.",
+                "command_args_type",
+            )
+        if not command:
             return SecurityDecision(False, "command must be a non-empty argument list.", "command_required")
 
         if not all(isinstance(item, str) for item in command):
