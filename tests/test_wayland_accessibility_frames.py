@@ -37,6 +37,17 @@ def test_wayland_inset_can_be_configured(monkeypatch):
     assert ComputerInspectTool._wayland_window_top_inset() == 42
 
 
+def test_wayland_is_detected_from_runtime_socket_when_gui_env_is_missing(monkeypatch, tmp_path):
+    socket = tmp_path / "wayland-0"
+    socket.touch()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.delenv("XDG_SESSION_TYPE", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.delenv("DAENA_CUA_WAYLAND_TOP_INSET", raising=False)
+
+    assert ComputerInspectTool._wayland_window_top_inset() == 38
+
+
 def test_x11_does_not_apply_wayland_inset(monkeypatch):
     monkeypatch.setenv("XDG_SESSION_TYPE", "x11")
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)

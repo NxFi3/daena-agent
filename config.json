@@ -17,7 +17,7 @@
     "recent_event_limit": 20,
     "compaction_enabled": true,
     "compaction_target_tokens": 4096,
-    "max_prompt_tokens": 12288,
+    "max_prompt_tokens": 32288,
     "compaction_trigger_ratio": 0.62,
     "screenshot_history_frames": 1
   },

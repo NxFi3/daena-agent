@@ -493,9 +493,18 @@ class ComputerInspectTool(Tool):
         frame_note currently claim the same origin, but Paint demonstrates a 38 px
         mismatch. Allow tuning for different themes with DAENA_CUA_WAYLAND_TOP_INSET.
         """
+        runtime_dir = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+        # Remote/managed launches may not inherit the GUI session environment even
+        # though CUA Driver is connected to a live Wayland desktop. The compositor
+        # socket is a reliable local signal in that case.
+        try:
+            wayland_socket_present = any(Path(runtime_dir).glob("wayland-*"))
+        except OSError:
+            wayland_socket_present = False
+        session_type = str(os.environ.get("XDG_SESSION_TYPE", "")).strip().casefold()
         is_wayland = (
-            str(os.environ.get("XDG_SESSION_TYPE", "")).strip().casefold() == "wayland"
-            or bool(os.environ.get("WAYLAND_DISPLAY"))
+            session_type == "wayland"
+            or (session_type not in {"x11", "xorg"} and (bool(os.environ.get("WAYLAND_DISPLAY")) or wayland_socket_present))
         )
         if not is_wayland:
             return 0

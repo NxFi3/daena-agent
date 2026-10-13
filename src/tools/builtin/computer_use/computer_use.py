@@ -42,17 +42,17 @@ class ComputerUseTool(Tool):
         "If a destination URL is known, use action='navigate', url='https://…'; otherwise start with action='capture', mode='som'. "
         "Controls are snapshot-scoped. For click/type, prefer target='exact visible label' when it uniquely identifies the intended control; otherwise use an element number from the latest capture, never guess an ID. Make only one Computer Use call per model turn; use action='sequence' for 2-6 predictable steps so GUI calls do not race each other. "
         "Use action='type', target='field label', text='…' to type into an accessible field. If the field is visible but missing from the controls list, use coordinate=[x,y] from the latest screenshot; the tool focuses that point before typing. For action='scroll', use coordinate=[x,y] inside the intended scrollable area when it is not inferable from current accessibility state; the driver requires an explicit scroll anchor. "
-        "For continuous pointer gestures—drawing in Paint, dragging objects, selecting regions—use action='drag' with from_coordinate=[x,y] and to_coordinate=[x,y] from the latest screenshot. Each drag is a real press-move-release gesture; use separate strokes for separate drawing segments. "
-        "Before the first drag in a drawing app, capture mode='vision' (it overlays a labeled 100-pixel grid) and choose BOTH endpoints inside the drawing canvas, never on a toolbar or ribbon. A toolbar item reported as selected/focused is NOT proof the tool is active: read the application's own status text or verify visually. "
+        "For continuous pointer gestures—drawing, dragging objects, selecting regions—use action='drag' with from_coordinate=[x,y] and to_coordinate=[x,y] from the latest screenshot. Each drag is a real press-move-release gesture; use separate strokes for separate drawing segments. For multi-stroke drawings, plan the vertices from the visible canvas first and reuse exactly the same coordinates wherever edges meet; prefer a rectangle/ellipse tool for closed components instead of approximating them with several independent lines. Compare each fresh screenshot with the intended geometry before continuing. "
+        "Before the first drag in a drawing app, capture mode='som' with the target app selected, then use coordinates only from that exact screenshot. Do not mix coordinates from a full-desktop vision capture with a window-local capture; if you switch capture modes, recapture the target app before dragging. Choose BOTH endpoints inside the drawing canvas, never on a toolbar or ribbon. A toolbar item reported as selected/focused is NOT proof the tool is active: verify visually. "
         "Use action='sequence' for 2-6 predictable steps with label targets; it refreshes state between steps and stops on an ambiguous target or failure. Keep decisions requiring visual interpretation or user input (for example verification codes) as separate turns. "
         "After meaningful actions, review the returned fresh screenshot and controls. If screen_hash_changed is false, do not repeat the same click; re-capture/re-evaluate the current window. 'Dispatched' only means an input was sent, not that it worked; confirm the visible result before continuing or claiming success. "
         "If the user replies with a value you requested (especially an OTP), first capture the current UI and resume the pending flow; do not navigate or launch another tab just because the reply is short. "
         "Never reuse an old element number after capture changes, never repeat an action after timeout/no-op, and never keep trying guessed coordinates. "
-        "The tool captures a selected native window directly and pairs its screenshot with controls from that PID/window_id; it does not bring the app forward just to take a screenshot. If exact-window capture or target resolution fails, report the concrete driver error rather than mixing another app's pixels with these controls. Full-desktop coordinates are reserved for explicitly desktop-level tasks. If a scroll lacks a usable anchor, capture the target window and choose a point in its actual content. "
+        "The tool captures a selected native window directly and pairs its screenshot with controls from that PID/window_id; it does not bring the app forward just to take a screenshot. On Wayland, background input follows the compositor's currently focused app rather than reliably targeting a background window, so selected-window interactions default to foreground delivery when needed. If exact-window capture or target resolution fails, report the concrete driver error rather than mixing another app's pixels with these controls. Full-desktop coordinates are reserved for explicitly desktop-level tasks. If a scroll lacks a usable anchor, capture the target window and choose a point in its actual content. "
         "Use mode='ax' for controls only and mode='vision' when visual pixels are needed or controls are inaccessible. If the task names a specific app, pass its actual app name through app or a partial window_title on the first capture; never invent a full title. If selection fails, use the returned visible-window list and retry with a real matching title or shorter app-name substring before any input. If the app is not open, use action='launch', app='<application>' instead of clicking the taskbar. "
         "If a capture reports zero numbered controls, element=N cannot be used; use a fresh screenshot and a clearly visible coordinate target only when appropriate. "
         "For URLs, action='navigate' opens the destination in a browser and returns the selected window's fresh screenshot and controls; use it instead of clicking/typing into the address bar, which may append to existing text. Do not immediately call capture again unless the returned state is stale or ambiguous. If navigation fails, review the returned state and retry only when the evidence supports a recovery. Repeating the exact same URL without a preceding failed attempt is blocked, so review the current page and continue from evidence instead. "
-        "Coordinates use the frame explicitly reported by the screenshot: window-local pixels for a selected app, and desktop pixels only for an explicit full-desktop capture. They are pixels of the actual returned screenshot, not coordinates scaled to a chat preview. If accessibility returns zero or one control, the screenshot has a labeled 100-pixel x/y grid; use the labels and intersections instead of estimating from memory. A red ring marks the previous click when it belongs to this exact window. Input is bound to the captured PID/window_id and normally uses background delivery; focus is escalated only when the driver explicitly says background input is unavailable. If a required control is absent from accessibility results, use a point clearly visible in that exact annotated screenshot. After an unchanged screenshot, the same coordinate is blocked; inspect the fresh grid and choose a distinct supported target or stop. "
+        "Coordinates use the frame explicitly reported by the screenshot: window-local pixels for a selected app, and desktop pixels only for an explicit full-desktop capture. They are pixels of the actual returned screenshot, not coordinates scaled to a chat preview. Every visual screenshot has a labeled 100-pixel x/y grid; use it for pixel coordinates. Do not click grid labels as UI controls. A red ring marks the previous click when it belongs to this exact window. Input is bound to the captured PID/window_id and normally uses background delivery; focus is escalated only when the driver explicitly says background input is unavailable. If a required control is absent from accessibility results, use a point clearly visible in that exact annotated screenshot. After an unchanged screenshot, the same coordinate is blocked; inspect the fresh grid and choose a distinct supported target or stop. "
         "The red ring marks the last agent click, not the live cursor. This is the only Computer Use tool exposed to the model."
     )
     parameters = {
@@ -509,6 +509,18 @@ class ComputerUseTool(Tool):
         return token, record
 
     @staticmethod
+    def _default_delivery_mode(target: Any) -> str:
+        """Choose input delivery that actually reaches a selected window on this session."""
+        target = target if isinstance(target, dict) else {}
+        if (
+            target.get("desktop_capture") is not True
+            and str(target.get("coordinate_frame") or "").casefold() == "window"
+            and ComputerInspectTool._wayland_window_top_inset() > 0
+        ):
+            return "foreground"
+        return "background"
+
+    @staticmethod
     def _window_local_frame(
         frame: Any, target: dict[str, Any], screenshot_width: Any, screenshot_height: Any,
     ) -> dict[str, Any] | None:
@@ -895,10 +907,12 @@ class ComputerUseTool(Tool):
             self._save_state(state_path, state)
 
         coordinate_grid_overlay = False
-        # When accessibility gives the model no useful toolbar controls, annotate
-        # the exact screenshot rather than asking a vision model to estimate pixels
-        # from memory. Hash-based no-op verification continues to use the raw PNG hash.
-        if mode != "ax" and observed is not None and (mode == "vision" or len(elements) <= 1):
+        # Annotate every visual screenshot, not only vision-mode/low-control captures.
+        # Models often choose pixel drags even after a SOM capture with many toolbar
+        # controls; without the grid they estimate coordinates from prose and can miss
+        # the target canvas. The grid is drawn on the image actually attached to the
+        # next model turn. Hash-based no-op verification still uses the raw PNG hash.
+        if mode != "ax" and observed is not None:
             image_ref = (
                 observed.metadata.get("image_ref")
                 or observed.content.get("image_ref")
@@ -1158,6 +1172,23 @@ class ComputerUseTool(Tool):
             action, args["button"] = "click", "middle"
 
         click_like = {"click", "double_click", "right_click"}
+        if action == "drag":
+            start = kwargs.get("from_coordinate")
+            end = kwargs.get("to_coordinate")
+            if (
+                isinstance(start, (list, tuple)) and len(start) == 2
+                and isinstance(end, (list, tuple)) and len(end) == 2
+            ):
+                try:
+                    sx, sy, ex, ey = (float(value) for value in (*start, *end))
+                except (TypeError, ValueError):
+                    pass
+                else:
+                    if abs(sx - ex) < 1 and abs(sy - ey) < 1:
+                        raise ValueError(
+                            "Blocked zero-length drag: start and end coordinates are the same. "
+                            "No input was dispatched; inspect the latest screenshot and choose two distinct points."
+                        )
         if action == "drag" and kwargs.get("element") is not None:
             raise ValueError("drag uses from_coordinate and to_coordinate from the latest capture; element IDs are not drag paths.")
         click_signature: str | None = None
@@ -1262,6 +1293,16 @@ class ComputerUseTool(Tool):
                     args[axis_names[0]], args[axis_names[1]] = float(point[0]), float(point[1])
                 except (TypeError, ValueError):
                     raise ValueError(f"{point_name} must contain numeric x/y values.")
+
+        if action == "drag" and all(key in args for key in ("from_x", "from_y", "to_x", "to_y")):
+            if (
+                abs(float(args["from_x"]) - float(args["to_x"])) < 1
+                and abs(float(args["from_y"]) - float(args["to_y"])) < 1
+            ):
+                raise ValueError(
+                    "Blocked zero-length drag: start and end coordinates are the same. "
+                    "No input was dispatched; inspect the latest screenshot and choose two distinct points."
+                )
 
         allowed = {
             "element_token",
@@ -2564,6 +2605,11 @@ class ComputerUseTool(Tool):
                         [float(value) for value in point]
                     except (TypeError, ValueError):
                         raise ValueError(f"sequence step {index} (drag) has invalid {coordinate_name} values.")
+                start, end = current["from_coordinate"], current["to_coordinate"]
+                if abs(float(start[0]) - float(end[0])) < 1 and abs(float(start[1]) - float(end[1])) < 1:
+                    raise ValueError(
+                        f"sequence step {index} (drag) has identical start/end points; choose two distinct points."
+                    )
             normalized_steps.append(current)
 
         step_results: list[dict[str, Any]] = []
@@ -2752,6 +2798,33 @@ class ComputerUseTool(Tool):
         elif action == "type_text":
             action = "type"
 
+        if action in {"click", "double_click", "right_click", "middle_click", "drag", "type", "key", "press_key", "hotkey", "scroll"} and not kwargs.get("delivery_mode"):
+            try:
+                current_state = self._current_state()[1]
+                kwargs["delivery_mode"] = self._default_delivery_mode(current_state.get("latest_screenshot_target"))
+            except (OSError, ValueError, TypeError, KeyError):
+                kwargs["delivery_mode"] = "background"
+
+        if action == "drag":
+            start = kwargs.get("from_coordinate")
+            end = kwargs.get("to_coordinate")
+            if (
+                isinstance(start, (list, tuple)) and len(start) == 2
+                and isinstance(end, (list, tuple)) and len(end) == 2
+            ):
+                try:
+                    sx, sy, ex, ey = (float(value) for value in (*start, *end))
+                except (TypeError, ValueError):
+                    pass
+                else:
+                    if abs(sx - ex) < 1 and abs(sy - ey) < 1:
+                        return ToolResult(
+                            success=False, name=self.name,
+                            content={"action": "drag", "error": {"type": "zero_length_drag", "message": "Start and end coordinates are the same; no input was dispatched."}},
+                            metadata={"action": "drag", "recovery_hint": "Inspect the latest screenshot and choose two distinct points."},
+                            summary="Blocked zero-length drag before dispatch; choose two distinct points.",
+                        )
+
         try:
             # Make driver readiness deterministic: start/verify Cua Driver before
             # launching a browser or attempting the first screenshot/window lookup.
@@ -2764,7 +2837,7 @@ class ComputerUseTool(Tool):
                 return self._execute_sequence(
                     steps=kwargs.get("steps"),
                     final_mode=str(kwargs.get("mode") or "som"),
-                    delivery_mode=str(kwargs.get("delivery_mode") or "background"),
+                    delivery_mode=str(kwargs.get("delivery_mode") or self._default_delivery_mode(self._current_state()[1].get("latest_screenshot_target"))),
                     max_results=kwargs.get("max_results", 24),
                     include_windows=bool(kwargs.get("include_windows", True)),
                 )
@@ -3047,8 +3120,8 @@ class ComputerUseTool(Tool):
                         "The drag was delivered but the window did not change even after waiting. "
                         + (f"Its start point lies on the control '{owner}', not on a drawing surface; "
                            if owner else "")
-                        + "Capture mode='vision' (labeled 100px grid), choose start/end points clearly inside the "
-                        "canvas, and confirm the active tool from the app's own status text before drawing. "
+                        + "Capture mode='som' for the same target app (the grid is already overlaid), re-identify the canvas and "
+                        "active tool, then use only coordinates from that fresh window screenshot. Never mix coordinate frames. "
                         "Do not repeat the same drag."
                     )
                     metadata["recovery_hint"] = drag_hint

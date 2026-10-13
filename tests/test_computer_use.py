@@ -489,6 +489,53 @@ def test_coordinate_grid_overlay_marks_labeled_pixel_axes(tmp_path):
         assert result.convert("RGB").getpixel((100, 300)) != (255, 255, 255)
 
 
+def test_som_capture_adds_coordinate_grid_even_with_many_accessible_controls(tmp_path):
+    """Pixel actions must not depend on the model remembering to request vision mode."""
+    if observe_module.Image is None or observe_module.ImageDraw is None:
+        pytest.skip("Pillow annotation support is optional")
+
+    image_path = tmp_path / ".daena" / "screenshots" / "session" / "screen.png"
+    image_path.parent.mkdir(parents=True)
+    observe_module.Image.new("RGB", (800, 600), "white").save(image_path)
+    window = {
+        "app": "Paint", "app_name": "Paint", "title": "Untitled — Paint",
+        "pid": 123, "window_id": 456,
+        "bounds": {"x": 0, "y": 0, "width": 800, "height": 600},
+    }
+    controls = [
+        {"element_token": "rectangle-tool", "role": "push button", "label": "Rectangle", "actions": ["click"], "enabled": True},
+        {"element_token": "line-tool", "role": "push button", "label": "Line", "actions": ["click"], "enabled": True},
+        {"element_token": "canvas", "role": "canvas", "label": "Drawing area", "actions": [], "enabled": True},
+    ]
+    tool = ComputerUseTool()
+    tool.set_workspace(tmp_path)
+    tool._refresh_window_geometry = lambda _target: True
+    tool._inspect.execute = lambda **_kwargs: ToolResult(
+        success=True, name="computer_inspect",
+        content={"window": dict(window), "elements": controls},
+        summary="Mock Paint controls",
+    )
+    tool._observe.execute = lambda **_kwargs: ToolResult(
+        success=True, name="computer_observe",
+        content={
+            "image_ref": str(image_path), "image_mime_type": "image/png",
+            "width": 800, "height": 600, "coordinate_frame": "window",
+            "screenshot_hash": "raw-screen-hash", "window": dict(window),
+        },
+        metadata={"image_ref": str(image_path), "image_mime_type": "image/png", "width": 800, "height": 600},
+        summary="Mock native window capture",
+    )
+
+    result = tool._capture(mode="som", app="Paint")
+
+    assert result.success is True
+    assert result.content["element_count"] == 3
+    assert result.content["coordinate_grid_overlay"] is True
+    assert "Coordinate grid:" in result.summary
+    with observe_module.Image.open(image_path) as annotated:
+        assert annotated.convert("RGB").getpixel((100, 300)) != (255, 255, 255)
+
+
 def test_previous_click_overlay_is_bound_to_exact_window_identity(tmp_path):
     if observe_module.Image is None or observe_module.ImageDraw is None:
         pytest.skip("Pillow annotation support is optional")
@@ -694,9 +741,9 @@ def test_call_driver_rejects_structured_refusal_even_when_cli_exits_zero(monkeyp
 
     monkeypatch.setattr(driver_module, "driver_executable", lambda: "/usr/bin/cua-driver")
     monkeypatch.setattr(
-        driver_module.subprocess,
-        "run",
-        lambda command, **kwargs: subprocess.CompletedProcess(
+        driver_module,
+        "_run_bounded",
+        lambda command, timeout: subprocess.CompletedProcess(
             command, 0, stdout='{"code":"invalid_action_target"}\n', stderr=""
         ),
     )
@@ -1651,7 +1698,8 @@ def test_type_on_input_with_setvalue_keeps_direct_element_typing(tmp_path):
     assert calls[0]["text"] == "hello"
 
 
-def test_inspection_keeps_native_window_local_controls_when_window_is_offset():
+def test_inspection_keeps_native_window_local_controls_when_window_is_offset(monkeypatch):
+    monkeypatch.setattr(ComputerInspectTool, "_wayland_window_top_inset", staticmethod(lambda: 0))
     title = "Untitled * — Paint"
     payload = {
         "window_title": title,
@@ -1975,6 +2023,19 @@ def test_inspect_window_selection_prefers_frontmost_equal_relevance_window():
     assert (pid, window_id, title) == (1, 12, "Chat page")
 
 
+def test_selected_window_defaults_to_foreground_delivery_on_wayland(monkeypatch):
+    monkeypatch.setattr(ComputerInspectTool, "_wayland_window_top_inset", staticmethod(lambda: 38))
+    target = {"coordinate_frame": "window", "desktop_capture": False}
+
+    assert ComputerUseTool._default_delivery_mode(target) == "foreground"
+    assert ComputerUseTool._default_delivery_mode({"coordinate_frame": "desktop", "desktop_capture": True}) == "background"
+
+
+def test_selected_window_defaults_to_background_delivery_on_x11(monkeypatch):
+    monkeypatch.setattr(ComputerInspectTool, "_wayland_window_top_inset", staticmethod(lambda: 0))
+    assert ComputerUseTool._default_delivery_mode({"coordinate_frame": "window", "desktop_capture": False}) == "background"
+
+
 def test_computer_use_drag_is_exposed_for_general_pointer_gestures():
     action_schema = ComputerUseTool.parameters["properties"]["action"]
     assert "drag" in action_schema["enum"]
@@ -2016,8 +2077,33 @@ def test_computer_use_maps_drag_coordinates_without_element_ids(tmp_path):
     assert result.success is True
     assert calls == [("drag", {
         "from_x": 10.0, "from_y": 20.0, "to_x": 80.0, "to_y": 90.0,
-        "duration_ms": 350,
+        "duration_ms": 350, "delivery_mode": "background",
     })]
+
+
+def test_computer_use_blocks_zero_length_drag_before_dispatch(tmp_path):
+    tool = ComputerUseTool()
+    tool.set_workspace(tmp_path)
+    tool.set_context_store(None, lambda: "zero-length-drag-test")
+    calls = []
+
+    def fake_act(action, **kwargs):
+        calls.append((action, kwargs))
+        return ToolResult(success=True, name="computer_act", content={"action": action},
+                          metadata={}, summary="drag dispatched", evidence={}, effects=[])
+
+    tool._act.execute = fake_act
+    from src.tools.builtin.computer_use.driver import pointer_state_path
+    state_path = pointer_state_path(tmp_path, tool._observe._session_label())
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps(_valid_pixel_frame("zero-length-drag-capture")), encoding="utf-8")
+
+    result = tool.execute(action="drag", from_coordinate=[400, 400], to_coordinate=[400, 400],
+                          duration_ms=300, capture_after=False)
+
+    assert result.success is False
+    assert "zero-length drag" in result.summary.lower()
+    assert calls == []
 
 
 def test_computer_act_dispatches_real_drag_with_desktop_coordinates(tmp_path, monkeypatch):
