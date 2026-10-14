@@ -305,6 +305,33 @@ def test_observe_returns_recoverable_error_when_driver_is_unavailable(tmp_path, 
     assert "do not keep retrying" in result.metadata["recovery_hint"].lower()
 
 
+def test_driver_args_force_foreground_for_window_local_wayland_even_if_model_requests_background(monkeypatch):
+    monkeypatch.setattr(act_module.ComputerInspectTool, "_wayland_window_top_inset", staticmethod(lambda: 38))
+    state = {
+        "latest_screenshot_target": {
+            "pid": 77, "window_id": 8, "coordinate_frame": "window",
+            "bounds": {"x": 900, "y": 200, "width": 800, "height": 600},
+        },
+    }
+    args = ComputerActTool._driver_args(
+        "click", {"x": 120, "y": 240, "delivery_mode": "background"},
+        "target-bound-session", state,
+    )
+    assert args["pid"] == 77 and args["window_id"] == 8
+    assert args["delivery_mode"] == "foreground"
+
+
+def test_driver_args_keep_desktop_capture_background_on_wayland(monkeypatch):
+    monkeypatch.setattr(act_module.ComputerInspectTool, "_wayland_window_top_inset", staticmethod(lambda: 38))
+    state = {"latest_screenshot_target": {"desktop_capture": True, "coordinate_frame": "desktop"}}
+    args = ComputerActTool._driver_args(
+        "click", {"x": 120, "y": 240, "delivery_mode": "background"},
+        "desktop-wayland-session", state,
+    )
+    assert args["target"] == {"kind": "desktop", "display_id": "primary"}
+    assert args["delivery_mode"] == "background"
+
+
 def test_driver_args_bind_window_local_pixels_to_native_target():
     state = {
         "latest_screenshot_target": {
@@ -602,6 +629,51 @@ def test_act_blocks_same_pixel_again_when_the_same_screenshot_had_no_effect(tmp_
     assert result.success is False
     assert "Blocked repeat click" in result.summary
     assert calls == []
+
+
+def test_internal_focus_click_can_reuse_coordinate_for_typing_without_disabling_click_guard(tmp_path, monkeypatch):
+    from src.tools.builtin.computer_use.driver import pointer_state_path
+
+    tool = ComputerActTool()
+    tool.set_workspace(tmp_path)
+    tool.set_context_store(None, lambda: "internal-focus-click")
+    state_path = pointer_state_path(tmp_path, tool._session_label())
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state = _valid_pixel_frame("internal-focus-capture", target={
+        "pid": 77, "window_id": 8, "title": "Mock Paint",
+        "coordinate_frame": "window",
+        "bounds": {"x": 1200, "y": 700, "width": 800, "height": 600},
+    })
+    state.update({
+        "latest_screenshot_width": 800,
+        "latest_screenshot_height": 600,
+        "latest_screenshot_coordinate_frame": "window",
+        "latest_screenshot_hash": "same-hash",
+        "last_click_timestamp": time.time(),
+        "pixel_clicks_since_progress": 4,
+        "recent_pixel_clicks": [{"x": 240, "y": 85, "timestamp": time.time()}],
+        "last_unverified_pixel_action": {
+            "x": 240, "y": 85, "pid": 77, "window_id": 8,
+            "coordinate_frame": "window", "after_screenshot_hash": "same-hash",
+            "timestamp": time.time(),
+        },
+    })
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(
+        act_module, "call_driver",
+        lambda name, arguments=None, **kwargs: calls.append((name, arguments)) or '{"ok":true}',
+    )
+
+    result = tool.execute(
+        action="click", x=240, y=85,
+        delivery_mode="foreground", _internal_focus_click=True,
+    )
+
+    assert result.success is True
+    assert len(calls) == 1
+    assert calls[0][0] == "click"
+    assert calls[0][1]["x"] == 240 and calls[0][1]["y"] == 85
 
 
 def test_computer_act_blocks_out_of_bounds_coordinates_before_driver_dispatch(tmp_path, monkeypatch):
@@ -1397,7 +1469,16 @@ def test_toggle_click_requires_a_real_checked_state_transition(
         assert "Do not perform a dependent drag" in result.metadata["recovery_hint"]
 
 
-def test_no_visible_change_does_not_report_state_changing_click_as_success(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "action, action_kwargs",
+    [
+        ("click", {"coordinate": [400, 300]}),
+        ("type", {"coordinate": [400, 300], "text": "example text"}),
+    ],
+)
+def test_no_visible_change_does_not_report_state_changing_action_as_success(
+    tmp_path, monkeypatch, action, action_kwargs,
+):
     import src.tools.builtin.computer_use.computer_use as computer_use_module
     from src.tools.builtin.computer_use.driver import pointer_state_path
 
@@ -1421,7 +1502,7 @@ def test_no_visible_change_does_not_report_state_changing_click_as_success(tmp_p
         }, metadata={}, summary="Captured same frame", evidence={},
     )
 
-    result = tool.execute(action="click", coordinate=[400, 300])
+    result = tool.execute(action=action, **action_kwargs)
 
     assert result.success is False
     assert result.content["verification_status"] == "no_visible_change"
@@ -2044,6 +2125,11 @@ def test_computer_use_drag_is_exposed_for_general_pointer_gestures():
     sequence_step = ComputerUseTool.parameters["properties"]["steps"]["items"]
     assert "drag" in sequence_step["properties"]["action"]["enum"]
     assert "duration_ms" in sequence_step["properties"]
+    assert "batch 2-6 independent drag strokes" in ComputerUseTool.description
+    assert "ONE action='sequence' call" in ComputerUseTool.description
+    assert "batch preplanned independent strokes here" in ComputerUseTool.parameters["properties"]["steps"]["description"]
+    assert "coordinate" in ComputerUseTool.parameters["properties"]["steps"]["items"]["properties"]["target"]["description"]
+    assert "do not repeat the same gesture" in ComputerUseTool.parameters["properties"]["steps"]["description"]
 
 
 def test_computer_use_maps_drag_coordinates_without_element_ids(tmp_path):
@@ -2286,6 +2372,7 @@ def test_computer_use_types_into_activate_only_field_via_current_visible_bounds(
     assert args["x"] == 200
     assert args["y"] == 220
     assert args["delivery_mode"] == "foreground"
+    assert args["_internal_focus_click"] is True
     action, args = calls[1]
     assert action == "type_text"
     assert args["text"] == "hello canvas"
@@ -2314,8 +2401,11 @@ def test_coordinate_type_focuses_point_before_sending_keyboard_text(tmp_path):
 
     assert result.success is True
     assert [action for action, _kwargs in calls] == ["click", "type_text"]
-    assert calls[0][1] == {"x": 400, "y": 300, "delivery_mode": "foreground"}
-    assert calls[1][1] == {"text": "visible input test", "delivery_mode": "background"}
+    assert calls[0][1] == {
+        "x": 400, "y": 300, "delivery_mode": "foreground",
+        "_internal_focus_click": True,
+    }
+    assert calls[1][1] == {"text": "visible input test", "delivery_mode": "foreground"}
     assert result.content["target_mode"] == "visible_coordinate_then_keyboard"
 
 
@@ -2923,3 +3013,181 @@ def test_foreground_timeout_focus_failure_still_returns_fresh_screenshot(tmp_pat
     assert result.content["focus_brought_to_front"] is False
     assert result.content["image_ref"] == str(tmp_path / "fresh.png")
     assert "bringing that window forward did not succeed" in result.content["recovery_hint"]
+
+
+def test_computer_act_refreshes_screenshot_context_before_scroll(tmp_path, monkeypatch):
+    calls = []
+    bounds = {"x": 639, "y": 290, "width": 1282, "height": 890}
+
+    def fake_call(name, arguments=None, *, timeout=30.0):
+        arguments = arguments or {}
+        calls.append((name, dict(arguments), timeout))
+        if name == "get_window_state":
+            Path(arguments["screenshot_out_file"]).write_bytes(PNG_HEADER)
+            return json.dumps({
+                "capture_id": "fresh-window-scroll-capture",
+                "screenshot_frame_valid": True,
+                "screenshot_width": 1282,
+                "screenshot_height": 890,
+                "pid": 7033,
+                "window_id": 2,
+                "window_title": "Aparat — Mozilla Firefox",
+                "window_bounds": bounds,
+                "screenshot_file_path": arguments["screenshot_out_file"],
+            })
+        return '{"ok":true,"effect":"dispatched"}'
+
+    monkeypatch.setattr(act_module, "call_driver", fake_call)
+    tool = ComputerActTool()
+    tool.set_workspace(tmp_path)
+    tool.set_context_store(None, lambda: "act-window-scroll-refresh-test")
+    from src.tools.builtin.computer_use.driver import pointer_state_path
+    state_path = pointer_state_path(tmp_path, tool._session_label())
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    initial = _valid_pixel_frame(
+        "old-window-scroll-capture",
+        target={
+            "pid": 7033, "window_id": 2,
+            "coordinate_frame": "window", "title": "Aparat — Mozilla Firefox",
+            "bounds": bounds,
+        },
+    )
+    initial.update({
+        "latest_screenshot_width": 1282,
+        "latest_screenshot_height": 890,
+        "latest_screenshot_coordinate_frame": "window",
+        "latest_accessibility_pid": 7033,
+        "latest_accessibility_window_id": 2,
+        "latest_accessibility_elements": {"old-scroll": {"role": "scroll pane"}},
+    })
+    state_path.write_text(json.dumps(initial), encoding="utf-8")
+
+    result = tool.execute(action="scroll", x=700, y=500, direction="down", amount=3)
+
+    assert result.success is True
+    assert [call[0] for call in calls] == ["get_window_state", "scroll"]
+    assert calls[0][1]["pid"] == 7033 and calls[0][1]["window_id"] == 2
+    assert calls[0][1]["include_screenshot"] is True
+    assert calls[0][1]["include_accessibility_tree"] is False
+    scroll_args = calls[1][1]
+    assert "capture_id" not in scroll_args
+    assert scroll_args["pid"] == 7033 and scroll_args["window_id"] == 2
+    assert scroll_args["coordinate_frame"] == "window"
+    assert scroll_args["x"] == 700 and scroll_args["y"] == 500
+    assert scroll_args["direction"] == "down" and scroll_args["amount"] == 3
+    saved = json.loads(state_path.read_text(encoding="utf-8"))
+    assert saved["latest_capture_id"] == "fresh-window-scroll-capture"
+
+
+def test_computer_act_blocks_same_drag_retry_after_timeout_without_new_visual_evidence(tmp_path, monkeypatch):
+    from src.tools.builtin.computer_use.driver import pointer_state_path, CuaDriverError
+
+    tool = ComputerActTool()
+    tool.set_workspace(tmp_path)
+    tool.set_context_store(None, lambda: "drag-timeout-retry-guard")
+    state_path = pointer_state_path(tmp_path, tool._session_label())
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    bounds = {"x": 100, "y": 100, "width": 800, "height": 600}
+    state = _valid_pixel_frame("drag-timeout-capture", target={
+        "pid": 77, "window_id": 8, "title": "Mock Paint",
+        "coordinate_frame": "window", "bounds": bounds,
+    })
+    state.update({
+        "latest_screenshot_hash": "unchanged-screen",
+        "latest_screenshot_width": 800,
+        "latest_screenshot_height": 600,
+        "latest_screenshot_coordinate_frame": "window",
+    })
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    calls = []
+
+    def fake_call(name, arguments=None, *, timeout=30.0):
+        arguments = arguments or {}
+        calls.append((name, dict(arguments)))
+        if name == "get_window_state":
+            Path(arguments["screenshot_out_file"]).write_bytes(PNG_HEADER)
+            return json.dumps({
+                "capture_id": "drag-timeout-fresh-capture",
+                "screenshot_frame_valid": True,
+                "screenshot_width": 800,
+                "screenshot_height": 600,
+                "pid": 77,
+                "window_id": 8,
+                "window_title": "Mock Paint",
+                "window_bounds": bounds,
+                "screenshot_file_path": arguments["screenshot_out_file"],
+            })
+        raise CuaDriverError("Cua Driver action 'drag' timed out after 20 seconds.")
+
+    monkeypatch.setattr(act_module, "call_driver", fake_call)
+    first = tool.execute(action="drag", from_x=200, from_y=200, to_x=300, to_y=300)
+    assert first.success is False
+    assert "timed out" in first.summary
+    saved = json.loads(state_path.read_text(encoding="utf-8"))
+    assert saved["last_failed_drag"]["from_x"] == 200
+
+    second = tool.execute(action="drag", from_x=200, from_y=200, to_x=300, to_y=300)
+    assert second.success is False
+    assert "Blocked a repeat drag after a driver timeout" in second.summary
+    assert [name for name, _ in calls] == ["get_window_state", "drag"]
+
+
+def test_computer_use_sequence_accepts_coordinate_click_for_canvas_focus(tmp_path):
+    tool = ComputerUseTool()
+    tool.set_workspace(tmp_path)
+    tool.set_context_store(None, lambda: "sequence-coordinate-click-test")
+    state_path = driver_module.pointer_state_path(tmp_path, tool._observe._session_label())
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    target = {"pid": 77, "window_id": 8, "title": "Mock Paint", "coordinate_frame": "window"}
+    state = _valid_pixel_frame("sequence-coordinate-before", target=target)
+    state.update({
+        "latest_screenshot_hash": "before",
+        "latest_screenshot_width": 800,
+        "latest_screenshot_height": 600,
+        "latest_screenshot_coordinate_frame": "window",
+        "latest_computer_use_target": target,
+        "latest_element_ids": {},
+        "latest_accessibility_elements": {},
+    })
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    dispatched = []
+    phase = {"hash": "before"}
+
+    def fake_capture(*, mode="som", **kwargs):
+        current = json.loads(state_path.read_text(encoding="utf-8"))
+        current["latest_screenshot_hash"] = phase["hash"]
+        current["latest_capture_id"] = f"sequence-coordinate-{phase['hash']}"
+        current["latest_computer_use_target"] = target
+        current["latest_screenshot_target"] = target
+        current["latest_element_ids"] = {}
+        current["latest_accessibility_elements"] = {}
+        state_path.write_text(json.dumps(current), encoding="utf-8")
+        return ToolResult(
+            success=True, name="computer_use",
+            content={"action": "capture", "mode": mode, "window": target,
+                     "elements": [], "element_count": 0, "elements_text": "",
+                     "screenshot_hash": phase["hash"], "image_ref": None},
+            metadata={}, summary="Captured mock canvas", evidence={},
+        )
+
+    original_execute = tool.execute
+
+    def execute_wrapper(action, **kwargs):
+        if action == "sequence":
+            return original_execute(action=action, **kwargs)
+        dispatched.append((action, dict(kwargs)))
+        phase["hash"] = "after"
+        return ToolResult(
+            success=True, name="computer_use",
+            content={"action": action, "capture_after": {"screen_hash_changed": True}},
+            metadata={}, summary="coordinate click dispatched", evidence={},
+        )
+
+    tool._capture = fake_capture
+    tool.execute = execute_wrapper
+    result = tool.execute(action="sequence", steps=[{"action": "click", "coordinate": [400, 300]}])
+
+    assert result.success is True
+    assert result.content["complete"] is True
+    assert dispatched[0][0] == "click"
+    assert dispatched[0][1]["coordinate"] == [400, 300]

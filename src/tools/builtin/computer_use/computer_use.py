@@ -40,6 +40,7 @@ class ComputerUseTool(Tool):
     description = (
         "General-purpose desktop control for browsers, editors, terminals, drawing apps, dialogs, and other GUI work. "
         "If a destination URL is known, use action='navigate', url='https://…'; otherwise start with action='capture', mode='som'. "
+        "PRIORITY: For a task with multiple predictable UI actions, use ONE action='sequence' call with 2-6 steps instead of one model/tool round-trip per action. For drawing, plan the geometry from one fresh screenshot, then batch 2-6 independent drag strokes in one sequence; use another sequence only after reviewing the returned screenshot. Never batch across navigation, a modal/layout change, or a step whose next action depends on seeing the result. "
         "Controls are snapshot-scoped. For click/type, prefer target='exact visible label' when it uniquely identifies the intended control; otherwise use an element number from the latest capture, never guess an ID. Make only one Computer Use call per model turn; use action='sequence' for 2-6 predictable steps so GUI calls do not race each other. "
         "Use action='type', target='field label', text='…' to type into an accessible field. If the field is visible but missing from the controls list, use coordinate=[x,y] from the latest screenshot; the tool focuses that point before typing. For action='scroll', use coordinate=[x,y] inside the intended scrollable area when it is not inferable from current accessibility state; the driver requires an explicit scroll anchor. "
         "For continuous pointer gestures—drawing, dragging objects, selecting regions—use action='drag' with from_coordinate=[x,y] and to_coordinate=[x,y] from the latest screenshot. Each drag is a real press-move-release gesture; use separate strokes for separate drawing segments. For multi-stroke drawings, plan the vertices from the visible canvas first and reuse exactly the same coordinates wherever edges meet; prefer a rectangle/ellipse tool for closed components instead of approximating them with several independent lines. Compare each fresh screenshot with the intended geometry before continuing. "
@@ -91,17 +92,17 @@ class ComputerUseTool(Tool):
                 "type": "array",
                 "minItems": 1,
                 "maxItems": 6,
-                "description": "Model-planned sequential UI actions. Every target is re-resolved from current accessibility controls after the preceding action; the sequence stops at the first ambiguous/missing target or failed step.",
+                "description": "Use for 2-6 predictable actions in ONE tool call. Supports click by visible label or screenshot coordinate, type by visible label, and drag by screenshot coordinates; for drawing, batch preplanned independent strokes here. Every step gets a fresh post-action capture; stops at the first ambiguous/missing target, no-op, or failed step. After a driver timeout, do not repeat the same gesture unless a new screenshot provides evidence that makes the retry safe.",
                 "items": {
                     "type": "object",
                     "properties": {
                         "action": {"type": "string", "enum": ["click", "type", "key", "scroll", "drag", "wait"]},
-                        "target": {"type": "string", "description": "Visible accessible label; required for click/type."},
+                        "target": {"type": "string", "description": "Visible accessible label for click/type; required for type and one option for click. A click may instead use coordinate=[x,y] from the latest screenshot."},
                         "text": {"type": "string"},
                         "key": {"type": "string"},
                         "keys": {"type": ["string", "array"], "items": {"type": "string"}},
                         "direction": {"type": "string", "enum": ["up", "down", "left", "right"]},
-                        "coordinate": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2, "description": "Optional point inside the target scroll area from the latest screenshot."},
+                        "coordinate": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2, "description": "Point [x,y] from the latest screenshot; used as a scroll anchor or for a coordinate click when no accessible label exists."},
                         "amount": {"type": "integer", "minimum": 1, "maximum": 20},
                         "seconds": {"type": "number", "minimum": 0, "maximum": 10},
                         "button": {"type": "string", "enum": ["left", "right", "middle"]},
@@ -1422,12 +1423,15 @@ class ComputerUseTool(Tool):
                     evidence={"field": {"role": record.get("role"), "label": record.get("label"), "frame": frame}},
                 )
 
-            delivery_mode = str(args.get("delivery_mode") or "foreground")
+            # The visible-field fallback explicitly focuses via a foreground
+            # click; the following keyboard text must use the same delivery path.
+            delivery_mode = "foreground"
             focus_result = self._act.execute(
                 action="click",
                 x=x,
                 y=y,
                 delivery_mode="foreground",
+                _internal_focus_click=True,
             )
             if not focus_result.success:
                 return ToolResult(
@@ -1503,6 +1507,7 @@ class ComputerUseTool(Tool):
                 x=x,
                 y=y,
                 delivery_mode="foreground",
+                _internal_focus_click=True,
             )
             if not focus_result.success:
                 return ToolResult(
@@ -1519,7 +1524,10 @@ class ComputerUseTool(Tool):
                     summary=f"Could not focus the selected coordinate ({round(x)}, {round(y)}): {focus_result.summary}",
                     evidence={"focus_result": focus_result.evidence, "coordinate": [x, y]},
                 )
-            delivery_mode = str(args.get("delivery_mode") or "background")
+            # Coordinate-targeted typing just focused this exact point with a
+            # foreground click. Sending the subsequent text in background mode can
+            # silently target no focused widget on Wayland.
+            delivery_mode = "foreground"
             type_result = self._act.execute(
                 action="type_text",
                 text=text_value,
@@ -2586,8 +2594,23 @@ class ComputerUseTool(Tool):
             if current_action not in allowed_actions:
                 raise ValueError(f"sequence step {index} has unsupported action {current_action!r}.")
             target = str(current.get("target") or "").strip()
-            if current_action in {"click", "type"} and not target:
-                raise ValueError(f"sequence step {index} ({current_action}) requires a visible-label target.")
+            if current_action == "click":
+                point = current.get("coordinate")
+                has_point = isinstance(point, (list, tuple)) and len(point) == 2
+                if has_point:
+                    try:
+                        has_point = all(
+                            isinstance(value, (int, float)) and not isinstance(value, bool)
+                            for value in point
+                        )
+                    except TypeError:
+                        has_point = False
+                if bool(target) == bool(has_point):
+                    raise ValueError(
+                        f"sequence step {index} (click) requires exactly one of target='visible label' or coordinate=[x,y] from the latest screenshot."
+                    )
+            elif current_action == "type" and not target:
+                raise ValueError(f"sequence step {index} (type) requires a visible-label target.")
             if current_action not in {"click", "type"} and target:
                 raise ValueError(f"sequence step {index} ({current_action}) cannot use target; target is supported only for click/type.")
             if current_action == "type" and not isinstance(current.get("text"), str):
@@ -2748,6 +2771,16 @@ class ComputerUseTool(Tool):
             if final_content.get(key) is not None:
                 content[key] = final_content[key]
         succeeded = not failure and completed_steps == len(normalized_steps) and final_capture.success
+        action_outcome_unknown = any(
+            "timed out" in str(item.get("summary") or "").casefold()
+            for item in step_results
+        )
+        if action_outcome_unknown:
+            content["action_outcome_unknown"] = True
+            content["retry_policy"] = (
+                "The timed-out gesture may or may not have reached the desktop. Do not repeat the same coordinates; "
+                "inspect the fresh screenshot first and only continue with a materially different, evidence-based action."
+            )
         if failure:
             summary = f"Sequence stopped after {completed_steps}/{len(normalized_steps)} step(s). {failure}"
         elif completed_steps == len(normalized_steps):
@@ -2771,6 +2804,10 @@ class ComputerUseTool(Tool):
                 "action": "sequence",
                 "completed_steps": completed_steps,
                 "requested_steps": len(normalized_steps),
+                "action_outcome_unknown": action_outcome_unknown,
+                **({
+                    "recovery_hint": content["retry_policy"],
+                } if action_outcome_unknown else {}),
                 **({"image_ref": content["image_ref"], "image_mime_type": content.get("image_mime_type", "image/png")} if content.get("image_ref") else {}),
             },
             summary=summary,
@@ -3001,8 +3038,12 @@ class ComputerUseTool(Tool):
                 )
                 content = dict(result.content)
                 content["action"] = action
+                # "type" is the public action name; "type_text" is only a
+                # legacy internal alias normalized before this point. Omitting
+                # "type" made a failed/no-op text entry look successful.
                 visual_effect_required = action in {
-                    "click", "double_click", "right_click", "drag", "type_text", "scroll"
+                    "click", "double_click", "right_click", "middle_click",
+                    "drag", "type", "type_text", "scroll"
                 }
                 effect_unverified = visual_effect_required and screen_hash_changed is False
                 if semantic_verification is not None:

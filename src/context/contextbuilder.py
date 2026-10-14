@@ -827,7 +827,7 @@ class ContextBuilder:
                 and raw_result.get("elements_text", "").strip()
             )
             result_keys = (
-                "action", "mode", "window", "query", "element_count",
+                "action", "mode", "window", "windows", "apps", "window_count", "query", "element_count",
                 "elements", "elements_text", "warning", "selection_warning",
                 "accessibility_error", "query_fallback", "query_requested",
                 "screen_hash_changed", "verification_warning", "capture_after",
@@ -2271,8 +2271,15 @@ class ContextBuilder:
             and "<checkpoint_summary>" in str(message.get("content") or "")
             for message in messages
         )
+        # A checkpoint avoids re-summarizing on every small follow-up, but
+        # "fits" alone is too permissive: it allowed checkpointed prompts to
+        # drift to 90-95% of budget before compacting again. Keep the fast path
+        # while there is comfortable headroom; compact again once the working
+        # context grows beyond 82% of the actual budget.
         checkpointed_prompt_fits = (
-            has_checkpoint_summary and self.tokenbudget.fits(messages)
+            has_checkpoint_summary
+            and self.tokenbudget.fits(messages)
+            and estimated_tokens <= int(self.tokenbudget.budget * 0.82)
         )
         compaction_attempted = False
         if (

@@ -256,3 +256,69 @@ def test_build_context_never_leaks_internal_step_to_provider(tmp_path):
         assert all(not any(key.startswith("_") for key in message) for message in messages)
     finally:
         stm.close()
+
+
+
+def test_checkpointed_prompt_recompacts_after_headroom_is_exhausted(tmp_path):
+    llm = FakeLLM()
+    cfg = config()
+    cfg["llm"]["provider_config"]["generation_config"]["num_ctx"] = 12000
+    cfg["context"]["max_prompt_tokens"] = 10000
+    cfg["context"]["safe_margin"] = 0
+    cfg["context"]["compaction_trigger_ratio"] = 0.70
+    stm = STM(tmp_path / "checkpoint-headroom.db")
+    service = ContextService(cfg, llm, stm)
+    builder = service.contextbuilder
+    builder.system_instruction = "Short system instruction."
+    task = ContextEvent(
+        role=ContextRole.USER,
+        type=ContextType.MESSAGE,
+        content="continue current task",
+        step=10,
+    )
+    events = [
+        ContextEvent(
+            role=ContextRole.ASSISTANT,
+            type=ContextType.MESSAGE,
+            content="Persisted checkpoint summary.",
+            step=1,
+            metadata={"checkpoint": True, "covered_through_step": 1},
+        )
+    ]
+    events.extend(
+        ContextEvent(
+            role=ContextRole.ASSISTANT,
+            type=ContextType.MESSAGE,
+            content=f"Current task evidence {index}: " + ("x" * 1000),
+            step=10,
+        )
+        for index in range(34)
+    )
+    events.append(task)
+    task_data = {"id": str(task.id), "content": task.content, "step": task.step}
+
+    try:
+        execution_state = builder._compact_execution_state(
+            agent_state=None, progress=None, working_set=None,
+            observation=None, recent_actions=None, task=task_data,
+        )
+        builder._populate_window(
+            events, task_data, str(tmp_path), None, execution_state,
+            include_plan=False,
+        )
+        prompt = builder.window.get_prompt(latest_user_task=task.content)
+        estimate = builder.tokenbudget.estimate_messages_tokens(prompt)
+        assert int(builder.tokenbudget.budget * 0.82) < estimate < builder.tokenbudget.budget
+
+        compaction_calls = []
+        builder._compact_messages = lambda messages: compaction_calls.append(len(messages)) or messages
+        built = builder.build_context(
+            events=events, task=task_data, workspace=str(tmp_path), include_plan=False,
+        )
+        assert compaction_calls, (
+            f"Expected checkpointed context at {estimate}/{builder.tokenbudget.budget} tokens "
+            "to compact before it reaches the hard budget."
+        )
+        assert builder.tokenbudget.fits(built)
+    finally:
+        stm.close()

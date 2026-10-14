@@ -11,6 +11,7 @@ from src.tools.Tool import Tool
 from src.tools.builtin.computer_use.driver import (
     CuaDriverError, call_driver, pointer_state_path, session_label_from_id,
 )
+from src.tools.builtin.computer_use.inspect import ComputerInspectTool
 
 
 # Long text is typed in bounded chunks: one huge argv/IPC payload can hit
@@ -312,6 +313,17 @@ class ComputerActTool(Tool):
             and screenshot_pid is not None
             and screenshot_window_id is not None
         )
+        # GNOME/Wayland raw pointer delivery to an unfocused window can hang or
+        # silently miss. A model-provided schema default of "background" must not
+        # override the platform-aware mode chosen for a window-local screenshot.
+        # Keep desktop-wide actions on background delivery; only the exact selected
+        # window is briefly focused by CUA Driver's foreground route.
+        if (
+            screenshot_is_window
+            and frame == "window"
+            and ComputerInspectTool._wayland_window_top_inset() > 0
+        ):
+            delivery_mode = "foreground"
 
         # Coordinates belong to the screenshot frame; keyboard-only actions use
         # the current accessibility target, then the last verified window target.
@@ -548,6 +560,10 @@ class ComputerActTool(Tool):
 
     def execute(self, action: str, **kwargs: Any) -> ToolResult:
         action = str(action or "").strip().lower()
+        # Private sub-action used only when type_text must focus its explicit
+        # coordinate first. It is not a model-facing tool argument: this click
+        # is part of typing, not a repeated independent click by the model.
+        internal_focus_click = kwargs.pop("_internal_focus_click", False) is True
         element_token = str(kwargs.get("element_token") or "").strip()
         click_actions = {"click", "double_click", "right_click"}
         try:
@@ -657,9 +673,52 @@ class ComputerActTool(Tool):
                     or "desktop"
                 ).strip().casefold()
                 args.setdefault("coordinate_frame", frame if frame in {"window", "desktop"} else "desktop")
+                # A timed-out drag has an unknown delivery outcome. If the same
+                # coordinates are proposed again against an unchanged screenshot,
+                # block the retry before dispatch; a new screenshot or a different
+                # evidence-based path is required to recover safely.
+                failed_drag = pointer_state.get("last_failed_drag")
+                if isinstance(failed_drag, dict):
+                    failed_age = now - float(failed_drag.get("timestamp", 0) or 0)
+                    same_target = (
+                        str(failed_drag.get("pid") or "") == str(args.get("pid") or "")
+                        and str(failed_drag.get("window_id") or "") == str(args.get("window_id") or "")
+                        and str(failed_drag.get("coordinate_frame") or "") == str(args.get("coordinate_frame") or "")
+                    )
+                    same_points = all(
+                        isinstance(args.get(key), (int, float))
+                        and abs(float(args[key]) - float(failed_drag.get(key, float("inf")))) < 1
+                        for key in ("from_x", "from_y", "to_x", "to_y")
+                    )
+                    same_screen = pointer_state.get("latest_screenshot_hash") == failed_drag.get("screenshot_hash")
+                    if 0 <= failed_age <= 60 and same_target and same_points and same_screen:
+                        raise ValueError(
+                            "Blocked a repeat drag after a driver timeout because the screenshot is unchanged and the first gesture may have been delivered. "
+                            "Do not retry the same coordinates; inspect the current UI and choose a materially different, visibly supported recovery."
+                        )
                 capture_id = self._prime_drag_screenshot_context(session, pointer_state)
                 pointer_state["last_drag_timestamp"] = now
                 pointer_state["last_drag_capture_id"] = capture_id
+                self._save_pointer_state(state_path, pointer_state)
+            elif action == "scroll":
+                # Like drag, scroll needs an active screenshot context. Accessibility
+                # inspection can invalidate that context, so refresh the same target
+                # window before dispatch. The scroll driver schema does not accept a
+                # capture_id argument; refreshing the session context is sufficient.
+                capture_id = pointer_state.get("latest_capture_id")
+                if not isinstance(capture_id, str) or not capture_id:
+                    raise ValueError("No current desktop capture is recorded. Call computer_use(action='capture') before scrolling.")
+                target = pointer_state.get("latest_screenshot_target")
+                target = target if isinstance(target, dict) else {}
+                frame = str(
+                    target.get("coordinate_frame")
+                    or pointer_state.get("latest_screenshot_coordinate_frame")
+                    or "desktop"
+                ).strip().casefold()
+                args.setdefault("coordinate_frame", frame if frame in {"window", "desktop"} else "desktop")
+                capture_id = self._prime_drag_screenshot_context(session, pointer_state)
+                pointer_state["last_scroll_timestamp"] = now
+                pointer_state["last_scroll_capture_id"] = capture_id
                 self._save_pointer_state(state_path, pointer_state)
             elif action in click_actions:
                 # Bind the click to the exact screenshot and keep its coordinate
@@ -681,7 +740,7 @@ class ComputerActTool(Tool):
                 # A no-op is tied to its screenshot hash and target identity. Do not
                 # dispatch the same pixel again while that exact visual state persists.
                 no_op = pointer_state.get("last_unverified_pixel_action")
-                if isinstance(no_op, dict):
+                if not internal_focus_click and isinstance(no_op, dict):
                     age = now - float(no_op.get("timestamp", 0) or 0)
                     same_target = (
                         str(no_op.get("pid") or "") == str(target.get("pid") or args.get("pid") or "")
@@ -717,25 +776,26 @@ class ComputerActTool(Tool):
                     and isinstance(item.get("timestamp"), (int, float))
                     and now - float(item["timestamp"]) <= 20
                 ]
-                if action in {"click", "right_click"} and any(int(item["x"]) == x and int(item["y"]) == y for item in recent[-5:]):
+                if not internal_focus_click and action in {"click", "right_click"} and any(int(item["x"]) == x and int(item["y"]) == y for item in recent[-5:]):
                     raise ValueError(
                         f"Blocked repeated pixel click at ({x},{y}). Screen animations do not prove progress. "
                         "Stop coordinate guessing; call computer_inspect for the target window and use an element_token, "
                         "or choose a clearly different, verified target. Use double_click only when a double-click is intended."
                     )
                 attempts = int(pointer_state.get("pixel_clicks_since_progress", 0) or 0)
-                if attempts >= 4:
+                if not internal_focus_click and attempts >= 4:
                     raise ValueError(
                         "Blocked this pixel click after four clicks without a confirmed progress action. "
                         "Do not continue guessing coordinates; inspect the window and use a current element_token, "
                         "or report that the target could not be identified."
                     )
-                recent.append({"x": x, "y": y, "action": action, "timestamp": now})
-                pointer_state["recent_pixel_clicks"] = recent[-6:]
-                pointer_state["recent_element_actions"] = []
-                pointer_state["pixel_clicks_since_progress"] = attempts + 1
-                pointer_state.update({"x": x, "y": y, "action": action, "last_click_timestamp": now})
-                self._save_pointer_state(state_path, pointer_state)
+                if not internal_focus_click:
+                    recent.append({"x": x, "y": y, "action": action, "timestamp": now})
+                    pointer_state["recent_pixel_clicks"] = recent[-6:]
+                    pointer_state["recent_element_actions"] = []
+                    pointer_state["pixel_clicks_since_progress"] = attempts + 1
+                    pointer_state.update({"x": x, "y": y, "action": action, "last_click_timestamp": now})
+                    self._save_pointer_state(state_path, pointer_state)
 
             delivery_mode_escalated = False
             chunked_typing = (
@@ -768,6 +828,10 @@ class ComputerActTool(Tool):
                     delivery_mode_escalated = True
                 else:
                     raise
+
+            if action == "drag":
+                pointer_state.pop("last_failed_drag", None)
+                self._save_pointer_state(state_path, pointer_state)
 
             if element_token and action in click_actions:
                 # Draw the element's center on subsequent screenshots where its bounds are available.
@@ -819,6 +883,20 @@ class ComputerActTool(Tool):
                 effects=[{"action": "interact", "target": f"desktop:{action}"}],
             )
         except (CuaDriverError, ValueError, TypeError, KeyError) as exc:
+            if action == "drag" and isinstance(exc, CuaDriverError) and "timed out" in str(exc).casefold():
+                failed_state = locals().get("pointer_state")
+                failed_path = locals().get("state_path")
+                failed_args = locals().get("args")
+                if isinstance(failed_state, dict) and isinstance(failed_path, Path) and isinstance(failed_args, dict):
+                    failed_state["last_failed_drag"] = {
+                        key: failed_args.get(key)
+                        for key in ("from_x", "from_y", "to_x", "to_y", "pid", "window_id", "coordinate_frame")
+                    }
+                    failed_state["last_failed_drag"].update({
+                        "screenshot_hash": failed_state.get("latest_screenshot_hash"),
+                        "timestamp": time.time(),
+                    })
+                    self._save_pointer_state(failed_path, failed_state)
             return ToolResult(
                 success=False,
                 name=self.name,

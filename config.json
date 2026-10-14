@@ -6,15 +6,16 @@
       "generation_config": {
         "temperature": 0.3,
         "num_thread": 16,
+        "num_batch": 768,
         "think": "low",
-        "num_ctx": 16384
+        "num_ctx": 100000
       }
     }
   },
   "context": {
     "preserve_thinking": false,
     "safe_margin": -1,
-    "recent_event_limit": 20,
+    "recent_event_limit": 100,
     "compaction_enabled": true,
     "compaction_target_tokens": 4096,
     "max_prompt_tokens": 32288,
@@ -57,7 +58,7 @@
   "experience": {
     "enabled": false
   },
-  "computer_use_max_iterations": 16,
+  "computer_use_max_iterations": 32,
   "computer_use_max_navigations_per_host": 3,
   "computer_use_max_unverified_failures": 3
 }

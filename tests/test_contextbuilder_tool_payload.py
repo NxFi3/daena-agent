@@ -94,3 +94,26 @@ def test_computer_use_recovery_hint_is_preserved_with_visual_result():
 
     assert decoded["result"]["recovery_hint"].startswith("Use a fresh screenshot")
     assert decoded["result"]["error"]["type"] == "target_not_found"
+
+def test_computer_use_tool_payload_preserves_visible_window_inventory():
+    event_content = {
+        "name": "computer_use",
+        "success": True,
+        "summary": "Found 2 visible windows.",
+        "content": {
+            "action": "list_windows",
+            "windows": [
+                {"app_name": "Paint", "title": "Untitled — Paint", "pid": 123, "window_id": 7, "x": 10, "y": 20, "width": 800, "height": 600},
+                {"app_name": "Firefox", "title": "Example — Mozilla Firefox", "pid": 456, "window_id": 8, "x": 20, "y": 30, "width": 1200, "height": 800},
+            ],
+            "window_count": 2,
+        },
+    }
+
+    builder = object.__new__(ContextBuilder)
+    decoded = json.loads(builder._tool_payload(event_content))
+
+    assert decoded["result"]["action"] == "list_windows"
+    assert decoded["result"]["window_count"] == 2
+    assert decoded["result"]["windows"][0]["title"] == "Untitled — Paint"
+    assert decoded["result"]["windows"][1]["app_name"] == "Firefox"

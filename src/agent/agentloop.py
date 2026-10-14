@@ -2985,6 +2985,18 @@ class Loop:
             "before changing unrelated files. Before continuing for an alleged omission, check the draft "
             "and evidence; stop once the goal is met and answer once."
         )
+        if self._computer_use_mode_active:
+            # The context builder caps this field at 700 chars, so put the
+            # Computer Use policy first instead of appending it where truncation
+            # would silently discard it.
+            working_context["workspace_guidance"] = (
+                "COMPUTER USE FAST PATH: the selected desktop tool is active. Keep planning brief and "
+                "act as soon as the current screenshot supports a safe next step. For 2-6 predictable "
+                "actions, send one computer_use(action='sequence') call instead of reasoning through each "
+                "stroke in a separate turn. Do not narrate repeated coordinate guesses; use only the latest "
+                "screenshot, verify the resulting state, and stop or re-inspect after a no-op. "
+                + working_context["workspace_guidance"]
+            )
         working_context["tool_choice"] = {
             "tool_search": (
                 "discover any needed capability whose schema is not currently exposed, such as web research, "
@@ -3068,23 +3080,37 @@ class Loop:
 
         try:
 
-            # Keep the event stream optional so small/test LLM adapters that
-            # implement the older generate(messages, tools=...) contract keep
-            # working. The UI-enabled LlmProvider accepts on_event.
-            try:
-                result = self.llm.generate(
-                    context,
-                    tools=effective_tool_definitions,
-                    on_event=self._forward_llm_stream_event,
-                    stop_event=self._stop_event,
-                )
-            except TypeError as type_error:
-                if "unexpected keyword argument 'on_event'" not in str(type_error):
-                    raise
-                result = self.llm.generate(
-                    context,
-                    tools=effective_tool_definitions,
-                )
+            # Computer Use is latency-sensitive: long hidden reasoning often costs
+            # thousands of tokens before the first GUI action. Disable model thinking
+            # only after the first Computer Use action has activated this mode; callers
+            # can opt back in with config `computer_use_think` (e.g. "low").
+            generation_kwargs: dict[str, Any] = {
+                "tools": effective_tool_definitions,
+                "on_event": self._forward_llm_stream_event,
+                "stop_event": self._stop_event,
+            }
+            if self._computer_use_mode_active:
+                generation_kwargs["options"] = {
+                    "think": self.config.get("computer_use_think", False)
+                }
+
+            # Keep compatibility with small/test LLM adapters that implement older
+            # generate(messages, tools=...) signatures. Remove only kwargs explicitly
+            # rejected by Python argument binding; never retry a model-side failure.
+            while True:
+                try:
+                    result = self.llm.generate(context, **generation_kwargs)
+                    break
+                except TypeError as type_error:
+                    error_text = str(type_error)
+                    rejected = next((
+                        key for key in ("on_event", "stop_event", "options")
+                        if f"unexpected keyword argument '{key}'" in error_text
+                        and key in generation_kwargs
+                    ), None)
+                    if rejected is None:
+                        raise
+                    generation_kwargs.pop(rejected, None)
 
         except InterruptedError as exc:
             self.agent_state.stop(str(exc) or "Interrupted by user.")
