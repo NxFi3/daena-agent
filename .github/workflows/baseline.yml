@@ -54,6 +54,13 @@ jobs:
       - run: python -m pytest -q tests
       - run: daena-studio --help
 
+      - name: Build and smoke-test installed desktop wheel
+        run: |
+          python -m build
+          python -m venv --system-site-packages "$RUNNER_TEMP/studio-wheel"
+          "$RUNNER_TEMP/studio-wheel/bin/python" -m pip install --ignore-installed --no-deps dist/daena_agent-0.6.0-py3-none-any.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/studio-wheel/bin/python" "$GITHUB_WORKSPACE/tests/smoke_studio_wheel.py" "$GITHUB_WORKSPACE"
       - name: Render desktop previews
         timeout-minutes: 1
         if: always()

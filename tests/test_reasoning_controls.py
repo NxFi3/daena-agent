@@ -13,7 +13,8 @@ def test_gemini_reasoning_control_reaches_provider_wire(server,monkeypatch,mode,
     state["events"]=[{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}]
     options=set_reasoning({"base_url":url},mode)
     GeminiProvider().generate(LLMInput("test",[{"role":"user","content":"hello"}],options=options))
-    assert state["requests"][0]["generationConfig"]["thinkingConfig"].get("thinkingBudget")==budget, state["requests"][0]
+    thinking=types.ThinkingConfig.model_validate(state["requests"][0]["generationConfig"]["thinkingConfig"])
+    assert thinking.thinking_budget==budget
 
 
 def test_reasoning_auto_clears_native_overrides_and_custom_preserves_them():
@@ -42,4 +43,5 @@ def test_custom_gemini_thinking_level_overrides_common_effort(server,monkeypatch
     state["events"]=[{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}]
     GeminiProvider().generate(LLMInput("test",[{"role":"user","content":"hello"}],options={"base_url":url,"think":"high","thinking_config":{"thinking_level":"LOW"}}))
     thinking=state["requests"][0]["generationConfig"]["thinkingConfig"]
-    assert thinking["thinkingLevel"]=="LOW" and "thinkingBudget" not in thinking
+    parsed=types.ThinkingConfig.model_validate(thinking)
+    assert parsed.thinking_level==types.ThinkingLevel.LOW and parsed.thinking_budget is None

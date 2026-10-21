@@ -20,6 +20,9 @@ subprocess.run(
         "tests/test_studio.py",
         "tests/test_studio_interactions.py",
         "tests/render_studio_preview.py",
+        "tests/smoke_studio_wheel.py",
+        "tests/test_reasoning_controls.py",
+        "src/engine/providers/builtin/gemini/geminiprovider.py",
     ],
     check=True,
 )
@@ -33,6 +36,9 @@ snapshot = {
         "tests/test_studio.py",
         "tests/test_studio_interactions.py",
         "tests/render_studio_preview.py",
+        "tests/smoke_studio_wheel.py",
+        "tests/test_reasoning_controls.py",
+        "src/engine/providers/builtin/gemini/geminiprovider.py",
     }
 }
 print(
