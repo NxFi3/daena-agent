@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
-from threading import Event
+from threading import Event, Lock
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -13,8 +14,12 @@ from src.models.ContextEvent import ContextEvent
 class Agent:
     """Public runtime facade for one Daena session."""
 
-    def __init__(self, config) -> None:
+    def __init__(self, config, *, llm=None) -> None:
+        if not isinstance(config, dict):
+            raise ValueError("config must be an object")
         self.config = config
+        self._run_lock = Lock()
+        self._closed = False
         workspace_config = config.get("workspace") or {}
         configured_workspace = workspace_config.get("directory")
         self.workingdirectory = str(
@@ -29,7 +34,7 @@ class Agent:
             exist_ok=True,
         )
 
-        self.llm = LlmProvider(self.config)
+        self.llm = llm if llm is not None else LlmProvider(self.config)
 
         self.loop = Loop(
             self.config,
@@ -45,12 +50,36 @@ class Agent:
         on_event: Callable[[dict[str, Any]], None] | None = None,
         stop_event: Event | None = None,
     ):
-        return self.loop.run(
-            user_task=event,
-            workspace_directory=self.workingdirectory,
-            event_sink=on_event,
-            stop_event=stop_event,
-        )
+        if self._closed:
+            raise RuntimeError("Agent is closed")
+        if not self._run_lock.acquire(blocking=False):
+            raise RuntimeError("This Agent is already running; use steer() or a separate Agent")
+        try:
+            if self._closed:
+                raise RuntimeError("Agent is closed")
+            # CLI model/provider overrides must also apply to newly delegated
+            # agents, which create their own provider instances.
+            child_config = deepcopy(self.config)
+            if hasattr(self.llm, "provider_name"):
+                child_config["llm"] = {
+                    "provider": self.llm.provider_name,
+                    "provider_config": {
+                        **deepcopy(self.llm.llm_config),
+                        "generation_config": deepcopy(self.llm.generation_config),
+                    },
+                }
+            self.loop.tool.subagents.config = child_config
+            return self.loop.run(
+                user_task=event,
+                workspace_directory=self.workingdirectory,
+                event_sink=on_event,
+                stop_event=stop_event,
+            )
+        finally:
+            try:
+                self.loop.tool.close()
+            finally:
+                self._run_lock.release()
 
     def steer(self, text: str) -> None:
         """Queue guidance for the currently running task."""
@@ -86,18 +115,33 @@ class Agent:
         self,
         directory: str,
     ) -> None:
-        self.workingdirectory = str(Path(directory).expanduser().resolve())
-
-        Path(self.workingdirectory).mkdir(
-            parents=True,
-            exist_ok=True,
-        )
-
-        self.loop.set_workspace(self.workingdirectory)
+        if not self._run_lock.acquire(blocking=False):
+            raise RuntimeError("Cannot change workspace while the Agent is running")
+        try:
+            resolved = str(Path(directory).expanduser().resolve())
+            Path(resolved).mkdir(parents=True, exist_ok=True)
+            self.loop.set_workspace(resolved)
+            self.workingdirectory = resolved
+        finally:
+            self._run_lock.release()
 
     @property
     def last_run_metrics(self) -> dict:
         return self.loop.get_metrics()
 
     def close(self) -> None:
-        self.loop.close()
+        if self._closed:
+            return
+        if not self._run_lock.acquire(blocking=False):
+            raise RuntimeError("Stop the running task before closing the Agent")
+        try:
+            self.loop.close()
+            self._closed = True
+        finally:
+            self._run_lock.release()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()

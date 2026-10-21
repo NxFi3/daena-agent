@@ -11,7 +11,7 @@ class SecurityService:
     """Single security gate used by ToolManager before every execution."""
 
     def __init__(self, config: dict | None = None) -> None:
-        config = config or {}
+        config = {} if config is None else config
         self.policy = SecurityPolicy.from_config(config)
         self.sandbox = WorkspaceSandbox()
 

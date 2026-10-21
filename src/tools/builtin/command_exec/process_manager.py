@@ -69,8 +69,23 @@ class ProcessManager:
     MAX_RETAINED_FINISHED = 64
 
     def __init__(self) -> None:
+        self.stop_event = None
         self._lock = threading.RLock()
         self._processes: dict[str, ManagedProcess] = {}
+
+    def _wait_process(self, process, wait_ms):
+        deadline = time.monotonic() + wait_ms / 1000
+        while process.poll() is None:
+            if self.stop_event is not None and self.stop_event.is_set():
+                self._terminate_process_tree(process)
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            try:
+                process.wait(timeout=min(0.05, remaining))
+            except subprocess.TimeoutExpired:
+                pass
 
     def start(
         self,
@@ -130,10 +145,7 @@ class ProcessManager:
 
         started = time.perf_counter()
 
-        try:
-            process.wait(timeout=yield_time_ms / 1000.0)
-        except subprocess.TimeoutExpired:
-            pass
+        self._wait_process(process, yield_time_ms)
 
         if process.poll() is not None:
             entry = ManagedProcess(
@@ -230,7 +242,7 @@ class ProcessManager:
                 if output["stdout"] or output["stderr"]:
                     return self._entry_result(entry, output)
 
-            if time.perf_counter() >= deadline:
+            if time.perf_counter() >= deadline or (self.stop_event is not None and self.stop_event.is_set()):
                 with self._lock:
                     entry = self._processes.get(process_id)
                     if entry is None:
@@ -441,10 +453,7 @@ class ProcessManager:
         entry.pty_reader_thread = reader
         reader.start()
 
-        try:
-            process.wait(timeout=yield_time_ms / 1000.0)
-        except subprocess.TimeoutExpired:
-            pass
+        self._wait_process(process, yield_time_ms)
 
         if process.poll() is not None and entry.pty_reader_thread is not None:
             entry.pty_reader_thread.join(timeout=1.0)

@@ -60,6 +60,7 @@ class CommandExec(Tool):
     BACKGROUND_STARTUP_GRACE_MS = 150
 
     description = (
+        "Arguments are literal argv entries, not shell syntax: for example [\"mkdir\", \"-p\", \"css\", \"js\"]. "
         "Run a local command given as an argv array (not a shell command string). "
         "Shell operators such as >, |, &&, ||, $(...), heredocs, and shell globbing are "
         "not interpreted unless you explicitly invoke a shell executable such as sh or bash. "

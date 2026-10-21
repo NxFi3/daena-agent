@@ -18,7 +18,7 @@ class ProviderRegistry:
 
         discovered_providers = []
 
-        for item in self.providers_path.iterdir():
+        for item in sorted(self.providers_path.iterdir()):
 
             if not item.is_dir():
                 continue

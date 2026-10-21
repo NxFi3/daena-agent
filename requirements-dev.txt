@@ -1,9 +1,1 @@
-pytest>=8,<10
-numpy>=1.26
-ollama
-openrouter
-ddgs
-pypdf
-rich>=13.7,<15
-prompt_toolkit>=3.0,<4
-google-genai
+-e .[dev,ollama,openrouter,gemini,web]
