@@ -58,6 +58,9 @@ class MarkdownBody(QTextBrowser):
             "code {font-family:monospace;color:#c3b6ff;}"
             "a {color:#a795ff;} h1,h2,h3 {color:#f0f3fa;}"
         )
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.timeout.connect(self._apply_reflow)
         self.document().documentLayout().documentSizeChanged.connect(self.reflow)
         self.setMinimumHeight(36)
 
@@ -67,10 +70,16 @@ class MarkdownBody(QTextBrowser):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self.document().setTextWidth(max(80, self.viewport().width()))
         self.reflow()
 
     def reflow(self, *args):
+        if hasattr(self,"_resize_timer") and not self._resize_timer.isActive():
+            self._resize_timer.start(0)
+
+    def _apply_reflow(self):
+        width=max(80,self.viewport().width())
+        if abs(self.document().textWidth()-width)>1:
+            self.document().setTextWidth(width)
         height = max(36, min(780, int(self.document().size().height()) + 16))
         if self.height() != height:
             self.setFixedHeight(height)

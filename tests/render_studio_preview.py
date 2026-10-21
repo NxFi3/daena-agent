@@ -8,6 +8,14 @@ import sys
 from tempfile import TemporaryDirectory
 
 os.environ.setdefault("QT_QPA_PLATFORM","offscreen")
+# Return a bounded source-format snapshot for review when no local executor is available.
+subprocess.run([sys.executable,"-m","ruff","format","src/studio","tests/test_studio.py","tests/test_studio_interactions.py","tests/render_studio_preview.py"],check=True)
+changed=subprocess.check_output(["git","diff","--name-only"]).decode().splitlines()
+snapshot={name:Path(name).read_text() for name in changed if name.startswith("src/studio/") or name in {"tests/test_studio.py","tests/test_studio_interactions.py","tests/render_studio_preview.py"}}
+print("STUDIO_FORMAT_SNAPSHOT:"+base64.b64encode(json.dumps(snapshot).encode()).decode(),flush=True)
+
+import faulthandler
+faulthandler.dump_traceback_later(25,exit=True)
 from PySide6.QtCore import QByteArray,QBuffer,QIODevice
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
@@ -23,7 +31,9 @@ def capture(window,name):
     print("STUDIO_PREVIEW_"+name.upper()+":"+base64.b64encode(bytes(data)).decode(),flush=True)
 
 with TemporaryDirectory() as directory:
-    window=StudioWindow(directory);window.resize(1440,940);window.show();app.processEvents()
+    print("PREVIEW_PHASE: construct window",flush=True)
+    window=StudioWindow(directory);print("PREVIEW_PHASE: window constructed",flush=True);window.resize(1440,940);window.show();app.processEvents()
+    print("PREVIEW_PHASE: populate conversation",flush=True)
     window.transcript.clear()
     window.add_message("You","Build a polished dashboard for my software, and use two agents to review the result.")
     window.transcript.begin_turn()
@@ -45,8 +55,5 @@ with TemporaryDirectory() as directory:
     window.nav.setCurrentRow(4);window.settings.show_section(0);capture(window,"settings")
     window.close();app.processEvents()
 
-# Return a bounded source-format snapshot for review when no local executor is available.
-subprocess.run([sys.executable,"-m","ruff","format","src/studio","tests/test_studio.py","tests/test_studio_interactions.py","tests/render_studio_preview.py"],check=True)
-changed=subprocess.check_output(["git","diff","--name-only"]).decode().splitlines()
-snapshot={name:Path(name).read_text() for name in changed if name.startswith("src/studio/") or name in {"tests/test_studio.py","tests/test_studio_interactions.py","tests/render_studio_preview.py"}}
-print("STUDIO_FORMAT_SNAPSHOT:"+base64.b64encode(json.dumps(snapshot).encode()).decode(),flush=True)
+
+faulthandler.cancel_dump_traceback_later()

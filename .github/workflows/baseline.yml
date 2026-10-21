@@ -55,6 +55,7 @@ jobs:
       - run: daena-studio --help
 
       - name: Render desktop previews
+        timeout-minutes: 1
         if: always()
         run: python tests/render_studio_preview.py
       - uses: actions/upload-artifact@v4

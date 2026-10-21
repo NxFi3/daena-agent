@@ -8,7 +8,7 @@ from pathlib import Path
 from uuid import uuid4, UUID
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QKeySequence, QShortcut, QDesktopServices
+from PySide6.QtGui import QKeySequence, QShortcut, QDesktopServices, QTextCursor
 from PySide6.QtWidgets import (
     QMainWindow,
     QWidget,
