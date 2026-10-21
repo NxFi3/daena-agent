@@ -4,6 +4,17 @@ Studio is an optional PySide6 client for the same `Agent` used by the terminal.
 Install `.[desktop,ollama,openrouter,gemini,web]` and run
 `daena-studio --cwd /path/to/workspace`.
 
+On minimal Ubuntu/Debian systems, Qt also needs native libraries. The headless
+Ubuntu CI image required the following installation before importing QtWidgets:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y libegl1 libopengl0 libxcb-cursor0
+```
+
+On a normal graphical desktop these may already be installed. `QT_QPA_PLATFORM=offscreen`
+is for headless tests, not the interactive desktop launcher.
+
 ## Conversation
 
 Enter a task and press **Send message** or **Ctrl+Enter**. Responses and provider

@@ -26,10 +26,10 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         from PySide6.QtWidgets import QApplication
-    except ImportError:
+    except ImportError as exc:
         parser.exit(
             1,
-            "Install the desktop extra first: python -m pip install 'daena-agent[desktop]'\n",
+            f"Cannot load PySide6: {exc}\nInstall the desktop extra: python -m pip install 'daena-agent[desktop]'\nFor Linux native libraries, see docs/studio.md.\n",
         )
     from src.studio.window import StudioWindow
 
