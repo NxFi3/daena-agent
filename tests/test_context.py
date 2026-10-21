@@ -193,13 +193,10 @@ def test_compactor_failure_keeps_deterministic_recent_history():
     )
 
     assert llm.calls == 1
-    fallback = next(
-        m["content"]
-        for m in messages
-        if m.get("role") == "user" and "<deterministic_context>" in str(m.get("content", ""))
-    )
-    assert "important state 34" in fallback
-    assert messages[-1] == {"role": "user", "content": "continue the implementation"}
+    assert any("important state 34" in str(m.get("content")) for m in messages)
+    assert messages[1] == {"role": "user", "content": "continue the implementation"}
+    assert messages[-1]["role"] == "assistant"
+    assert builder.tokenbudget.fits(messages)
 
 
 def test_compaction_is_used_when_latest_task_history_does_not_fit():
@@ -234,7 +231,8 @@ def test_compaction_is_used_when_latest_task_history_does_not_fit():
         for m in messages
         if m.get("role") == "user"
     )
-    assert messages[-1] == {"role": "user", "content": "finish the task"}
+    assert messages[1] == {"role": "user", "content": "finish the task"}
+    assert messages[-1]["role"] == "assistant"
 
 
 def test_hard_fit_keeps_prompt_under_budget_without_compaction():
@@ -267,7 +265,8 @@ def test_hard_fit_keeps_prompt_under_budget_without_compaction():
     )
 
     assert builder.tokenbudget.estimate_messages_tokens(messages) <= 512
-    assert messages[-1]["role"] == "user"
+    assert messages[1]["role"] == "user"
+    assert messages[-1]["role"] == "assistant"
 
 
 def test_token_budget_uses_configured_num_ctx():
@@ -579,7 +578,7 @@ def test_workspace_inventory_refresh_detects_external_changes(tmp_path):
     assert "server.js" not in paths
 
 
-def test_historical_tool_events_and_unavailable_tools_are_excluded():
+def test_historical_receipts_survive_tool_availability_changes():
     llm = FakeLLM()
     builder = ContextBuilder(base_config(), llm)
 
@@ -636,9 +635,8 @@ def test_historical_tool_events_and_unavailable_tools_are_excluded():
     )
 
     rendered = "\n".join(str(message) for message in messages)
-    assert "old-search" not in rendered
-    assert '"name": "search"' not in rendered
-    assert all(message.get("role") != "tool" for message in messages)
+    assert "old-search" in rendered
+    assert any(message.get("role") == "tool" and message.get("tool_call_id") == "old-search" for message in messages)
     assert messages[-1] == {"role": "user", "content": "new task"}
 
 

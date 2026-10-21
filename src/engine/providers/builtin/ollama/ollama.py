@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import math
+import time
 from typing import Any, Callable, ClassVar
 
+import httpx
 import ollama
 
 from src.engine.providers.ProviderBase import ProviderBase
@@ -14,31 +18,12 @@ logger = get_logger("[OLLAMA]")
 
 
 class OllamaProvider(ProviderBase):
+    """Synchronous facade over cancellable, per-request asynchronous HTTP I/O."""
 
     name = "ollama"
-
-    defaultModel = "gpt-oss:20b"
-
-    defaultConfig: ClassVar[dict] = {
-        "temperature": 0.3,
-        "num_ctx": 120000,
-    }
-
-    # `think` was never being sent to ollama.chat(), so every "thinking"
-    # model (gpt-oss, qwen3, gemma3, deepseek-r1...) fell back to its own
-    # default reasoning behavior, and that default differs per model AND
-    # per Ollama version. Observed effects of leaving it unset:
-    #   - gpt-oss: a turn can end having only reasoned, with BOTH
-    #     message.content and message.tool_calls empty (the harmony
-    #     "final"/tool-call channel is never reached).
-    #   - qwen3: a tool-call attempt can drift into the reasoning text
-    #     instead of structured tool_calls, which then fails to parse.
-    # Explicitly requesting `think` is the documented fix: Ollama then
-    # separates reasoning into message.thinking and leaves
-    # message.content / message.tool_calls as the model's actual answer.
-    # Override per model via generation_config: {"think": false} (or
-    # "low"/"medium"/"high" for models with graded effort) in config.json.
-    DEFAULT_THINK: ClassVar[Any] = "medium"
+    defaultModel = "qwen3.6:35b-a3b-q4_K_M"
+    defaultConfig: ClassVar[dict] = {"temperature": 0.3, "num_ctx": 32768}
+    DEFAULT_THINK: ClassVar[Any] = None
 
     @staticmethod
     def _prepare_messages(
@@ -61,7 +46,6 @@ class OllamaProvider(ProviderBase):
         prepared: list[dict[str, Any]] = []
 
         for message in messages:
-
             if not isinstance(
                 message,
                 dict,
@@ -76,11 +60,9 @@ class OllamaProvider(ProviderBase):
                 tool_calls,
                 list,
             ):
-
                 prepared_tool_calls: list[dict[str, Any]] = []
 
                 for tool_call in tool_calls:
-
                     if not isinstance(
                         tool_call,
                         dict,
@@ -95,7 +77,6 @@ class OllamaProvider(ProviderBase):
                         function,
                         dict,
                     ):
-
                         function = dict(function)
 
                         arguments = function.get(
@@ -107,9 +88,7 @@ class OllamaProvider(ProviderBase):
                             arguments,
                             str,
                         ):
-
                             try:
-
                                 parsed_arguments = json.loads(arguments)
 
                             except (
@@ -117,7 +96,6 @@ class OllamaProvider(ProviderBase):
                                 TypeError,
                                 ValueError,
                             ):
-
                                 logger.warning(
                                     "Could not parse Ollama "
                                     "tool-call arguments as JSON. "
@@ -133,7 +111,6 @@ class OllamaProvider(ProviderBase):
                             arguments,
                             dict,
                         ):
-
                             logger.warning(
                                 "Ollama tool-call arguments were "
                                 "not a dictionary. "
@@ -185,352 +162,149 @@ class OllamaProvider(ProviderBase):
             # UI/telemetry callbacks must never break agent execution.
             logger.debug(f"Stream callback failed: {type(exc).__name__}: {exc}")
 
-    def _generate_streaming(
-        self,
-        *,
-        model_name: str,
-        messages: list[dict[str, Any]],
-        tools: list,
-        think: Any,
-        options: dict[str, Any],
-        callback: Callable[[dict[str, Any]], None],
-        stop_event: Any | None = None,
-    ) -> LLMResult:
-        """Stream Ollama reasoning/content and honor cooperative cancellation."""
-        thinking_parts: list[str] = []
-        response_parts: list[str] = []
-        tool_calls: list[Any] = []
-        final_chunk = None
-        chunk_count = 0
-        thinking_chunks = 0
-        content_chunks = 0
-        interrupted = False
+    def generate(self, inputs: LLMInput) -> LLMResult:
+        if inputs.stop_event is not None and inputs.stop_event.is_set():
+            raise InterruptedError("Generation cancelled")
+        return asyncio.run(self._request(inputs))
 
-        self._emit_stream_event(
-            callback,
-            "generation_start",
-            model=model_name,
-            think=think,
-            streaming=True,
-        )
-
-        def consume(stream):
-            nonlocal final_chunk, tool_calls, chunk_count
-            nonlocal thinking_chunks, content_chunks, interrupted
-
-            try:
-                for chunk in stream:
-                    if stop_event is not None and stop_event.is_set():
-                        interrupted = True
-                        break
-
-                    chunk_count += 1
-                    final_chunk = chunk
-                    message = getattr(chunk, "message", None)
-                    if message is None:
-                        continue
-
-                    thinking_delta = str(getattr(message, "thinking", None) or "")
-                    if thinking_delta:
-                        thinking_chunks += 1
-                        thinking_parts.append(thinking_delta)
-                        self._emit_stream_event(
-                            callback,
-                            "thinking_delta",
-                            text=thinking_delta,
-                        )
-
-                    content_delta = str(getattr(message, "content", None) or "")
-                    if content_delta:
-                        content_chunks += 1
-                        response_parts.append(content_delta)
-                        self._emit_stream_event(
-                            callback,
-                            "content_delta",
-                            text=content_delta,
-                        )
-
-                    raw_tool_calls = getattr(message, "tool_calls", None) or []
-                    if raw_tool_calls:
-                        tool_calls = list(raw_tool_calls)
-            finally:
-                close = getattr(stream, "close", None)
-                if callable(close):
-                    try:
-                        close()
-                    except Exception:
-                        pass
-
-        try:
-            consume(
-                ollama.chat(
-                    model=model_name,
-                    messages=messages,
-                    tools=tools,
-                    think=think,
-                    options=options,
-                    stream=True,
-                )
-            )
-        except Exception as exc:
-            if stop_event is not None and stop_event.is_set():
-                interrupted = True
-            elif tools and think is not False and "error parsing tool call" in str(exc).lower():
-                logger.warning(
-                    "Ollama rejected a streamed tool call; retrying once with think=False."
-                )
-                thinking_parts.clear()
-                response_parts.clear()
-                tool_calls.clear()
-                final_chunk = None
-                chunk_count = 0
-                thinking_chunks = 0
-                content_chunks = 0
-                interrupted = False
-                consume(
-                    ollama.chat(
-                        model=model_name,
-                        messages=messages,
-                        tools=tools,
-                        think=False,
-                        options=options,
-                        stream=True,
-                    )
-                )
-            else:
-                raise RuntimeError(
-                    "Ollama streaming failed: "
-                    f"{type(exc).__name__}: {exc}"
-                ) from exc
-
-        if interrupted or (stop_event is not None and stop_event.is_set()):
-            self._emit_stream_event(
-                callback,
-                "generation_stopped",
-                thinking_tokens=len("".join(thinking_parts).split()),
-                response_chars=len("".join(response_parts)),
-                tool_calls=len(tool_calls),
-                usage=(
-                    int(getattr(final_chunk, "prompt_eval_count", 0) or 0)
-                    + int(getattr(final_chunk, "eval_count", 0) or 0)
-                    if final_chunk is not None
-                    else 0
-                ),
-            )
-            return LLMResult(
-                response="".join(response_parts),
-                message={"role": "assistant", "content": "".join(response_parts)},
-                tool_calls=tool_calls,
-                thinking="".join(thinking_parts) or None,
-                usage=(
-                    int(getattr(final_chunk, "prompt_eval_count", 0) or 0)
-                    + int(getattr(final_chunk, "eval_count", 0) or 0)
-                    if final_chunk is not None
-                    else 0
-                ),
-                raw=final_chunk,
-            )
-
-        if final_chunk is None:
-            raise RuntimeError("Ollama returned an empty streaming response.")
-
-        message = getattr(final_chunk, "message", None)
-        message_data = (
-            message.model_dump()
-            if message and hasattr(message, "model_dump")
-            else {}
-        )
-        response_text = "".join(response_parts)
-        thinking_text = "".join(thinking_parts) or None
-        message_data["content"] = response_text
-        if thinking_text:
-            message_data["thinking"] = thinking_text
-
-        serialized_tool_calls: list[dict[str, Any]] = []
-        for call in tool_calls:
-            if hasattr(call, "model_dump"):
-                serialized_tool_calls.append(call.model_dump())
-            elif isinstance(call, dict):
-                serialized_tool_calls.append(dict(call))
-        if serialized_tool_calls:
-            message_data["tool_calls"] = serialized_tool_calls
-
-        prompt_tokens = int(getattr(final_chunk, "prompt_eval_count", 0) or 0)
-        completion_tokens = int(getattr(final_chunk, "eval_count", 0) or 0)
-        usage = prompt_tokens + completion_tokens
-
-        self._emit_stream_event(
-            callback,
-            "generation_done",
-            thinking_tokens=len(thinking_text.split()) if thinking_text else 0,
-            response_chars=len(response_text),
-            tool_calls=len(tool_calls),
-            usage=usage,
-            stream_chunks=chunk_count,
-            thinking_chunks=thinking_chunks,
-            content_chunks=content_chunks,
-        )
-
-        return LLMResult(
-            response=response_text,
-            message=message_data,
-            tool_calls=tool_calls,
-            thinking=thinking_text,
-            usage=usage,
-            raw=final_chunk,
-        )
-
-    def generate(
-        self,
-        inputs: LLMInput,
-    ) -> LLMResult:
-
-        model_name = inputs.model_name or self.defaultModel
-
-        messages = self._prepare_messages(inputs.messages or [])
-
-        stream_callback = getattr(inputs, "stream_callback", None)
-
-        tools = inputs.tools or []
-
-        options = dict(self.defaultConfig)
-
-        if inputs.options:
-            options.update(inputs.options)
-
+    async def _request(self, inputs: LLMInput) -> LLMResult:
+        options = {**self.defaultConfig, **(inputs.options or {})}
         think = self._resolve_think(options)
 
-        if callable(stream_callback):
-            return self._generate_streaming(
-                model_name=model_name,
-                messages=messages,
-                tools=tools,
+        def seconds(key, default, optional=False):
+            value = options.pop(key, default)
+            if optional and value is None:
+                return None
+            if isinstance(value, bool):
+                raise ValueError(
+                    f"{key} must be positive seconds" + (" or null" if optional else "")
+                )
+            value = float(value)
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError(
+                    f"{key} must be finite positive seconds"
+                    + (" or null" if optional else "")
+                )
+            return value
+
+        # Local inference can buffer a large tool call for minutes. Null read
+        # timeout waits without treating model latency as a transport failure;
+        # cancellation and an optional overall deadline remain independent.
+        read_timeout = seconds("request_timeout_seconds", None, optional=True)
+        connect_timeout = seconds("connect_timeout_seconds", 10)
+        total_timeout = seconds("total_timeout_seconds", None, optional=True)
+        client = ollama.AsyncClient(
+            timeout=httpx.Timeout(
+                connect=connect_timeout, read=read_timeout, write=30, pool=10
+            )
+        )
+        started = time.monotonic()
+        progress = {"last_chunk": started, "chunks": 0, "phase": "waiting for response"}
+        callback = inputs.stream_callback
+        model = inputs.model_name or self.defaultModel
+
+        async def consume():
+            self._emit_stream_event(
+                callback, "generation_start", model=model, think=think, streaming=True
+            )
+            stream = await client.chat(
+                model=model,
+                messages=self._prepare_messages(inputs.messages),
+                tools=inputs.tools or [],
                 think=think,
                 options=options,
-                callback=stream_callback,
-                stop_event=getattr(inputs, "stop_event", None),
+                stream=True,
             )
-
-        try:
-
-            chat_response = ollama.chat(
-                model=model_name,
-                messages=messages,
-                tools=tools,
-                think=think,
-                options=options,
-            )
-
-        except Exception as exc:
-            error_text = str(exc)
-
-            # Some gpt-oss/Ollama combinations can emit a malformed tool-call
-            # payload containing prose before the JSON tool call. Ollama then
-            # rejects its own output with HTTP 500. Retry once without
-            # reasoning before surfacing the provider failure.
-            if (
-                tools
-                and think is not False
-                and "error parsing tool call" in error_text.lower()
-            ):
-                logger.warning(
-                    "Ollama rejected a malformed tool call; retrying once with think=False."
-                )
-                try:
-                    chat_response = ollama.chat(
-                        model=model_name,
-                        messages=messages,
-                        tools=tools,
-                        think=False,
-                        options=options,
+            content, thinking, calls = [], [], []
+            final = None
+            chunks = 0
+            try:
+                async for chunk in stream:
+                    final = chunk
+                    chunks += 1
+                    progress.update(
+                        last_chunk=time.monotonic(), chunks=chunks, phase="streaming"
                     )
-                except Exception as retry_exc:
-                    logger.error(
-                        "Tool-call recovery failed: "
-                        f"{type(retry_exc).__name__}: {retry_exc}"
-                    )
-                    raise RuntimeError(
-                        "Ollama generation failed: "
-                        f"{type(retry_exc).__name__}: {retry_exc}"
-                    ) from retry_exc
-            else:
-                logger.error(
-                    "Chat generation failed: "
-                    f"{type(exc).__name__}: {exc}"
-                )
+                    message = chunk.message
+                    if message is None:
+                        continue
+                    if message.thinking:
+                        thinking.append(message.thinking)
+                        self._emit_stream_event(
+                            callback, "thinking_delta", text=message.thinking
+                        )
+                    if message.content:
+                        content.append(message.content)
+                        self._emit_stream_event(
+                            callback, "content_delta", text=message.content
+                        )
+                    calls.extend(message.tool_calls or [])
+            finally:
+                await stream.aclose()
+            if final is None or not final.done:
                 raise RuntimeError(
-                    "Ollama generation failed: "
-                    f"{type(exc).__name__}: {exc}"
-                ) from exc
-
-        message = chat_response.message if chat_response else None
-
-        prompt_tokens = (
-            getattr(
-                chat_response,
-                "prompt_eval_count",
-                0,
-            )
-            or 0
-        )
-
-        completion_tokens = (
-            getattr(
-                chat_response,
-                "eval_count",
-                0,
-            )
-            or 0
-        )
-
-        total_tokens = prompt_tokens + completion_tokens
-
-        tool_calls = []
-
-        if message:
-
-            raw_tool_calls = (
-                getattr(
-                    message,
-                    "tool_calls",
-                    None,
+                    "Ollama stream ended without a completion marker; partial tool calls were not executed."
                 )
-                or []
+            if getattr(final, "done_reason", None) == "length":
+                raise RuntimeError(
+                    "Ollama reached its output-token limit; partial tool calls were not executed. Increase num_predict or request smaller edits."
+                )
+            serialized = [
+                call.model_dump() if hasattr(call, "model_dump") else dict(call)
+                for call in calls
+            ]
+            message = {"role": "assistant", "content": "".join(content)}
+            if serialized:
+                message["tool_calls"] = serialized
+            reasoning = "".join(thinking) or None
+            usage = int(final.prompt_eval_count or 0) + int(final.eval_count or 0)
+            self._emit_stream_event(
+                callback, "generation_done", usage=usage, stream_chunks=chunks
+            )
+            return LLMResult(
+                message["content"], message, serialized, reasoning, usage, raw=final
             )
 
-            tool_calls = list(raw_tool_calls)
-
-        normalized_message = message.model_dump() if message else {}
-
-        thinking = (
-            getattr(
-                message,
-                "thinking",
-                None,
-            )
-            if message
-            else None
-        )
-
-        response_text = message.content if message else ""
-
-        if not response_text and not tool_calls and thinking:
-
-            # Not fabricating a response here — Loop is responsible for
-            # deciding what to do about an empty turn (see agentloop.py's
-            # nudge-and-retry handling). This log line exists so a
-            # thinking-only turn is distinguishable from a truly broken
-            # one when reading logs.
-            logger.warning(
-                f"Model '{model_name}' produced only reasoning this turn "
-                "(content and tool_calls are both empty, thinking is not)."
-            )
-
-        return LLMResult(
-            response=response_text,
-            message=normalized_message,
-            tool_calls=tool_calls,
-            thinking=thinking,
-            usage=total_tokens,
-            raw=chat_response,
-        )
+        request = asyncio.create_task(consume())
+        next_heartbeat = started + 2
+        try:
+            # This check runs even while connect(), response headers or the next
+            # stream chunk are pending. Cancelling the task closes the HTTP stream.
+            while not request.done():
+                if inputs.stop_event is not None and inputs.stop_event.is_set():
+                    self._emit_stream_event(callback, "generation_stopped")
+                    raise InterruptedError("Generation cancelled")
+                now = time.monotonic()
+                if total_timeout is not None and now - started >= total_timeout:
+                    raise TimeoutError(
+                        f"Ollama total_timeout_seconds={total_timeout:g} elapsed for model {model}; partial tool calls were not executed."
+                    )
+                if now >= next_heartbeat:
+                    self._emit_stream_event(
+                        callback,
+                        "generation_wait",
+                        elapsed_seconds=round(now - started, 1),
+                        idle_seconds=round(now - progress["last_chunk"], 1),
+                        stream_chunks=progress["chunks"],
+                        phase=progress["phase"],
+                    )
+                    next_heartbeat = now + 2
+                await asyncio.wait({request}, timeout=0.05)
+            if inputs.stop_event is not None and inputs.stop_event.is_set():
+                raise InterruptedError("Generation cancelled")
+            return await request
+        except httpx.TimeoutException as exc:
+            raise TimeoutError(
+                f"Ollama {type(exc).__name__} for model {model} during {progress['phase']} "
+                f"after {time.monotonic() - started:.1f}s ({progress['chunks']} chunks). "
+                "Partial tool calls were not executed. For slow local inference, set "
+                "request_timeout_seconds to null or a larger value; interruption remains available."
+            ) from exc
+        except (httpx.ConnectError, ConnectionError) as exc:
+            raise ConnectionError(
+                f"Cannot reach Ollama for model {model}. Check the server and OLLAMA_HOST."
+            ) from exc
+        finally:
+            request.cancel()
+            await asyncio.gather(request, return_exceptions=True)
+            await client.close()

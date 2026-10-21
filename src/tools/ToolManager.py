@@ -6,6 +6,8 @@ from typing import Any
 
 from src.models.ToolCall import ToolCall
 from src.models.ToolResult import ToolResult
+from src.agent.subagents import SubagentManager
+from src.skills import SkillRegistry
 from src.security.securityService import SecurityService
 from src.tools.ToolDispatcher import ToolDispatcher
 from src.tools.ToolRegistry import ToolRegistry
@@ -22,14 +24,21 @@ class ToolManager:
     ) -> None:
         self.logger = get_logger("[TOOLMANAGER]")
 
-        self.config = config or {}
+        self.config = {} if config is None else config
+        if not isinstance(self.config, dict):
+            raise ValueError("config must be an object")
         self.toolregistry = ToolRegistry()
         self.dispatcher = ToolDispatcher(self.toolregistry)
         self.security = SecurityService(self.config.get("security"))
         self._definitions: list[dict] | None = None
         self.process_manager = ProcessManager()
+        self.skills = SkillRegistry(self.config)
+        self.subagents = SubagentManager(self.config)
+        self.stop_event = None
 
     def set_workspace(self, directory: str) -> None:
+        self.subagents.set_workspace(directory)
+        self.skills.set_workspace(directory)
         self.security.set_workspace(directory)
 
         # Plan state is task-scoped workspace state. Keep the plan tool on the
@@ -41,7 +50,10 @@ class ToolManager:
 
     def close(self) -> None:
         """Release runtime-owned resources, including managed processes."""
-        self.process_manager.close()
+        try:
+            self.process_manager.close()
+        finally:
+            self.subagents.close()
 
     def approve_background_command(
         self,
@@ -71,7 +83,12 @@ class ToolManager:
 
     def _bind_runtime_services(self) -> None:
         """Inject runtime-owned services into discovered tool instances."""
+        self.process_manager.stop_event = self.stop_event
         for tool in self.toolregistry.tools.values():
+            if hasattr(tool, "skill_registry"):
+                tool.skill_registry = self.skills
+            if hasattr(tool, "subagent_manager"):
+                tool.subagent_manager = self.subagents
             setter = getattr(tool, "set_process_manager", None)
             if callable(setter):
                 setter(self.process_manager)
@@ -80,12 +97,14 @@ class ToolManager:
 
     def get_tools(self) -> list[dict]:
         if self._definitions is None:
-            self.toolregistry.discover()
+            if not self.toolregistry.tools:
+                self.toolregistry.discover()
             self._bind_runtime_services()
             self._definitions = self.toolregistry.get_definitions()
         else:
             self._bind_runtime_services()
 
+        self._definitions = self.toolregistry.get_definitions()
         allowed = set(self.security.policy.allowed_tools)
         network_allowed = bool(self.security.policy.allow_network_tools)
 
@@ -96,6 +115,12 @@ class ToolManager:
             if not name or name not in allowed:
                 continue
             if name in {"web_search", "web_fetch"} and not network_allowed:
+                continue
+            if name in {"skill_list", "skill_read"} and not self.skills.enabled:
+                continue
+            if name == "task_finish" and (self.config.get("runtime") or {}).get("completion_protocol", "implicit") != "explicit":
+                continue
+            if name == "subagent" and not self.subagents.enabled:
                 continue
             visible.append(definition)
 
@@ -132,7 +157,10 @@ class ToolManager:
         args = dict(toolcall.args or {})
         name = toolcall.name
 
-        if name == "read_file":
+        if name == "make_directory":
+            args["paths"] = [str(self._resolve_execution_path(p)) for p in args["paths"]]
+
+        elif name == "read_file":
             args["file_path"] = str(
                 self._resolve_execution_path(args["file_path"])
             )
@@ -226,6 +254,7 @@ class ToolManager:
         )
 
     def execute(self, tool_calls: list[ToolCall]) -> dict:
+        self.get_tools()
         calls: list[ToolCall] = []
         results: list[ToolResult] = []
 
@@ -307,6 +336,17 @@ class ToolManager:
 
             try:
                 toolcall = self.security.check(toolcall)
+                if (
+                    (toolcall.name in {"skill_list", "skill_read"} and not self.skills.enabled)
+                    or (toolcall.name == "subagent" and not self.subagents.enabled)
+                ):
+                    toolcall.approved = False
+                    toolcall.security_reason = "This feature is disabled by host configuration."
+                    toolcall.security_rule = "feature_disabled"
+                if self.stop_event is not None and self.stop_event.is_set():
+                    toolcall.approved = False
+                    toolcall.security_reason = "The current task has been cancelled."
+                    toolcall.security_rule = "task_cancelled"
             except Exception as exc:
                 self.logger.error("Security check failed for '%s': %s", toolcall.name, exc)
                 toolcall.approved = False
@@ -370,7 +410,7 @@ class ToolManager:
 
                 results.append(result)
 
-            except TypeError as exc:
+            except (TypeError, ValueError) as exc:
                 self.logger.error(
                     "Tool '%s' rejected its execution arguments: %s",
                     toolcall.name,

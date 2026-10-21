@@ -21,7 +21,7 @@ class ToolRegistry:
             self.logger.error(f"Tools directory does not exist: {self.tools_path}")
             return discovered_tools
 
-        for item in self.tools_path.iterdir():
+        for item in sorted(self.tools_path.iterdir()):
 
             if not item.is_dir():
                 continue

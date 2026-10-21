@@ -27,8 +27,9 @@ class LlmProvider:
             logger.info(f"Loading {provider_name} provider")
             self.model = self.registry.get(provider_name)
         else:
-            logger.error(
-                f"{provider_name} not found try one of {self.discovered_providers}"
+            raise ValueError(
+                f"Provider '{provider_name}' is unavailable. Install its optional dependencies "
+                f"and configure it. Available providers: {self.discovered_providers}"
             )
 
     def generate(
@@ -56,7 +57,7 @@ class LlmProvider:
                         "type": "generation_requested",
                         "model": model_name,
                         "streaming": True,
-                        "think": generation_options.get("think", "medium"),
+                        "think": generation_options.get("think", getattr(self.model, "DEFAULT_THINK", None)),
                     })
                 except Exception as exc:
                     logger.debug(

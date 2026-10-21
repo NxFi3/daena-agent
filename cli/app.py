@@ -19,6 +19,7 @@ from rich.console import Console
 
 os.environ.setdefault("DAENA_CLI", "1")
 
+from src import __version__
 from src.agent.agent import Agent
 from src.models.ContextEvent import (
     ContextEvent,
@@ -31,6 +32,8 @@ from .render import StreamRenderer
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config.json"
+if not CONFIG_PATH.exists():
+    CONFIG_PATH = ROOT / "src" / "default_config.json"
 
 STYLE = Style.from_dict(
     {
@@ -45,11 +48,13 @@ STYLE = Style.from_dict(
 COMMANDS = {
     "/help": None,
     "/status": None,
+    "/skills": None,
+    "/agents": None,
     "/sessions": None,
     "/session": {"new": None},
     "/new": None,
-    "/reasoning": {"low": None, "medium": None, "high": None, "off": None, "auto": None},
-    "/think": {"low": None, "medium": None, "high": None, "off": None, "auto": None},
+    "/reasoning": {"on": None, "low": None, "medium": None, "high": None, "off": None, "auto": None},
+    "/think": {"on": None, "low": None, "medium": None, "high": None, "off": None, "auto": None},
     "/busy": {"steer": None, "interrupt": None, "queue": None, "status": None},
     "/provider": None,
     "/cwd": None,
@@ -68,10 +73,12 @@ COMMANDS = {
 
 HELP_LINES = (
     "/help                     show this list",
+    "/skills                   list available skills",
+    "/agents                   show delegated task status",
     "/sessions                 conversation history",
     "/session N                open conversation N",
     "/session new              start a new conversation",
-    "/reasoning low|medium|high|off|auto",
+    "/reasoning on|off|auto|low|medium|high",
     "/busy steer|interrupt|queue",
     "/provider [name]          show / switch provider",
     "/cwd [path]               show / change workspace directory",
@@ -95,12 +102,7 @@ def _load_config(path: Path) -> dict:
 
 def _think_value(agent: Agent) -> object:
     config = getattr(agent.llm, "generation_config", {}) or {}
-    return config.get(
-        "think",
-        getattr(agent.llm.model, "defaultConfig", {}).get("think", "medium")
-        if agent.llm.model
-        else "medium",
-    )
+    return config.get("think", getattr(agent.llm.model, "DEFAULT_THINK", None))
 
 def _set_think(agent: Agent, value: object) -> object:
     generation_config = getattr(agent.llm, "generation_config", None)
@@ -135,6 +137,8 @@ def _set_setting(agent: Agent, key: str, value: str) -> object:
         raw = value.strip().lower()
         if raw == "auto":
             parsed = None
+        elif raw in {"on", "true"}:
+            parsed = True
         elif raw in {"off", "false"}:
             parsed = False
         elif raw in {"low", "medium", "high"}:
@@ -324,18 +328,33 @@ def _handle_command(
     elif command == "/status":
         _show_status(console, agent, busy_mode)
 
+    elif command == "/skills":
+        for skill in agent.loop.tool.skills.list():
+            console.print(f"{skill['name']}: {skill['description']}", markup=False)
+        for warning in agent.loop.tool.skills.warnings:
+            console.print(warning, markup=False)
+
+    elif command == "/agents":
+        capability = agent.loop.tool.subagents.capabilities()
+        console.print(f"Enabled modes: {', '.join(capability['modes'])}; concurrency {capability['max_concurrent']}", markup=False)
+        agents = agent.loop.tool.subagents.list()
+        if not agents:
+            console.print("No delegated tasks in this run.")
+        for child in agents:
+            console.print(f"{child['agent_id']}  {child['mode']}  {child['status']}  changes={child['integration']}", markup=False)
+
     elif command in {"/reasoning", "/think"}:
         value = argument.lower() or str(_think_value(agent)).lower()
-        if value == "on":
-            value = "medium"
-        if value == "auto":
+        if value in {"on", "true"}:
+            _set_think(agent, True)
+        elif value in {"auto", "none"}:
             _set_think(agent, None)
         elif value == "off":
             _set_think(agent, False)
         elif value in {"low", "medium", "high"}:
             _set_think(agent, value)
         else:
-            console.print("[#FBBF24]Usage: /reasoning low|medium|high|off|auto[/#FBBF24]")
+            console.print("[#FBBF24]Usage: /reasoning on|off|auto|low|medium|high[/#FBBF24]")
             return "continue", busy_mode
         console.print(f"[#4ADE80]reasoning = {_think_value(agent)}[/#4ADE80]")
 
@@ -476,11 +495,16 @@ def _print_finished_turn(console: Console, state: dict) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="daena", description="Daena terminal agent")
+    parser.add_argument("--version", action="version", version=f"Daena {__version__}")
+    parser.add_argument("--config", type=Path, default=CONFIG_PATH, help="Path to a JSON configuration file")
     parser.add_argument("--cwd", dest="cwd", default=None)
+    parser.add_argument("--model", default=None, help="Override the configured model name")
     parser.add_argument("--no-think", action="store_true")
     args = parser.parse_args()
 
-    config = _load_config(CONFIG_PATH)
+    config = _load_config(args.config)
+    if args.model:
+        config.setdefault("llm", {}).setdefault("provider_config", {})["model_name"] = args.model
     agent = Agent(config)
 
     if args.cwd:
