@@ -10,7 +10,10 @@ class FakeLLM:
         self.messages = messages
         return LLMResult(
             response="Task: fix\nCompleted: parser updated",
-            message={"role": "assistant", "content": "Task: fix\nCompleted: parser updated"},
+            message={
+                "role": "assistant",
+                "content": "Task: fix\nCompleted: parser updated",
+            },
             tool_calls=[],
             thinking=None,
             usage=12,
@@ -23,4 +26,5 @@ def test_compactor_returns_model_summary():
 
     assert "parser updated" in compacted
     assert llm.messages
-    assert "long history" in llm.messages[0]["content"]
+    assert "long history" not in llm.messages[0]["content"]
+    assert llm.messages[1] == {"role": "user", "content": "long history"}

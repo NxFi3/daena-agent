@@ -35,19 +35,11 @@ class Plan(Tool):
     action = "modify"
 
     description = (
-        "Manage the execution plan for the current task. Keep this tool simple: "
-        "the runtime owns the current step and status. You only decide what to do next.\n\n"
-        "A plan lives at .daena/plan.md in the active workspace and is already "
-        "provided to you in <plan>. Do not read that file with read_file or search.\n\n"
-        "ACTIONS:\n"
-        '- create: start a new plan. {"action":"create","goal":"...","steps":["...","..."]}\n'
-        '- complete: finish the current step after its work actually succeeded. {"action":"complete"}\n'
-        '- block: mark the current step blocked when it cannot be completed. {"action":"block","reason":"..."}\n'
-        '- add: append newly discovered required work. {"action":"add","step":"..."}\n'
-        "Completing or blocking a step automatically advances the next pending step. "
-        "Never try to choose a step number or manually set a status. "
-        "Use exactly one action per plan call. Include verification work in the plan. "
-        "Before the final answer, every step must be completed or blocked."
+        "Manage the persistent workspace plan, shown in <plan> on every turn. "
+        "Use read to inspect it, create if absent, or replace with a new goal and steps when changing the plan. "
+        "create never overwrites an existing plan. replace is explicit and preserves the previous version. "
+        "complete finishes the current step; block records a reason; both advance to the next pending step. "
+        "add appends a newly identified step. Plan statuses are your assessment, not independent verification."
     )
 
     parameters = {
@@ -55,17 +47,17 @@ class Plan(Tool):
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["create", "complete", "block", "add"],
+                "enum": ["read", "create", "replace", "complete", "block", "add"],
                 "description": "What to do with the current execution plan.",
             },
             "goal": {
                 "type": "string",
-                "description": "Goal for create.",
+                "description": "Goal for create or replace.",
             },
             "steps": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Initial ordered steps for create.",
+                "description": "Ordered steps for create or replace.",
             },
             "reason": {
                 "type": "string",
@@ -94,7 +86,10 @@ class Plan(Tool):
     def _plan_path(self) -> Path:
         if self._workspace_root is None:
             return self.PLAN_PATH
-        return self._workspace_root / self.PLAN_PATH
+        path = (self._workspace_root / self.PLAN_PATH).resolve()
+        if not path.is_relative_to(self._workspace_root):
+            raise PermissionError("Plan path escapes the active workspace")
+        return path
 
     MAX_GOAL_CHARS = 2_000
     MAX_STEP_CHARS = 1_000
@@ -114,7 +109,7 @@ class Plan(Tool):
 
     _PLAN_INSTRUCTIONS = [
         "This is the active execution plan.",
-        "The runtime owns the current step and status.",
+        "Step statuses are model-reported; use tool evidence to assess actual progress.",
         "",
         "Plan rules:",
         "- The first step becomes [in_progress] when the plan is created.",
@@ -123,7 +118,7 @@ class Plan(Tool):
         "- Completing or blocking a step automatically advances the next pending step.",
         "- Use [add] when new required work is discovered before doing that work.",
         "- Keep exactly one step [in_progress] at a time.",
-        "- Before finishing the task, all steps must be [completed] or [blocked].",
+        "- Keep the plan aligned with the user request; replace it explicitly when needed.",
         "The plan is persistent and represents the current task state.",
     ]
 
@@ -133,7 +128,10 @@ class Plan(Tool):
 
         action = arguments.get("action")
 
-        if action == "create":
+        if action == "read":
+            return set(arguments) == {"action"}
+
+        if action in {"create", "replace"}:
             return (
                 set(arguments) == {"action", "goal", "steps"}
                 and self._valid_text(arguments.get("goal"), self.MAX_GOAL_CHARS)
@@ -144,15 +142,13 @@ class Plan(Tool):
             return set(arguments) == {"action"}
 
         if action == "block":
-            return (
-                set(arguments) == {"action", "reason"}
-                and self._valid_text(arguments.get("reason"), self.MAX_STEP_CHARS)
+            return set(arguments) == {"action", "reason"} and self._valid_text(
+                arguments.get("reason"), self.MAX_STEP_CHARS
             )
 
         if action == "add":
-            return (
-                set(arguments) == {"action", "step"}
-                and self._valid_text(arguments.get("step"), self.MAX_STEP_CHARS)
+            return set(arguments) == {"action", "step"} and self._valid_text(
+                arguments.get("step"), self.MAX_STEP_CHARS
             )
 
         return False
@@ -162,7 +158,7 @@ class Plan(Tool):
         arguments: dict[str, Any],
     ) -> dict[str, str]:
         return {
-            "action": "modify",
+            "action": "read" if arguments.get("action") == "read" else "modify",
             "target": str(self._plan_path),
         }
 
@@ -245,8 +241,24 @@ class Plan(Tool):
                         "Use create, complete, block, or add.",
                     )
 
-        if action == "create":
-            return self._create(goal=goal, steps=steps)
+        if action == "read":
+            raw = self._read_raw()
+            return ToolResult(
+                success=True,
+                name=self.name,
+                content={
+                    "exists": bool(raw.strip()),
+                    "path": str(self._plan_path),
+                    "plan": raw,
+                },
+                evidence={"exists": bool(raw.strip()), "plan": raw},
+                summary="Current workspace plan."
+                if raw.strip()
+                else "No workspace plan exists.",
+            )
+
+        if action in {"create", "replace"}:
+            return self._create(goal=goal, steps=steps, replace=action == "replace")
 
         if action == "complete":
             return self._set_current_status("completed")
@@ -385,6 +397,7 @@ class Plan(Tool):
         *,
         goal: str | None,
         steps: list[str] | None,
+        replace: bool = False,
     ) -> ToolResult:
 
         if not self._valid_text(
@@ -418,10 +431,27 @@ class Plan(Tool):
                 f"Could not read the current plan: {exc}",
             )
 
-        if existing.strip():
-            return self._error(
-                "plan_exists",
-                "A plan already exists. Continue using the current plan.",
+        if existing.strip() and not replace:
+            return ToolResult(
+                success=False,
+                name=self.name,
+                content={
+                    "error": {
+                        "type": "plan_exists",
+                        "message": "A plan exists. Continue it or explicitly replace it.",
+                    },
+                    "plan": existing,
+                },
+                evidence={
+                    "plan": existing,
+                    "available_actions": [
+                        "read",
+                        "replace",
+                        "complete",
+                        "block",
+                        "add",
+                    ],
+                },
             )
 
         plan_steps = [
@@ -441,14 +471,30 @@ class Plan(Tool):
             plan_steps,
         )
 
-        write_error = self._write_atomic(content)
+        if replace and existing.strip():
+            from uuid import uuid4
 
+            archive = (
+                self._plan_path.parent / "plan-history" / (uuid4().hex + ".md")
+            ).resolve()
+            if not archive.is_relative_to(self._plan_path.parent):
+                return self._error(
+                    "workspace_boundary",
+                    "Plan history path escapes its runtime directory",
+                )
+            try:
+                archive.parent.mkdir(parents=True, exist_ok=True)
+                archive.write_text(existing, encoding="utf-8")
+            except OSError as exc:
+                return self._error(
+                    "archive_error", f"Could not preserve the previous plan: {exc}"
+                )
+        write_error = self._write_atomic(content)
         if write_error is not None:
             return write_error
-
         return self._success(
-            f"Plan created with {len(plan_steps)} step(s).",
-            action="create",
+            f"Plan {'replaced' if replace else 'created'} with {len(plan_steps)} step(s).",
+            action="update" if replace else "create",
         )
 
     def _update(
@@ -485,7 +531,6 @@ class Plan(Tool):
             )
 
         if goal is not None:
-
             if not self._valid_text(
                 goal,
                 self.MAX_GOAL_CHARS,
@@ -512,7 +557,6 @@ class Plan(Tool):
             summary = "Plan updated: goal changed."
 
         elif step is not None:
-
             if not 1 <= step <= len(current_steps):
                 return self._error(
                     "invalid_step",
@@ -523,7 +567,6 @@ class Plan(Tool):
 
             # Description update
             if description is not None:
-
                 if not self._valid_text(
                     description,
                     self.MAX_STEP_CHARS,
@@ -562,7 +605,6 @@ class Plan(Tool):
 
             # Status update
             elif status is not None:
-
                 if status not in self._STATUSES:
                     return self._error(
                         "invalid_status",
@@ -572,14 +614,13 @@ class Plan(Tool):
                 # Exact duplicate update.
                 if status == target.status:
                     return self._success(
-                        (f"Plan unchanged: step {step} " f"is already {status}."),
+                        (f"Plan unchanged: step {step} is already {status}."),
                         action="update",
                         duplicate=True,
                     )
 
                 # Prevent multiple active steps.
                 if status == "in_progress":
-
                     active_step = self._find_in_progress(current_steps)
 
                     if active_step is not None and active_step.number != step:
@@ -649,7 +690,6 @@ class Plan(Tool):
                 )
 
         elif add_step is not None:
-
             if not self._valid_text(
                 add_step,
                 self.MAX_STEP_CHARS,
@@ -673,7 +713,7 @@ class Plan(Tool):
             ):
                 return self._error(
                     "duplicate_step",
-                    ("A step with the same description " "already exists."),
+                    ("A step with the same description already exists."),
                 )
 
             new_number = len(current_steps) + 1
@@ -689,7 +729,6 @@ class Plan(Tool):
             summary = f"Plan updated: added step {new_number}."
 
         elif remove_step is not None:
-
             if not 1 <= remove_step <= len(current_steps):
                 return self._error(
                     "invalid_step",
@@ -699,7 +738,7 @@ class Plan(Tool):
             if len(current_steps) == 1:
                 return self._error(
                     "invalid_plan",
-                    ("The last step cannot be removed. " "Delete the plan instead."),
+                    ("The last step cannot be removed. Delete the plan instead."),
                 )
 
             removed = current_steps.pop(remove_step - 1)
@@ -707,7 +746,7 @@ class Plan(Tool):
             self._renumber(current_steps)
 
             summary = (
-                f"Plan updated: removed step {remove_step} " f"({removed.description})."
+                f"Plan updated: removed step {remove_step} ({removed.description})."
             )
 
         else:
@@ -794,7 +833,6 @@ class Plan(Tool):
                 suffix=".tmp",
                 delete=False,
             ) as handle:
-
                 temp_path = Path(handle.name)
 
                 handle.write(content)
@@ -810,7 +848,6 @@ class Plan(Tool):
             return None
 
         except OSError as exc:
-
             if temp_path is not None:
                 try:
                     temp_path.unlink(missing_ok=True)
@@ -835,11 +872,9 @@ class Plan(Tool):
         section_indices: dict[str, int] = {}
 
         for index, line in enumerate(lines):
-
             stripped = line.strip()
 
             if stripped.startswith("## "):
-
                 section_name = stripped[3:].strip()
 
                 if section_name in section_indices:
@@ -880,7 +915,6 @@ class Plan(Tool):
         plan_steps: list[PlanStep] = []
 
         for line in lines[steps_index + 1 : steps_end]:
-
             if not line.strip():
                 continue
 
@@ -899,14 +933,14 @@ class Plan(Tool):
 
             if number != expected_number:
                 raise ValueError(
-                    ("Plan step numbers must be " "contiguous starting at 1.")
+                    ("Plan step numbers must be contiguous starting at 1.")
                 )
 
             if not self._valid_text(
                 description,
                 self.MAX_STEP_CHARS,
             ):
-                raise ValueError((f"Plan step {number} " "is missing or too long."))
+                raise ValueError((f"Plan step {number} is missing or too long."))
 
             plan_steps.append(
                 PlanStep(
@@ -920,9 +954,7 @@ class Plan(Tool):
             raise ValueError("Plan must contain at least one step.")
 
         if len(plan_steps) > self.MAX_STEPS:
-            raise ValueError(
-                (f"Plan cannot contain more than " f"{self.MAX_STEPS} steps.")
-            )
+            raise ValueError((f"Plan cannot contain more than {self.MAX_STEPS} steps."))
 
         if self._has_duplicate_values([item.description for item in plan_steps]):
             raise ValueError("Plan contains duplicate step descriptions.")
@@ -962,8 +994,7 @@ class Plan(Tool):
         )
 
         lines.extend(
-            (f"{item.number}. " f"[{item.status}] " f"{item.description}")
-            for item in steps
+            (f"{item.number}. [{item.status}] {item.description}") for item in steps
         )
 
         return "\n".join(lines) + "\n"
@@ -1007,7 +1038,6 @@ class Plan(Tool):
         normalized = cls._normalize_text(description)
 
         for index, item in enumerate(steps):
-
             if exclude_index is not None and index == exclude_index:
                 continue
 

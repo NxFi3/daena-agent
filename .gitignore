@@ -3,4 +3,13 @@ __pycache__/
 logs/
 data/
 .env
-.vscode
+.vscode/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.daena/
+dist/
+build/
+*.egg-info/
+.env.*
+!.env.example

@@ -1,0 +1,121 @@
+from copy import deepcopy
+
+from src.models.ToolResult import ToolResult
+from src.tools.Tool import Tool
+
+
+class Subagent(Tool):
+    name = "subagent"
+    action = "delegate"
+    allow_same_revision_repeat = True
+    subagent_manager = None
+    description = (
+        "Delegate a self-contained task to an independent agent using the same model. "
+        "spawn returns agent_id immediately. read_only mode permits reading, skills and allowed web tools. "
+        "worker mode edits an isolated workspace copy and can run alongside other workers. "
+        "Use status/wait to collect results, list to inspect tasks, cancel to request cooperative stopping. "
+        "After completion use diff to review changes, then merge to integrate changed files, or discard. A merge conflict leaves parent files unchanged. Collect all results and resolve pending changes before finishing. Review reports and independently verify worker changes. "
+        "Children cannot spawn more children or gain permissions beyond the parent."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": [
+                    "spawn",
+                    "status",
+                    "wait",
+                    "list",
+                    "cancel",
+                    "diff",
+                    "merge",
+                    "discard",
+                ],
+            },
+            "task": {
+                "type": "string",
+                "description": "Required for spawn; include all necessary task context.",
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["read_only", "worker"],
+                "default": "read_only",
+            },
+            "agent_id": {
+                "type": "string",
+                "description": "Required for status, wait, cancel, diff, merge and discard.",
+            },
+            "wait_ms": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 30000,
+                "default": 1000,
+            },
+        },
+        "required": ["action"],
+        "additionalProperties": False,
+    }
+
+    def execute(
+        self,
+        action: str,
+        task: str = "",
+        mode: str = "read_only",
+        agent_id: str = "",
+        wait_ms: int = 1000,
+    ) -> ToolResult:
+        manager = self.subagent_manager
+        if action == "spawn":
+            result = manager.spawn(task, mode)
+        elif action == "list":
+            result = {
+                "agents": [
+                    {
+                        key: value
+                        for key, value in child.items()
+                        if key not in {"response", "metrics"}
+                    }
+                    for child in manager.list()
+                ],
+                "hint": "Use status or wait for each agent_id to collect the full result.",
+            }
+        elif action == "status":
+            result = manager.status(agent_id)
+        elif action == "wait":
+            result = manager.wait(agent_id, wait_ms)
+        elif action == "cancel":
+            result = manager.cancel(agent_id)
+        elif action == "diff":
+            result = manager.diff(agent_id)
+        elif action in {"merge", "discard"}:
+            result = manager.integrate(agent_id, discard=action == "discard")
+        else:
+            raise ValueError("Unknown subagent action")
+        # A failed child is data from a successful status operation; do not
+        # confuse it with a failed tool invocation or retry the delegation.
+        effects = []
+        if action == "merge" and result.get("merged"):
+            effects = [
+                {"action": item["operation"], "target": item["path"]}
+                for item in result["files"]
+            ]
+        return ToolResult(
+            success=True,
+            name=self.name,
+            content=result,
+            evidence=result,
+            effects=effects,
+            summary=f"Subagent {action}: {result.get('status', 'listed')}. Review child status separately from tool success.",
+        )
+
+    def get_definition(self):
+        definition = deepcopy(super().get_definition())
+        capabilities = self.subagent_manager.capabilities()
+        definition["function"]["parameters"]["properties"]["mode"]["enum"] = (
+            capabilities["modes"]
+        )
+        definition["function"]["description"] += (
+            " Enabled modes: " + ", ".join(capabilities["modes"]) + "."
+        )
+        return definition

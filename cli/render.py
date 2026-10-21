@@ -70,7 +70,7 @@ class StreamRenderer:
     model: str
     workspace: str
     session_id: str
-    think_enabled: Any = "medium"
+    think_enabled: Any = None
 
     iteration: int = 0
     max_iterations: int = 0
@@ -113,11 +113,23 @@ class StreamRenderer:
             self.iteration = int(event.get("iteration") or 0)
             self.max_iterations = int(event.get("max_iterations") or self.max_iterations)
             self.status = "thinking"
+            self.response_streamed = False
 
         elif t == "context":
             self.context_tokens = int(event.get("estimated_tokens") or 0)
             self.context_budget = int(event.get("budget") or 0)
             self._print(f"  {_MUT}ctx {self._ctx_str()}{_R}")
+
+        elif t == "generation_wait":
+            self.status = f"model wait {int(event.get('idle_seconds') or 0)}s"
+
+        elif t == "assistant_message":
+            if not self.response_streamed:
+                self._close_thinking()
+                self._open_response()
+                for line in str(event.get("text") or "").splitlines():
+                    self._print(f"  {_RESP}{line}{_R}")
+                self.response_streamed = True
 
         elif t == "thinking_delta":
             self.status = "thinking"
@@ -180,7 +192,7 @@ class StreamRenderer:
             self._close_response()
             self.usage = int(event.get("usage") or self.usage or 0)
             text = str(event.get("text") or "")
-            if text and not self.response_streamed:
+            if text and (event.get("authoritative") or not self.response_streamed):
                 self._open_response()
                 for ln in text.splitlines():
                     self._print(f"  {_RESP}{ln}{_R}")
@@ -200,8 +212,11 @@ class StreamRenderer:
             self.status = (
                 "completed"
                 if bool(event.get("completed"))
-                else str(event.get("stop_reason") or "stopped")
+                else "stopped"
             )
+
+            metrics = event.get("metrics") or {}
+            self.usage = int(metrics.get("tokens", self.usage))
 
         elif t == "error":
             self._close_thinking()
