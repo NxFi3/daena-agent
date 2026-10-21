@@ -103,7 +103,8 @@ def test_desktop_real_file_tools_history_and_followup(window, tmp_path):
     window.send()
     wait_until(lambda: not window.busy)
     assert "Salam!" in window.transcript.toPlainText()
-    assert window.history.count() == 2
+    assert window.history.count() == 1
+    assert len(window.store.runs()) == 2
 
 
 def test_desktop_stop_and_close_are_cooperative(window):

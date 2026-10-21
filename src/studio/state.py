@@ -21,7 +21,7 @@ def default_config():
 def validate_config(value):
     if not isinstance(value, dict):
         raise ValueError("Configuration must be a JSON object")
-    for section in ("llm", "context", "security", "skills", "subagents", "runtime"):
+    for section in ("llm", "context", "security", "skills", "subagents", "runtime", "studio"):
         if section in value and not isinstance(value[section], dict):
             raise ValueError(f"{section} must be an object")
     llm = value.get("llm", {})

@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from copy import deepcopy
-import html
 import json
 from pathlib import Path
 from uuid import uuid4, UUID
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QKeySequence, QShortcut, QDesktopServices, QTextCursor
+from PySide6.QtGui import QKeySequence, QShortcut, QDesktopServices
 from PySide6.QtWidgets import (
     QMainWindow,
     QWidget,
@@ -30,6 +29,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QComboBox,
     QFrame,
+    QToolButton,
 )
 
 from src import __version__
@@ -39,34 +39,11 @@ from src.studio.graph import GraphCanvas
 from src.studio.settings import SettingsPanel
 from src.studio.automation import AutomationPanel
 from src.studio.worker import RuntimeWorker
+from src.studio.widgets import Composer, ConversationView
+from src.studio.controls import ExecutionBar, ToolScopeDialog
+from src.studio.theme import STYLE
 
-STYLE = """
-QMainWindow, QWidget {background:#0c1220;color:#dce6fa;font-family:'Inter','Segoe UI',sans-serif;font-size:13px;}
-QLabel#brand {font-size:25px;font-weight:800;color:#c7b8ff;letter-spacing:3px;}
-QLabel#pageTitle {font-size:27px;font-weight:700;color:#f2f5ff;margin-top:4px;margin-bottom:10px;}
-QLabel#muted {color:#8fa1bc;}
-QFrame#header {border-bottom:1px solid #26334a;background:#101929;}
-QPushButton {background:#1b2940;border:1px solid #30425e;border-radius:8px;padding:9px 15px;font-weight:600;}
-QPushButton:hover {background:#2b3b57;border-color:#7a71c9;}
-QPushButton:disabled {color:#63718a;border-color:#223047;}
-QPushButton#primary {background:#8a6aef;color:#fff;border-color:#a68bfa;}
-QPushButton#danger {color:#ff9aac;}
-QLineEdit,QPlainTextEdit,QTextBrowser,QListWidget,QComboBox,QSpinBox {background:#111c2e;border:1px solid #293b55;border-radius:9px;padding:8px;selection-background-color:#5e4ea2;}
-QPlainTextEdit,QTextBrowser {font-size:14px;}
-QListWidget::item {padding:10px 8px;border-radius:7px;}
-QListWidget::item:selected {background:#332b56;color:#e4d9ff;}
-QTabWidget::pane {border:1px solid #293b55;border-radius:10px;}
-QTabBar::tab {padding:10px 17px;background:#111b2c;color:#8fa1bc;}
-QTabBar::tab:selected {color:#c7b8ff;border-bottom:2px solid #a78bfa;}
-QSplitter::handle {background:#223047;width:2px;height:2px;}
-QProgressBar {border:0;border-radius:4px;background:#1b2940;height:7px;text-align:center;}
-QProgressBar::chunk {background:#9b80f5;border-radius:4px;}
-QScrollBar:vertical {background:#101929;width:9px;}
-QScrollBar::handle:vertical {background:#3b4b68;border-radius:4px;min-height:25px;}
-QCheckBox {spacing:9px;padding:3px;}
-QStatusBar {background:#101929;color:#9baccc;}
-QToolTip {background:#24324a;color:#f1f5ff;border:1px solid #8a75cf;padding:7px;}
-"""
+
 
 
 class SkillsPanel(QWidget):
@@ -218,7 +195,8 @@ class StudioWindow(QMainWindow):
         layout.addWidget(header)
         main = QSplitter()
         layout.addWidget(main, 1)
-        sidebar = QWidget()
+        sidebar = QFrame()
+        sidebar.setObjectName("sidebar")
         side = QVBoxLayout(sidebar)
         side.setContentsMargins(0, 0, 6, 0)
         new = QPushButton("＋ New conversation")
@@ -236,16 +214,21 @@ class StudioWindow(QMainWindow):
             ]
         )
         side.addWidget(self.nav)
-        label = QLabel("RECENT RUNS")
+        label = QLabel("CONVERSATIONS")
         label.setObjectName("muted")
         side.addWidget(label)
+        self.history_search=QLineEdit()
+        self.history_search.setPlaceholderText("Search conversations…")
+        self.history_search.textChanged.connect(self.filter_history)
+        side.addWidget(self.history_search)
         self.history = QListWidget()
         self.history.itemActivated.connect(self.open_history)
+        self.history.itemClicked.connect(self.open_history)
         side.addWidget(self.history)
         export = QPushButton("Export run…")
         export.clicked.connect(self.export_run)
         side.addWidget(export)
-        hint = QLabel("Local workspace\nIndependent agent contexts\nCtrl+Enter to send")
+        hint = QLabel("Enter to send\nShift+Enter for a new line\nCtrl+L to focus the composer")
         hint.setObjectName("muted")
         side.addWidget(hint)
         main.addWidget(sidebar)
@@ -288,77 +271,45 @@ class StudioWindow(QMainWindow):
             "Daena Studio",
             "Ready when you are. Choose a workspace, check your model, and give Daena a task.\n\nUse Agent graph to inspect delegated work, or Automations to connect independent agent steps.",
         )
-        QShortcut(QKeySequence("Ctrl+Return"), self, activated=self.send)
+        QShortcut(QKeySequence("Ctrl+L"), self, activated=self.input.setFocus)
+        QShortcut(QKeySequence("Ctrl+,"), self, activated=lambda:self.nav.setCurrentRow(4))
 
     def _build_chat(self):
-        page = QWidget()
-        root = QVBoxLayout(page)
-        root.setContentsMargins(12, 0, 0, 0)
-        title = QLabel("From an idea to working software")
-        title.setObjectName("pageTitle")
-        root.addWidget(title)
-        subtitle = QLabel(
-            "Talk, steer, inspect. One shared runtime across terminal and desktop."
-        )
-        subtitle.setObjectName("muted")
-        root.addWidget(subtitle)
-        split = QSplitter(Qt.Vertical)
-        self.transcript = QTextBrowser()
-        self.transcript.setOpenLinks(False)
-        self.transcript.anchorClicked.connect(self.open_link)
-        split.addWidget(self.transcript)
-        self.stream_tabs = QTabWidget()
-        self.stream = QPlainTextEdit()
-        self.stream.setReadOnly(True)
-        self.stream.setPlaceholderText("Live model response appears here")
-        self.thought = QPlainTextEdit()
-        self.thought.setReadOnly(True)
-        self.thought.setPlaceholderText("Provider reasoning, when supplied")
-        self.activity = QPlainTextEdit()
-        self.activity.setReadOnly(True)
-        self.activity.document().setMaximumBlockCount(1200)
-        self.context_details = QPlainTextEdit()
-        self.context_details.setReadOnly(True)
-        for name, widget in [
-            ("Response stream", self.stream),
-            ("Reasoning", self.thought),
-            ("Activity", self.activity),
-            ("Context", self.context_details),
-        ]:
-            self.stream_tabs.addTab(widget, name)
-        split.addWidget(self.stream_tabs)
-        split.setSizes([430, 180])
-        root.addWidget(split, 1)
-        self.input = QPlainTextEdit()
-        self.input.setMaximumHeight(105)
-        self.input.setPlaceholderText(
-            "Describe your task…  Ctrl+Enter to send. While busy, messages steer the active task."
-        )
-        root.addWidget(self.input)
-        row = QHBoxLayout()
-        self.send_button = QPushButton("Send message")
-        self.send_button.setObjectName("primary")
-        self.send_button.clicked.connect(self.send)
-        self.stop_button = QPushButton("■ Stop")
-        self.stop_button.setObjectName("danger")
-        self.stop_button.setEnabled(False)
-        self.stop_button.clicked.connect(self.stop)
-        self.busy_mode = QComboBox()
-        self.busy_mode.addItems(["Steer current task", "Queue next message"])
-        row.addWidget(self.send_button)
-        row.addWidget(self.stop_button)
-        row.addStretch()
-        row.addWidget(self.busy_mode)
-        root.addLayout(row)
-        self.queued = []
-        self.pages.addWidget(page)
+        page=QWidget();root=QVBoxLayout(page);root.setContentsMargins(12,0,0,0);root.setSpacing(14)
+        head=QHBoxLayout();title=QLabel("Conversation");title.setObjectName("pageTitle");head.addWidget(title);head.addStretch()
+        self.details_toggle=QToolButton();self.details_toggle.setText("Run details");self.details_toggle.setCheckable(True);head.addWidget(self.details_toggle);root.addLayout(head)
+        self.execution=ExecutionBar();self.execution.changed.connect(self.apply_config);self.execution.toolsRequested.connect(self.choose_tools);root.addWidget(self.execution)
+        split=QSplitter(Qt.Horizontal)
+        self.transcript=ConversationView();split.addWidget(self.transcript)
+        self.stream_tabs=QTabWidget();self.stream_tabs.setMinimumWidth(260)
+        self.stream=QPlainTextEdit();self.stream.setReadOnly(True)
+        self.thought=QPlainTextEdit();self.thought.setReadOnly(True)
+        self.activity=QPlainTextEdit();self.activity.setReadOnly(True);self.activity.document().setMaximumBlockCount(1200)
+        self.context_details=QPlainTextEdit();self.context_details.setReadOnly(True)
+        for name,widget in [("Activity",self.activity),("Context",self.context_details),("Raw stream",self.stream),("Reasoning",self.thought)]:self.stream_tabs.addTab(widget,name)
+        self.stream_tabs.hide();self.details_toggle.toggled.connect(self.stream_tabs.setVisible)
+        split.addWidget(self.stream_tabs);split.setSizes([900,300]);root.addWidget(split,1)
+        panel=QFrame();panel.setObjectName("composerPanel");composer_layout=QVBoxLayout(panel);composer_layout.setContentsMargins(10,8,10,10)
+        self.input=Composer();self.input.submitted.connect(self.send);composer_layout.addWidget(self.input)
+        row=QHBoxLayout();hint=QLabel("Enter to send  ·  Shift+Enter for a new line");hint.setObjectName("quiet");row.addWidget(hint);row.addStretch()
+        self.busy_mode=QComboBox();self.busy_mode.addItems(["Steer current task","Queue next message"]);self.busy_mode.setToolTip("What a new message does while Daena is working");row.addWidget(self.busy_mode)
+        self.stop_button=QPushButton("■ Stop");self.stop_button.setObjectName("danger");self.stop_button.setEnabled(False);self.stop_button.clicked.connect(self.stop);row.addWidget(self.stop_button)
+        self.send_button=QPushButton("Send  ↑");self.send_button.setObjectName("primary");self.send_button.clicked.connect(self.send);row.addWidget(self.send_button);composer_layout.addLayout(row)
+        root.addWidget(panel);self.queued=[];self.pages.addWidget(page)
+
+    def choose_tools(self):
+        if self.busy:return
+        dialog=ToolScopeDialog(self.config,self)
+        if dialog.exec()==dialog.Accepted:
+            config=deepcopy(self.config);config.setdefault("security",{})["allowed_tools"]=dialog.editor.scope();self.apply_config(config)
+
 
     def _build_graph(self):
         page = QWidget()
         root = QVBoxLayout(page)
         root.setContentsMargins(12, 0, 0, 0)
         row = QHBoxLayout()
-        title = QLabel("A clear view of every agent")
+        title = QLabel("Agent workspace")
         title.setObjectName("pageTitle")
         row.addWidget(title)
         row.addStretch()
@@ -368,11 +319,18 @@ class StudioWindow(QMainWindow):
         root.addLayout(row)
         root.addWidget(
             QLabel(
-                "Select a node for its assignment, live tools, report, errors and file changes. Ctrl+wheel zooms."
+                "Wheel to zoom · Drag the background to pan · Drag a node to move it · Space+drag or middle button also pans."
             )
         )
         split = QSplitter()
         self.graph = GraphCanvas()
+        toolbar=QHBoxLayout()
+        self.zoom_label=QLabel("100%");self.zoom_label.setObjectName("quiet")
+        for label,slot in [("−",self.graph.zoom_out),("+",self.graph.zoom_in),("100%",self.graph.reset_view)]:
+            button=QPushButton(label);button.clicked.connect(slot);toolbar.addWidget(button)
+        toolbar.addWidget(self.zoom_label);toolbar.addStretch()
+        self.graph.zoomChanged.connect(lambda value:self.zoom_label.setText(f"{value}%"))
+        root.addLayout(toolbar)
         split.addWidget(self.graph)
         pane = QWidget()
         p = QVBoxLayout(pane)
@@ -420,6 +378,7 @@ class StudioWindow(QMainWindow):
         self.pages.addWidget(page)
 
     def _update_badge(self):
+        self.execution.populate(self.config)
         llm = self.config.get("llm", {})
         self.model_badge.setText(
             llm.get("provider", "ollama")
@@ -441,17 +400,8 @@ class StudioWindow(QMainWindow):
             QDesktopServices.openUrl(url)
 
     def add_message(self, speaker, text):
-        cursor = self.transcript.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        cursor.insertHtml(
-            f'<p style="color:#b8a5ff;font-weight:700">{html.escape(speaker)}</p>'
-        )
-        cursor.insertBlock()
-        cursor.insertMarkdown(str(text))
-        cursor.insertBlock()
-        cursor.insertBlock()
-        self.transcript.setTextCursor(cursor)
-        self.transcript.ensureCursorVisible()
+        self.transcript.add_message(speaker,text)
+
 
     def send(self):
         text = self.input.toPlainText().strip()
@@ -505,8 +455,10 @@ class StudioWindow(QMainWindow):
         if blueprint is not None:
             self.record({"type": "blueprint", "graph": blueprint.dump()})
         self.add_message("You" if blueprint is None else "Automation", prompt)
+        self.transcript.begin_turn()
+        self.execution.setEnabled(False)
         self.busy = True
-        self.send_button.setText("Send guidance")
+        self.send_button.setText("Send guidance  ↑")
         self.stop_button.setEnabled(True)
         self.automation.set_running(True)
         self.settings.setEnabled(False)
@@ -559,6 +511,12 @@ class StudioWindow(QMainWindow):
     def on_event(self, event):
         kind = event.get("type")
         self.record(event)
+        if kind == "generation_start":
+            self.flush_stream()
+            if self.transcript.live and self.transcript.live.text:
+                self.transcript.add_detail("Model update: "+self.transcript.live.text[:1200])
+                self.transcript.live.set_text("")
+            self.transcript.set_status("● Generating")
         if kind == "content_delta":
             self.pending_text += event.get("text", "")
         elif kind == "thinking_delta":
@@ -579,9 +537,11 @@ class StudioWindow(QMainWindow):
                 elif inner.get("type") == "subagent_event":
                     self.on_child_event(inner["child_event"])
         elif kind == "final_response":
-            self.add_message("Daena", event.get("text", ""))
+            self.flush_stream()
+            self.transcript.finish(event.get("text",""),event.get("outcome","Completed").replace("_"," ").title())
         elif kind == "assistant_message":
-            self.add_message("Daena · progress", event.get("text", ""))
+            self.flush_stream()
+            if self.transcript.live:self.transcript.live.set_text(event.get("text",""))
         if kind not in {
             "content_delta",
             "thinking_delta",
@@ -598,6 +558,10 @@ class StudioWindow(QMainWindow):
             )
         elif kind == "tool_call":
             self.state_label.setText("Using tool · " + event.get("name", ""))
+            self.transcript.set_status("Using " + event.get("name","tool"))
+            self.transcript.add_detail("→ " + event.get("name","tool"))
+        if kind == "tool_result":
+            self.transcript.add_detail(("✓ " if event.get("success") else "× ") + event.get("summary",event.get("name","")))
 
     def on_child_event(self, data):
         ident = data["agent_id"]
@@ -649,13 +613,14 @@ class StudioWindow(QMainWindow):
                 cursor.insertText(text)
                 widget.setTextCursor(cursor)
                 widget.ensureCursorVisible()
+                if attr == "pending_text":self.transcript.append_stream(text)
+                else:self.transcript.append_reasoning(text)
                 setattr(self, attr, "")
 
     def got_result(self, result):
         self._result = result
         self.flush_stream()
-        if not any(e.get("type") == "final_response" for e in self.journal):
-            self.add_message("Daena", result["text"])
+        self.transcript.finish(result["text"],"Completed" if result["metrics"].get("completed") else result["metrics"].get("outcome","Stopped").replace("_"," ").title())
         self.record({"type": "studio_result", **result})
         metrics = result["metrics"]
         node = self.graph.nodes.get("parent")
@@ -677,7 +642,9 @@ class StudioWindow(QMainWindow):
     def worker_finished(self):
         self.busy = False
         self.stop_button.setEnabled(False)
-        self.send_button.setText("Send message")
+        self.send_button.setText("Send  ↑")
+        self.execution.setEnabled(True)
+        self.transcript.end_turn()
         self.automation.set_running(False)
         self.settings.setEnabled(True)
         metrics = (self._result or {}).get("metrics", {})
@@ -859,56 +826,50 @@ class StudioWindow(QMainWindow):
     def refresh_history(self):
         self.history.clear()
         try:
-            for path, run in self.store.runs():
-                item = QListWidgetItem(run["title"][:70])
-                item.setToolTip(run["title"])
-                item.setData(Qt.UserRole, str(path))
-                self.history.addItem(item)
-        except Exception as exc:
-            self.activity.appendPlainText("History error: " + str(exc))
+            groups={}
+            for path,run in self.store.runs():
+                groups.setdefault(run["session_id"],[]).append((path,run))
+            for turns in groups.values():
+                path,latest=turns[0]
+                title=turns[-1][1]["title"]
+                item=QListWidgetItem(title[:55]+(f"\n{len(turns)} turns" if len(turns)>1 else ""))
+                item.setToolTip(title);item.setData(Qt.UserRole,str(path));self.history.addItem(item)
+            self.filter_history(self.history_search.text())
+        except Exception as exc:self.activity.appendPlainText("History error: "+str(exc))
 
-    def open_history(self, item):
+    def filter_history(self,text):
+        if not hasattr(self,"history"):return
+        for i in range(self.history.count()):
+            item=self.history.item(i);item.setHidden(text.casefold() not in (item.text()+" "+item.toolTip()).casefold())
+
+
+    def open_history(self,item):
         if self.busy:
-            self.error("Stop the running task before opening history")
+            self.error("Stop the running task before opening another conversation")
             return
         try:
-            run = json.loads(Path(item.data(Qt.UserRole)).read_text())
-            self.new_session()
-            self.session_id = UUID(run["session_id"])
-            self._result = {"metrics": run["metrics"]}
-            self.graph.upsert(
-                "parent",
-                "Daena",
-                "Archived run",
-                "completed" if run["metrics"].get("completed") else "stopped",
-                x=0,
-                y=170,
-            )
+            run=json.loads(Path(item.data(Qt.UserRole)).read_text())
+            turns=[data for _,data in reversed(self.store.runs()) if data["session_id"]==run["session_id"]]
+            self.new_session();self.session_id=UUID(run["session_id"]);self.last_prompt=run["title"]
+            self._result={"metrics":run["metrics"]}
+            self.graph.upsert("parent","Daena","Archived run","completed" if run["metrics"].get("completed") else "stopped",x=0,y=170)
+            for turn in turns:
+                for event in turn["events"]:
+                    kind=event.get("type")
+                    if kind=="user_message":self.add_message("You",event["text"])
+                    elif kind=="final_response":self.add_message("Daena",event["text"])
+                    elif kind=="studio_result" and not any(e.get("type")=="final_response" for e in turn["events"]):self.add_message("Daena",event["text"])
             for event in run["events"]:
-                if event.get("type") == "user_message":
-                    self.add_message("You", event["text"])
-                elif event.get("type") == "final_response":
-                    self.add_message("Daena", event["text"])
-                elif event.get("type") == "subagent_event":
-                    self.on_child_event(event["child_event"])
-                elif event.get("type") == "blueprint":
+                kind=event.get("type")
+                if kind=="subagent_event":self.on_child_event(event["child_event"])
+                elif kind=="blueprint":
                     from src.studio.blueprint import Blueprint
+                    self.automation.graph=Blueprint.load(event["graph"]);self.automation.name.setText(self.automation.graph.name);self.automation.draw()
+                elif kind=="automation_node":self.automation.handle_event(event)
+            self.journal=run["events"]
+            self.state_label.setText(f"Conversation restored · {len(turns)} turns · next message continues this session")
+        except Exception as exc:self.error(str(exc))
 
-                    self.automation.graph = Blueprint.load(event["graph"])
-                    self.automation.name.setText(self.automation.graph.name)
-                    self.automation.draw()
-                elif event.get("type") == "automation_node":
-                    self.automation.handle_event(event)
-                elif event.get("type") == "studio_result" and not any(
-                    e.get("type") == "final_response" for e in run["events"]
-                ):
-                    self.add_message("Daena", event["text"])
-            self.journal = run["events"]
-            self.state_label.setText(
-                "History opened · your next message continues this session"
-            )
-        except Exception as exc:
-            self.error(str(exc))
 
     def export_run(self):
         path, _ = QFileDialog.getSaveFileName(

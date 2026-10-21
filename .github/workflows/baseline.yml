@@ -51,5 +51,14 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
       - run: python -m pip install -r requirements-dev.txt -e '.[desktop]'
-      - run: python -m pytest -q tests/test_studio.py
+      - run: python -m pytest -q tests/test_studio.py tests/test_studio_interactions.py
       - run: daena-studio --help
+
+      - name: Render desktop previews
+        if: always()
+        run: python tests/render_studio_preview.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: studio-previews
+          path: .studio-previews/*.png

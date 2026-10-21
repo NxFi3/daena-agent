@@ -139,10 +139,16 @@ class GeminiProvider(ProviderBase):
             options["max_output_tokens"] = options.pop("max_completion_tokens")
         messages, system = self._convert_messages(inputs.messages)
         tools = self._convert_tools(inputs.tools)
-        if think is False or think == "off":
-            options["thinking_config"] = {"include_thoughts": False}
-        elif think is not None:
-            options["thinking_config"] = {"include_thoughts": True}
+        if "thinking_config" not in options:
+            if think is False or think == "off":
+                options["thinking_config"] = {"include_thoughts": False, "thinking_budget": 0}
+            elif think in {"low", "medium", "high"}:
+                options["thinking_config"] = {
+                    "include_thoughts": True,
+                    "thinking_budget": {"low": 1024, "medium": 4096, "high": 8192}[think],
+                }
+            elif think is not None:
+                options["thinking_config"] = {"include_thoughts": True}
         if system:
             options["system_instruction"] = system
         if tools:
