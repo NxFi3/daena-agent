@@ -13,18 +13,23 @@ dependencies = [
   "PyYAML>=6,<7",
   "rich>=13.7,<15",
   "prompt_toolkit>=3.0,<4",
+  "httpx>=0.28,<1",
 ]
 
 [project.optional-dependencies]
 ollama = ["ollama>=0.6.3,<1"]
-openrouter = ["openrouter>=1.3,<2"]
+openrouter = ["httpx>=0.28,<1"]
 gemini = ["google-genai>=2,<3"]
 web = ["ddgs>=9,<10", "pypdf>=5,<7"]
 retrieval = ["sentence-transformers>=3,<6"]
 dev = ["pytest>=8,<10", "ruff>=0.9,<1", "build>=1,<2"]
+desktop = ["PySide6>=6.8,<7"]
 
 [project.scripts]
 daena = "cli.app:main"
+
+[project.gui-scripts]
+daena-studio = "src.studio.app:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

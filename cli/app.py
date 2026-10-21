@@ -267,6 +267,9 @@ def _provider_switch(agent: Agent, name: str) -> None:
         raise ValueError(
             f"Unknown provider '{name}'. Available: {', '.join(sorted(providers))}"
         )
+    if hasattr(agent.llm, "switch_provider"):
+        agent.llm.switch_provider(key)
+        return
     agent.llm._loadModel(key)
     agent.llm.provider_name = key
     provider_model = getattr(agent.llm.model, "defaultModel", "") or ""
@@ -500,7 +503,20 @@ def main() -> None:
     parser.add_argument("--cwd", dest="cwd", default=None)
     parser.add_argument("--model", default=None, help="Override the configured model name")
     parser.add_argument("--no-think", action="store_true")
+    parser.add_argument("--gui", action="store_true", help="Open Daena Studio (requires desktop extra)")
     args = parser.parse_args()
+
+    if args.gui:
+        from src.studio.app import main as studio_main
+        studio_args = ["--config", str(args.config)]
+        if args.cwd:
+            studio_args += ["--cwd", args.cwd]
+        if args.model:
+            studio_args += ["--model", args.model]
+        if args.no_think:
+            studio_args += ["--no-think"]
+        studio_main(studio_args)
+        return
 
     config = _load_config(args.config)
     if args.model:

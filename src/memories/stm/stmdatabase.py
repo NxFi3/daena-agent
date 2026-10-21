@@ -108,6 +108,12 @@ class STMDatabase:
                 session_id UNINDEXED,
                 content
             );
+
+            CREATE TABLE IF NOT EXISTS context_checkpoints (
+                session_id TEXT PRIMARY KEY,
+                summary TEXT NOT NULL,
+                covered_groups TEXT NOT NULL
+            );
             """)
 
         self.connection.commit()
@@ -459,6 +465,10 @@ class STMDatabase:
 
         try:
             self.connection.execute(
+                "DELETE FROM context_checkpoints WHERE session_id IN (SELECT session_id FROM context_events WHERE id = ?)",
+                (event_id,),
+            )
+            self.connection.execute(
                 """
                 DELETE FROM context_events_fts
                 WHERE event_id = ?
@@ -497,6 +507,9 @@ class STMDatabase:
 
         try:
             self.connection.execute(
+                "DELETE FROM context_checkpoints WHERE session_id = ?", (session_id,)
+            )
+            self.connection.execute(
                 """
                 DELETE FROM context_events_fts
                 WHERE session_id = ?
@@ -519,6 +532,27 @@ class STMDatabase:
         except Exception:
             self.connection.rollback()
             raise
+
+    def get_checkpoint(self, session_id):
+        row = self.connection.execute(
+            "SELECT summary, covered_groups FROM context_checkpoints WHERE session_id = ?",
+            (str(session_id),),
+        ).fetchone()
+        return (
+            {
+                "summary": row["summary"],
+                "covered_groups": json.loads(row["covered_groups"]),
+            }
+            if row
+            else None
+        )
+
+    def save_checkpoint(self, session_id, summary, covered_groups):
+        with self.connection:
+            self.connection.execute(
+                "INSERT INTO context_checkpoints(session_id, summary, covered_groups) VALUES (?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET summary=excluded.summary, covered_groups=excluded.covered_groups",
+                (str(session_id), str(summary), json.dumps(sorted(covered_groups))),
+            )
 
     def count(
         self,

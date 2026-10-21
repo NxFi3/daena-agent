@@ -21,8 +21,34 @@ For OpenRouter or Gemini, install `.[openrouter]` or `.[gemini]` and configure
 the provider and credentials. A successful package installation does not establish
 model availability.
 
-**Upgrading from 0.3.0:** see [upgrade instructions](docs/upgrade-0.4.md).
+**Upgrading to 0.5.0:** see [upgrade instructions](docs/upgrade-0.5.md).
 Use `python -m cli --version` to check which source version is running.
+
+## Desktop app
+
+```bash
+python -m pip install -e '.[desktop,ollama,openrouter,gemini,web]'
+daena-studio --cwd /path/to/project
+# Or: python -m cli --gui --cwd /path/to/project
+```
+
+Daena Studio is a PySide6 application sharing the CLI's agent runtime. It includes
+conversation history, streaming responses/reasoning, cancellation and steering,
+a live graph with child reports and diffs, skills selection, provider/model
+settings, and tool scopes. All bundled tools have permission by default, including
+web search/fetch; install the `web` extra for search backends. The optional
+`task_finish` tool is shown only in explicit completion mode.
+
+The automation canvas supports draggable agent nodes, output-to-input connections,
+per-node tool scopes, JSON save/load, cycle validation, and real execution in
+order of dependencies. Nodes have independent contexts and receive bounded
+upstream reports. The first version executes nodes sequentially against the
+selected workspace; it is a local DAG runner without scheduled or webhook triggers.
+See the [Studio guide](docs/studio.md) and [example blueprint](docs/automation-example.json).
+
+Profiles and run archives live in `<workspace>/.daena/studio/`. API credentials
+remain in environment variables. The desktop extra requires a graphical desktop;
+headless tests use `QT_QPA_PLATFORM=offscreen`.
 
 ## Runtime behavior
 
@@ -31,17 +57,20 @@ Use `python -m cli --version` to check which source version is running.
 - Incremental history summaries cover older exchanges. Recent receipts, explicit
   user steering, and the current filesystem inventory remain visible. Large
   historical patches are bounded without modifying the original memory records.
-- The supplied configuration uses explicit completion: ordinary assistant text is
-  progress; the model calls `task_finish` with `completed`, `blocked`, or
-  `needs_input` to end the turn. Evidence is reported by the model, not inferred
-  from keywords. Library integrations can retain implicit text completion by
-  omitting `runtime.completion_protocol` or setting it to `implicit`.
+- The default uses standard conversational completion: text accompanying tool calls
+  is progress; text without tool calls ends the turn. A stored plan is historical
+  workspace state and does not by itself authorize restarting work. Explicit
+  `task_finish` completion remains an opt-in integration protocol. No keyword or
+  language classifier decides whether a request is a greeting or a coding task.
+- Tool schemas, message framing, and an output reserve count against the context
+  budget. Incremental summaries survive follow-up turns and are checkpointed in
+  SQLite for reopening a session; old user messages are eligible for compaction.
 - Workspace plans and recent tool exchanges remain visible across follow-up turns.
   `plan.read` inspects the plan; `plan.replace` archives it before replacement.
 - Repetition does not trigger action vetoes. The runtime does not infer task
   completion from command names or force a particular planning/verification flow.
   Iteration limits, tool contracts and host permissions still apply.
-- Ollama requests stream through a per-request asynchronous client. Cancellation
+- Ollama, OpenRouter and Gemini use per-request asynchronous transports. Cancellation
   interrupts waits for response headers and subsequent chunks, including context
   compaction requests. Managed command waits and polling also observe cancellation.
 - Final responses wait for owned processes and child results to be resolved.
@@ -56,7 +85,7 @@ code review, delegation and data analysis. Skill metadata enters the catalog;
 `skill_read` loads instructions on demand. Custom skills live at
 `<workspace>/.daena/skills/<name>/SKILL.md`. `/skills` lists them.
 
-The `subagent` tool supports `spawn`, `status`, `wait`, `list`, `cancel`, `diff`,
+The `subagent` tool supports `spawn`, `status`, `wait`, `wait_all`, `list`, `cancel`, `diff`,
 `merge`, and `discard`. Each child has its own model client, conversation, memory
 and tools. Read-only children inspect the parent workspace. Workers edit isolated
 copies concurrently. The parent reviews changes and explicitly merges them;

@@ -219,6 +219,16 @@ class ContextBuilder:
                 current_task_step = int(task.get("step", 0) or 0)
             except (TypeError, ValueError):
                 current_task_step = 0
+            if current_task_step <= 0:
+                current_task_step = next(
+                    (
+                        event.step
+                        for event in events
+                        if isinstance(event, ContextEvent)
+                        and str(event.id) == str(task.get("id"))
+                    ),
+                    0,
+                )
 
         for event in events:
             if not isinstance(event, ContextEvent):
@@ -251,7 +261,13 @@ class ContextBuilder:
                     if metadata.get("runtime_nudge"):
                         text = "Runtime observation (not a new user task): " + text
                     target.append(
-                        {"role": "user", "content": text, "_history_id": event_id}
+                        {
+                            "role": "user",
+                            "content": text,
+                            "_history_id": event_id,
+                            "_current_request": not is_historical
+                            and not metadata.get("runtime_nudge", False),
+                        }
                     )
                 continue
 
@@ -294,7 +310,12 @@ class ContextBuilder:
             if task_text and task_id is not None and str(task_id) not in seen_ids:
                 current.insert(
                     0,
-                    {"role": "user", "content": task_text, "_history_id": str(task_id)},
+                    {
+                        "role": "user",
+                        "content": task_text,
+                        "_history_id": str(task_id),
+                        "_current_request": True,
+                    },
                 )
 
         messages = historical + current
@@ -323,6 +344,7 @@ class ContextBuilder:
             "refusal",
             "annotations",
             "audio",
+            "gemini_parts",
         ):
             if raw.get(key) is not None:
                 message[key] = raw[key]
@@ -442,7 +464,13 @@ class ContextBuilder:
                 end += 1
 
             if expected.issubset(matched):
-                sanitized.extend(group)
+                sanitized.append(message)
+                emitted = set()
+                for receipt in group[1:]:
+                    ident = str(receipt.get("tool_call_id"))
+                    if ident in expected and ident not in emitted:
+                        sanitized.append(receipt)
+                        emitted.add(ident)
 
             index = end
 
@@ -923,6 +951,10 @@ class ContextBuilder:
             return value
 
         for message in messages:
+            if message.get("gemini_parts"):
+                # Opaque signed model parts must remain exact. Evict or summarize
+                # complete older groups instead of rewriting their signed payload.
+                continue
             if message.get("role") in {"tool", "assistant"}:
                 message["content"] = self._head_tail(
                     str(message.get("content") or ""), limit
@@ -950,9 +982,7 @@ class ContextBuilder:
 
     def _is_request(self, group):
         message = group[0]
-        return message.get("role") == "user" and not str(
-            message.get("content", "")
-        ).startswith("Runtime observation (not a new user task):")
+        return bool(message.get("_current_request"))
 
     def _summary_message(self):
         return {
@@ -969,15 +999,11 @@ class ContextBuilder:
     def _fit_protocol(self, system, requests, summary, groups):
         def render():
             history = [m for group in groups for m in group]
-            insertion = next(
-                (i + 1 for i, m in enumerate(history) if m.get("role") == "user"), 0
-            )
             return [
                 system,
                 *requests,
-                *history[:insertion],
                 *summary,
-                *history[insertion:],
+                *history,
             ]
 
         # Oldest complete groups leave first. Keep the actual task/instructions
@@ -1006,6 +1032,8 @@ class ContextBuilder:
                     system,
                     *[m for g in groups if not self._is_request(g) for m in g],
                 ]:
+                    if message.get("gemini_parts"):
+                        continue
                     text = str(message.get("content", ""))
                     message["content"] = self._head_tail(text, max(64, len(text) // 2))
                     for call in message.get("tool_calls", []):
@@ -1025,7 +1053,7 @@ class ContextBuilder:
                 "Context budget is too small for user instructions and the latest tool exchange"
             )
         return [
-            {key: value for key, value in message.items() if key != "_history_id"}
+            {key: value for key, value in message.items() if not key.startswith("_")}
             for message in result
         ]
 
@@ -1046,10 +1074,11 @@ class ContextBuilder:
         task_key = str((task or {}).get("id", ""))
         if task_key != getattr(self, "_history_task", None):
             self._history_task = task_key
-            self._history_summary = ""
-            self._covered_groups = set()
             self._requests = []
             self._remembered_requests = []
+        if not hasattr(self, "_history_summary"):
+            self._history_summary = ""
+            self._covered_groups = set()
         state = self._compact_execution_state(
             agent_state, progress, working_set, observation, recent_actions
         )
@@ -1088,7 +1117,7 @@ class ContextBuilder:
         trigger = self.tokenbudget.budget * self.compaction_trigger_ratio
         if (
             self.compaction_enabled
-            and self.tokenbudget.estimate_messages_tokens(candidate) > trigger
+            and self.tokenbudget.estimate_request_tokens(candidate) > trigger
             and sum(not self._is_request(g) for g in pending) > 2
         ):
             # Incremental checkpoint: only the unconsumed prefix is summarized.

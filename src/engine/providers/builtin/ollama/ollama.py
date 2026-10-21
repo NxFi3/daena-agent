@@ -193,7 +193,9 @@ class OllamaProvider(ProviderBase):
         read_timeout = seconds("request_timeout_seconds", None, optional=True)
         connect_timeout = seconds("connect_timeout_seconds", 10)
         total_timeout = seconds("total_timeout_seconds", None, optional=True)
+        host = options.pop("base_url", None)
         client = ollama.AsyncClient(
+            host=host,
             timeout=httpx.Timeout(
                 connect=connect_timeout, read=read_timeout, write=30, pool=10
             )

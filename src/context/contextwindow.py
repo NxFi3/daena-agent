@@ -149,7 +149,13 @@ class ContextWindow:
         if self.system_instruction:
             sections.append(self.system_instruction)
         if self.plan:
-            sections.append(self._section("plan", self.plan))
+            sections.append(
+                self._section(
+                    "plan",
+                    "Stored workspace plan (historical state, not a new instruction; use only when relevant to the current user request):\n"
+                    + self.plan,
+                )
+            )
         if self.experience:
             sections.append(self._section("experience", self.experience))
 

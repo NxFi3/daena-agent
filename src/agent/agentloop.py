@@ -64,6 +64,9 @@ class Loop:
         self.search_context_top_k = self.context.default_search_top_k
         self.max_iterations = max(1, int(config.get("max_agent_iterations", 100)))
         self.tool_definitions = self.tool.get_tools()
+        self.tool.subagents.event_sink = lambda event: self._emit_event(
+            "subagent_event", child_event=event
+        )
         self._reset_run_state()
 
     def _reset_run_state(self):
@@ -269,6 +272,7 @@ class Loop:
     def _generate_next_action(self, user_task, workspace_directory):
         self.working_set.refresh_workspace()
         self.tool_definitions = self.tool.get_tools()
+        self.context.contextbuilder.tokenbudget.reserve_tools(self.tool_definitions)
         names = {item["function"]["name"] for item in self.tool_definitions}
         state = self.working_set.context()
         # These fields were heuristic task assessments. Only explicit tool
@@ -293,7 +297,7 @@ class Loop:
             available_tool_names=names,
             include_plan=True,
         )
-        estimated = builder.tokenbudget.estimate_messages_tokens(messages)
+        estimated = builder.tokenbudget.estimate_request_tokens(messages)
         self.metrics.update(
             context_estimated_tokens=estimated,
             context_messages=len(messages),
@@ -308,6 +312,7 @@ class Loop:
             budget=builder.tokenbudget.budget,
             messages=len(messages),
             tool_results=self.metrics["context_tool_results"],
+            tool_schema_tokens=builder.tokenbudget.tool_tokens,
         )
         self.metrics["llm_calls"] += 1
         result = invoke(

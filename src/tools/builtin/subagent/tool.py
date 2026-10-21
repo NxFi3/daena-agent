@@ -26,6 +26,7 @@ class Subagent(Tool):
                     "spawn",
                     "status",
                     "wait",
+                    "wait_all",
                     "list",
                     "cancel",
                     "diff",
@@ -37,6 +38,9 @@ class Subagent(Tool):
                 "type": "string",
                 "description": "Required for spawn; include all necessary task context.",
             },
+            "name": {"type": "string", "maxLength": 80, "description": "Short task label shown in the agent graph."},
+            "context": {"type": "string", "maxLength": 24000, "description": "Relevant reference material; children do not inherit the whole chat."},
+            "allowed_tools": {"type": "array", "items": {"type": "string"}, "description": "Optional narrower tool scope; never expands parent permissions."},
             "mode": {
                 "type": "string",
                 "enum": ["read_only", "worker"],
@@ -49,8 +53,8 @@ class Subagent(Tool):
             "wait_ms": {
                 "type": "integer",
                 "minimum": 0,
-                "maximum": 30000,
-                "default": 1000,
+                "maximum": 300000,
+                "default": 30000,
             },
         },
         "required": ["action"],
@@ -63,11 +67,14 @@ class Subagent(Tool):
         task: str = "",
         mode: str = "read_only",
         agent_id: str = "",
-        wait_ms: int = 1000,
+        wait_ms: int = 30000,
+        name: str = "",
+        context: str = "",
+        allowed_tools: list | None = None,
     ) -> ToolResult:
         manager = self.subagent_manager
         if action == "spawn":
-            result = manager.spawn(task, mode)
+            result = manager.spawn(task, mode, name=name, context=context, allowed_tools=allowed_tools)
         elif action == "list":
             result = {
                 "agents": [
@@ -84,6 +91,8 @@ class Subagent(Tool):
             result = manager.status(agent_id)
         elif action == "wait":
             result = manager.wait(agent_id, wait_ms)
+        elif action == "wait_all":
+            result = manager.wait_all(wait_ms)
         elif action == "cancel":
             result = manager.cancel(agent_id)
         elif action == "diff":

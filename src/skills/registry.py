@@ -38,6 +38,9 @@ class SkillRegistry:
             if key in self.config and type(self.config[key]) is not bool:
                 raise ValueError(f"skills.{key} must be a boolean")
         directories = self.config.get("directories", [])
+        disabled = self.config.get("disabled", [])
+        if not isinstance(disabled, list) or not all(isinstance(name, str) for name in disabled):
+            raise ValueError("skills.disabled must be a list of skill names")
         if not isinstance(directories, list) or not all(
             isinstance(path, str) and path.strip() for path in directories
         ):
@@ -121,6 +124,8 @@ class SkillRegistry:
                     ):
                         raise ValueError("Skill symlinks are not supported")
                     name, description, _ = self._parse(path)
+                    if name in self.config.get("disabled", []):
+                        continue
                     if name in self.skills:
                         self.warnings.append(f"Skill '{name}' overridden by {path}")
                     elif len(self.skills) >= self.MAX_SKILLS:

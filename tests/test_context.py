@@ -65,9 +65,7 @@ def test_current_task_is_not_duplicated():
         },
     )
 
-    user_messages = [
-        m for m in messages if m.get("role") == "user"
-    ]
+    user_messages = [m for m in messages if m.get("role") == "user"]
     assert [m["content"] for m in user_messages] == ["fix the parser"]
 
 
@@ -85,14 +83,16 @@ def test_tool_call_and_id_are_preserved():
         "llm_message": {
             "role": "assistant",
             "content": "",
-            "tool_calls": [{
-                "id": "call_123",
-                "type": "function",
-                "function": {
-                    "name": "read_file",
-                    "arguments": '{"file_path":"main.py"}',
-                },
-            }],
+            "tool_calls": [
+                {
+                    "id": "call_123",
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": '{"file_path":"main.py"}',
+                    },
+                }
+            ],
         }
     }
     tool = event(
@@ -107,12 +107,8 @@ def test_tool_call_and_id_are_preserved():
         task={"id": str(task.id), "content": task.content},
     )
 
-    assistant_messages = [
-        m for m in messages if m.get("role") == "assistant"
-    ]
-    tool_messages = [
-        m for m in messages if m.get("role") == "tool"
-    ]
+    assistant_messages = [m for m in messages if m.get("role") == "assistant"]
+    tool_messages = [m for m in messages if m.get("role") == "tool"]
 
     assert assistant_messages[0]["tool_calls"][0]["id"] == "call_123"
     assert tool_messages[0]["tool_call_id"] == "call_123"
@@ -231,7 +227,15 @@ def test_compaction_is_used_when_latest_task_history_does_not_fit():
         for m in messages
         if m.get("role") == "user"
     )
-    assert messages[1] == {"role": "user", "content": "finish the task"}
+    # Historical summaries precede the user's instruction, so a follow-up
+    # request cannot be displaced by stale context at the end of the prompt.
+    task_index = messages.index({"role": "user", "content": "finish the task"})
+    summary_index = next(
+        i
+        for i, m in enumerate(messages)
+        if "<compacted_context>" in str(m.get("content", ""))
+    )
+    assert summary_index < task_index
     assert messages[-1]["role"] == "assistant"
 
 
@@ -277,6 +281,7 @@ def test_token_budget_uses_configured_num_ctx():
     assert builder.tokenbudget.context_length == 4096
     assert builder.tokenbudget.budget == 4096
 
+
 def test_token_budget_applies_working_prompt_cap():
     llm = FakeLLM()
     config = base_config()
@@ -320,9 +325,12 @@ def test_duplicate_read_results_are_collapsed():
     assert len(messages[4]["content"]) == len(
         read("src/a.py", 3, "A" * 7000)["content"]
     )
-    assert len(messages[5]["content"]) == len(read("src/d.py", 6, "D" * 7000)["content"])
-    assert len(messages[0]["content"]) <= builder.OLD_TOOL_CHARS + len(builder.OLD_RESULT_MARKER)
-
+    assert len(messages[5]["content"]) == len(
+        read("src/d.py", 6, "D" * 7000)["content"]
+    )
+    assert len(messages[0]["content"]) <= builder.OLD_TOOL_CHARS + len(
+        builder.OLD_RESULT_MARKER
+    )
 
 
 def test_untrusted_orphan_tool_result_is_removed():
@@ -358,6 +366,7 @@ def test_experience_is_disabled_for_baseline():
 
     system = messages[0]["content"]
     assert "<experience>" not in system
+
 
 def test_execution_state_is_visible_and_compact():
     llm = FakeLLM()
@@ -491,9 +500,7 @@ def test_failed_verification_evidence_is_visible_to_model():
                 "success": False,
                 "exit_code": 1,
                 "output_excerpt": (
-                    "FAIL tests/api.test.js\n"
-                    "Expected: 200\n"
-                    "Received: 500"
+                    "FAIL tests/api.test.js\nExpected: 200\nReceived: 500"
                 ),
             }
         },
@@ -598,14 +605,16 @@ def test_historical_receipts_survive_tool_availability_changes():
         "llm_message": {
             "role": "assistant",
             "content": "",
-            "tool_calls": [{
-                "id": "old-search",
-                "type": "function",
-                "function": {
-                    "name": "search",
-                    "arguments": {"query": "old"},
-                },
-            }],
+            "tool_calls": [
+                {
+                    "id": "old-search",
+                    "type": "function",
+                    "function": {
+                        "name": "search",
+                        "arguments": {"query": "old"},
+                    },
+                }
+            ],
         }
     }
     old_tool = event(
@@ -636,7 +645,10 @@ def test_historical_receipts_survive_tool_availability_changes():
 
     rendered = "\n".join(str(message) for message in messages)
     assert "old-search" in rendered
-    assert any(message.get("role") == "tool" and message.get("tool_call_id") == "old-search" for message in messages)
+    assert any(
+        message.get("role") == "tool" and message.get("tool_call_id") == "old-search"
+        for message in messages
+    )
     assert messages[-1] == {"role": "user", "content": "new task"}
 
 
@@ -644,14 +656,16 @@ def test_tool_payload_prefers_normalized_observation_state():
     llm = FakeLLM()
     builder = ContextBuilder(base_config(), llm)
 
-    payload = builder._tool_payload({
-        "name": "read_file",
-        "success": True,
-        "summary": "Read src/main.py.",
-        "evidence": {"path": "src/main.py", "content": "important finding"},
-        "effects": [{"action": "inspect", "target": "src/main.py"}],
-        "content": {"path": "src/main.py", "content": "huge raw content"},
-    })
+    payload = builder._tool_payload(
+        {
+            "name": "read_file",
+            "success": True,
+            "summary": "Read src/main.py.",
+            "evidence": {"path": "src/main.py", "content": "important finding"},
+            "effects": [{"action": "inspect", "target": "src/main.py"}],
+            "content": {"path": "src/main.py", "content": "huge raw content"},
+        }
+    )
 
     assert "Read src/main.py." in payload
     assert "important finding" in payload
