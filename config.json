@@ -2,29 +2,32 @@
   "llm": {
     "provider": "ollama",
     "provider_config": {
-      "model_name": "gpt-oss:20b",
+      "model_name": "qwen3.6:35b-a3b-q4_K_M",
       "generation_config": {
         "temperature": 0.3,
-        "num_thread": 16
+        "num_thread": 16,
+        "num_ctx": 32768,
+        "request_timeout_seconds": null
       }
     }
   },
   "context": {
     "safe_margin": -1,
-    "recent_event_limit": 160,
+    "recent_event_limit": 80,
     "compaction_enabled": true,
-    "compaction_target_tokens": 4096,
+    "compaction_target_tokens": 2048,
     "max_prompt_tokens": 24000,
-    "compaction_trigger_ratio": 0.72
+    "compaction_trigger_ratio": 0.72,
+    "output_reserve_tokens": 4096
   },
   "retrieval": {
     "top_k": 3
   },
   "security": {
-    "workspace_only": false,
+    "workspace_only": true,
     "allow_background": true,
     "allow_network_tools": true,
-    "force_approve": true
+    "force_approve": false
   },
   "models": {
     "embedding": {
@@ -34,8 +37,24 @@
       "model_name": "BAAI/bge-reranker-v2-m3"
     }
   },
-  "max_agent_iterations": 300,
+  "max_agent_iterations": 100,
+  "skills": {
+    "enabled": true,
+    "include_builtin": true,
+    "directories": []
+  },
+  "subagents": {
+    "enabled": true,
+    "allow_writes": true,
+    "max_concurrent": 3,
+    "max_tasks": 12,
+    "max_iterations": 30,
+    "timeout_seconds": 900
+  },
   "experience": {
     "enabled": false
+  },
+  "runtime": {
+    "completion_protocol": "implicit"
   }
 }

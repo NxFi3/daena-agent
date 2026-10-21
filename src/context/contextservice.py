@@ -26,11 +26,10 @@ class ContextService:
         self.default_recent_limit = max(
             1, int(context_config.get("recent_event_limit", 40))
         )
-        self.default_search_top_k = max(
-            1, int(retrieval_config.get("top_k", 3))
-        )
+        self.default_search_top_k = max(1, int(retrieval_config.get("top_k", 3)))
         self._retrieval_cache_key: tuple[str, str, int] | None = None
         self._retrieval_cache: list[ContextEvent] = []
+        self._session_key = None
 
     @staticmethod
     def _task_to_dict(event: ContextEvent | None) -> dict[str, Any]:
@@ -81,6 +80,18 @@ class ContextService:
         available_tool_names: set[str] | None = None,
         include_plan: bool = True,
     ) -> list[dict[str, Any]]:
+        if self._session_key != str(session_id):
+            self._session_key = str(session_id)
+            for attr in ("_history_task", "_history_summary", "_covered_groups"):
+                if hasattr(self.contextbuilder, attr):
+                    delattr(self.contextbuilder, attr)
+            self._retrieval_cache_key = None
+            self._saved_checkpoint = None
+            loader = getattr(self.stm, "get_checkpoint", None)
+            checkpoint = loader(session_id) if callable(loader) else None
+            if checkpoint:
+                self.contextbuilder._history_summary = checkpoint["summary"]
+                self.contextbuilder._covered_groups = set(checkpoint["covered_groups"])
         recent_events = self.stm.get_recent(
             session_id=session_id,
             limit=recent_limit or self.default_recent_limit,
@@ -117,6 +128,16 @@ class ContextService:
             available_tool_names=available_tool_names,
             include_plan=include_plan,
         )
+        builder = self.contextbuilder
+        checkpoint_key = (builder._history_summary, frozenset(builder._covered_groups))
+        saver = getattr(self.stm, "save_checkpoint", None)
+        if (
+            builder._history_summary
+            and callable(saver)
+            and checkpoint_key != self._saved_checkpoint
+        ):
+            saver(session_id, builder._history_summary, builder._covered_groups)
+            self._saved_checkpoint = checkpoint_key
         return self.context
 
     def calibrate(self, llmresult: LLMResult) -> None:

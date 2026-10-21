@@ -39,6 +39,11 @@ DEFAULT_ALLOWED_TOOLS = {
     "process_stop",
     "web_search",
     "web_fetch",
+    "skill_list",
+    "skill_read",
+    "subagent",
+    "task_finish",
+    "make_directory",
 }
 
 
@@ -69,7 +74,19 @@ class SecurityPolicy:
 
     @classmethod
     def from_config(cls, config: dict[str, Any] | None) -> "SecurityPolicy":
-        config = config or {}
+        config = {} if config is None else config
+        if not isinstance(config, dict):
+            raise ValueError("security must be an object")
+        for key in ("workspace_only", "allow_background", "allow_network_tools", "force_approve"):
+            if key in config and type(config[key]) is not bool:
+                raise ValueError(f"security.{key} must be a boolean")
+        for key in ("allowed_tools", "blocked_commands", "allowed_commands"):
+            value = config.get(key)
+            if value is not None and (
+                not isinstance(value, (list, set, tuple))
+                or not all(isinstance(item, str) and item.strip() for item in value)
+            ):
+                raise ValueError(f"security.{key} must be a collection of non-empty strings")
         allowed_tools = config.get("allowed_tools")
         blocked_commands = config.get("blocked_commands")
         allowed_commands = config.get("allowed_commands")
@@ -77,12 +94,12 @@ class SecurityPolicy:
         return cls(
             allowed_tools={
                 str(item).strip().lower()
-                for item in (allowed_tools or DEFAULT_ALLOWED_TOOLS)
+                for item in (DEFAULT_ALLOWED_TOOLS if allowed_tools is None else allowed_tools)
                 if str(item).strip()
             },
             blocked_commands={
                 str(item).strip().lower()
-                for item in (blocked_commands or DEFAULT_BLOCKED_COMMANDS)
+                for item in (DEFAULT_BLOCKED_COMMANDS if blocked_commands is None else blocked_commands)
                 if str(item).strip()
             },
             allowed_commands=(
@@ -91,7 +108,7 @@ class SecurityPolicy:
                     for item in allowed_commands
                     if str(item).strip()
                 }
-                if allowed_commands
+                if allowed_commands is not None
                 else None
             ),
             workspace_only=bool(config.get("workspace_only", True)),
@@ -114,6 +131,18 @@ class SecurityPolicy:
         args = getattr(toolcall, "args", {}) or {}
         if not isinstance(args, dict):
             return SecurityDecision(False, "Tool arguments must be an object.", "args")
+
+        if name == "make_directory":
+            paths = args.get("paths")
+            if not isinstance(paths, list) or not paths or not all(isinstance(p, str) and p.strip() for p in paths):
+                return SecurityDecision(False, "paths must be a nonempty list of paths.", "path_required")
+            if self.workspace_only:
+                try:
+                    for path in paths:
+                        sandbox.resolve(path)
+                except (PermissionError, ValueError) as exc:
+                    return SecurityDecision(False, str(exc), "workspace_boundary")
+            return SecurityDecision(True, "Directory paths allowed.", "workspace_directory")
 
         if name == "read_file":
             return self._check_read_file(args, sandbox)

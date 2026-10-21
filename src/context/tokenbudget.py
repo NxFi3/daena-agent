@@ -1,5 +1,7 @@
 # src.context/tokenbudget.py
 from typing import Any
+import json
+import math
 
 from src.engine.LlmProviderManager import LlmProvider
 from src.models.LLMResult import LLMResult
@@ -9,7 +11,6 @@ logger = get_logger("[TOKENBUDGET]")
 
 
 class TokenBudget:
-
     def __init__(
         self,
         config: dict[str, Any],
@@ -20,11 +21,14 @@ class TokenBudget:
 
         self.llm_provider = llm_provider
 
-        provider_defaults = getattr(
-            getattr(self.llm_provider, "model", None),
-            "defaultConfig",
-            {},
-        ) or {}
+        provider_defaults = (
+            getattr(
+                getattr(self.llm_provider, "model", None),
+                "defaultConfig",
+                {},
+            )
+            or {}
+        )
 
         llm_config = config.get("llm") or {}
         provider_config = llm_config.get("provider_config") or {}
@@ -54,7 +58,9 @@ class TokenBudget:
 
         model_budget = max(
             1,
-            self.context_length - self.safe_margin,
+            self.context_length
+            - self.safe_margin
+            - max(0, int(self.config.get("output_reserve_tokens", 0))),
         )
 
         # A provider may expose a very large native context window, but an
@@ -103,7 +109,25 @@ class TokenBudget:
 
         if self.chars_per_token <= 0:
             self.chars_per_token = 4.0
+        self.tools = []
+        self._initialize_calibration()
 
+    def reserve_tools(self, tools):
+        self.tools = list(tools or [])
+
+    @property
+    def tool_tokens(self):
+        if not self.tools:
+            return 0
+        return math.ceil(
+            len(json.dumps(self.tools, ensure_ascii=False, default=str))
+            / self.chars_per_token
+        )
+
+    def estimate_request_tokens(self, messages):
+        return self.estimate_messages_tokens(messages) + self.tool_tokens
+
+    def _initialize_calibration(self):
         self.calibration_alpha = float(
             self.config.get(
                 "calibration_alpha",
@@ -150,6 +174,9 @@ class TokenBudget:
 
         if tool_calls:
             total += len(str(tool_calls))
+        for key in ("gemini_parts", "reasoning_details", "reasoning"):
+            if message.get(key):
+                total += len(json.dumps(message[key], ensure_ascii=False, default=str))
 
         for key in (
             "name",
@@ -180,7 +207,7 @@ class TokenBudget:
 
         return max(
             1,
-            int(total_chars / self.chars_per_token),
+            math.ceil(total_chars / self.chars_per_token) + 4 * len(messages),
         )
 
     def fits(
@@ -188,14 +215,14 @@ class TokenBudget:
         messages: list[dict[str, Any]],
     ) -> bool:
 
-        return self.estimate_messages_tokens(messages) <= self.budget
+        return self.estimate_request_tokens(messages) <= self.budget
 
     def remaining_tokens(
         self,
         messages: list[dict[str, Any]],
     ) -> int:
 
-        return self.budget - self.estimate_messages_tokens(messages)
+        return self.budget - self.estimate_request_tokens(messages)
 
     def calibrate_from_response(
         self,
@@ -215,15 +242,26 @@ class TokenBudget:
             return
 
         actual_prompt_tokens = (
-            getattr(
-                raw,
-                "prompt_eval_count",
-                0,
+            raw.get("prompt_eval_count", 0)
+            if isinstance(raw, dict)
+            else (
+                getattr(
+                    raw,
+                    "prompt_eval_count",
+                    0,
+                )
+                or 0
             )
-            or 0
         )
 
         actual_prompt_tokens = int(actual_prompt_tokens)
+        if actual_prompt_tokens <= 0:
+            usage = getattr(raw, "usage_metadata", None) or getattr(raw, "usage", None)
+            actual_prompt_tokens = int(
+                getattr(usage, "prompt_token_count", 0)
+                or getattr(usage, "prompt_tokens", 0)
+                or 0
+            )
 
         if actual_prompt_tokens <= 0:
             return
@@ -231,6 +269,10 @@ class TokenBudget:
         measured_chars = sum(
             self._message_character_count(message) for message in messages
         )
+        if self.tools:
+            measured_chars += len(
+                json.dumps(self.tools, ensure_ascii=False, default=str)
+            )
 
         if measured_chars <= 0:
             return

@@ -99,6 +99,12 @@ class STM:
 
         return self.db.count(session_id)
 
+    def get_checkpoint(self, session_id):
+        return self.db.get_checkpoint(session_id)
+
+    def save_checkpoint(self, session_id, summary, covered_groups):
+        self.db.save_checkpoint(session_id, summary, covered_groups)
+
     def close(self) -> None:
 
         self.db.close()

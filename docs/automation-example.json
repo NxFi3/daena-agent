@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "name": "Inspect, implement, verify",
+  "nodes": [
+    {
+      "id": "inspect",
+      "title": "Inspect",
+      "prompt": "Inspect the current workspace and identify one concrete, bounded reliability improvement. Read relevant files. Report the issue, affected paths, expected behavior and a verification plan. Do not modify files.",
+      "depends_on": [],
+      "tools": ["read_file", "skill_list", "skill_read", "task_finish"],
+      "x": 0,
+      "y": 50
+    },
+    {
+      "id": "implement",
+      "title": "Implement",
+      "prompt": "Review the upstream finding against the actual workspace. Implement the bounded improvement if supported by evidence. Preserve unrelated work, add meaningful verification where appropriate, run checks and report changed paths and results. If no concrete issue was identified, report that instead of inventing changes.",
+      "depends_on": ["inspect"],
+      "tools": null,
+      "x": 350,
+      "y": 50
+    },
+    {
+      "id": "verify",
+      "title": "Verify",
+      "prompt": "Independently inspect the reported change and run the relevant checks. Evaluate the behavior against the original finding and report actual results and remaining limitations. Do not claim checks that you did not run.",
+      "depends_on": ["implement"],
+      "tools": ["read_file", "command_exec", "process_poll", "process_stop", "skill_list", "skill_read", "task_finish"],
+      "x": 700,
+      "y": 50
+    }
+  ]
+}

@@ -1,28 +1,75 @@
-name: Daena baseline
+name: Daena checks
 
 on:
   push:
     branches:
       - "baseline/**"
       - main
+      - "release-*"
   pull_request:
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
           cache: pip
-          cache-dependency-path: requirements-dev.txt
+          cache-dependency-path: pyproject.toml
       - name: Install dependencies
         run: python -m pip install -r requirements-dev.txt
       - name: Compile
         run: python -m compileall -q src harness tests cli
+      - name: Static checks
+        run: python -m ruff check src cli harness tests
       - name: CLI smoke import
         run: python -c "from cli.app import STYLE; print('CLI_SMOKE_OK')"
       - name: Tests
         run: python -m pytest -q tests
+      - name: Build distributions
+        run: python -m build
+      - name: CLI entry point
+        run: daena --help
+  desktop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Qt system libraries
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libopengl0 libxcb-cursor0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: python -m pip install -r requirements-dev.txt -e '.[desktop]'
+      - name: Desktop formatting
+        run: python -m ruff format --check src/studio tests/test_studio.py tests/test_studio_interactions.py tests/render_studio_preview.py tests/smoke_studio_wheel.py tests/test_reasoning_controls.py src/engine/providers/builtin/gemini/geminiprovider.py
+      - run: python -m pytest -q tests
+      - run: daena-studio --help
+
+      - name: Build and smoke-test installed desktop wheel
+        run: |
+          python -m build
+          python -m venv --system-site-packages "$RUNNER_TEMP/studio-wheel"
+          "$RUNNER_TEMP/studio-wheel/bin/python" -m pip install --ignore-installed --no-deps dist/daena_agent-0.6.0-py3-none-any.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/studio-wheel/bin/python" "$GITHUB_WORKSPACE/tests/smoke_studio_wheel.py" "$GITHUB_WORKSPACE"
+      - name: Render desktop previews
+        timeout-minutes: 1
+        if: always()
+        run: python tests/render_studio_preview.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: studio-previews
+          path: .studio-previews/*.png
+          include-hidden-files: true
