@@ -63,3 +63,4 @@ jobs:
         with:
           name: studio-previews
           path: .studio-previews/*.png
+          include-hidden-files: true

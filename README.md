@@ -21,7 +21,7 @@ For OpenRouter or Gemini, install `.[openrouter]` or `.[gemini]` and configure
 the provider and credentials. A successful package installation does not establish
 model availability.
 
-**Upgrading to 0.5.0:** see [upgrade instructions](docs/upgrade-0.5.md).
+**Upgrading to 0.6.0:** see [upgrade instructions](docs/upgrade-0.6.md).
 Use `python -m cli --version` to check which source version is running.
 
 ## Desktop app
@@ -32,7 +32,7 @@ daena-studio --cwd /path/to/project
 # Or: python -m cli --gui --cwd /path/to/project
 ```
 
-Daena Studio is a PySide6 application sharing the CLI's agent runtime. It includes
+Daena Studio is a PySide6 application sharing the CLI's agent runtime. Enter sends; Shift+Enter inserts a newline. Provider, model, reasoning and searchable tool selection are available above the conversation. It includes
 conversation history, streaming responses/reasoning, cancellation and steering,
 a live graph with child reports and diffs, skills selection, provider/model
 settings, and tool scopes. All bundled tools have permission by default, including

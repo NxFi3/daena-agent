@@ -1,4 +1,5 @@
 """A quiet, high-contrast desktop theme shared by the Studio surfaces."""
+
 STYLE = """
 QMainWindow,QDialog {background:#0b1019;}
 QWidget {background:#0b1019;color:#dce4f2;font-family:'Inter','Segoe UI',sans-serif;font-size:13px;}
@@ -41,7 +42,6 @@ QScrollBar::add-line:horizontal,QScrollBar::sub-line:horizontal {width:0;}
 QProgressBar {border:0;border-radius:4px;background:#1c2638;height:7px;text-align:center;}
 QProgressBar::chunk {background:#a78bfa;border-radius:4px;}
 QFrame#composerPanel {background:#131d2c;border:1px solid #39445d;border-radius:15px;}
-QFrame#composerPanel QWidget {background:transparent;}
 QPlainTextEdit#composer {background:transparent;border:0;padding:9px;font-size:15px;}
 QScrollArea#conversation,QWidget#conversationCanvas {background:#0b1019;border:0;}
 QFrame#assistantMessage {background:#141d2b;border:1px solid #283449;border-radius:14px;}

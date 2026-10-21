@@ -1,12 +1,23 @@
 """Conversation widgets with explicit keyboard and streaming behavior."""
+
 from __future__ import annotations
 
 from datetime import datetime
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QTextCursor, QDesktopServices
 from PySide6.QtWidgets import (
-    QApplication, QFrame, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton,
-    QScrollArea, QSizePolicy, QTextBrowser, QToolButton, QVBoxLayout, QWidget,
+    QApplication,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPlainTextEdit,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QTextBrowser,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
 )
 
 
@@ -17,7 +28,9 @@ class Composer(QPlainTextEdit):
         super().__init__(parent)
         self._composing = False
         self.setObjectName("composer")
-        self.setPlaceholderText("Ask Daena to build, investigate, or improve something…")
+        self.setPlaceholderText(
+            "Ask Daena to build, investigate, or improve something…"
+        )
         self.setMinimumHeight(72)
         self.setMaximumHeight(168)
         self.document().documentLayout().documentSizeChanged.connect(self._resize)
@@ -39,12 +52,15 @@ class Composer(QPlainTextEdit):
         super().keyPressEvent(event)
 
     def _resize(self, *args):
-        height = int(self.document().size().height() * self.fontMetrics().lineSpacing()) + 24
+        height = (
+            int(self.document().size().height() * self.fontMetrics().lineSpacing()) + 24
+        )
         self.setFixedHeight(max(72, min(168, height)))
 
 
 class MarkdownBody(QTextBrowser):
     """Size short messages to their contents; long code keeps an internal scroll."""
+
     def __init__(self):
         super().__init__()
         self.setFrameShape(QFrame.NoFrame)
@@ -73,12 +89,12 @@ class MarkdownBody(QTextBrowser):
         self.reflow()
 
     def reflow(self, *args):
-        if hasattr(self,"_resize_timer") and not self._resize_timer.isActive():
+        if hasattr(self, "_resize_timer") and not self._resize_timer.isActive():
             self._resize_timer.start(0)
 
     def _apply_reflow(self):
-        width=max(80,self.viewport().width())
-        if abs(self.document().textWidth()-width)>1:
+        width = max(80, self.viewport().width())
+        if abs(self.document().textWidth() - width) > 1:
             self.document().setTextWidth(width)
         height = max(36, min(780, int(self.document().size().height()) + 16))
         if self.height() != height:
@@ -214,12 +230,19 @@ class ConversationView(QScrollArea):
 
     def scroll_to_end(self):
         if self._follow:
-            QTimer.singleShot(0, lambda: self.verticalScrollBar().setValue(self.verticalScrollBar().maximum()))
+            QTimer.singleShot(
+                0,
+                lambda: self.verticalScrollBar().setValue(
+                    self.verticalScrollBar().maximum()
+                ),
+            )
 
     def add_message(self, speaker, text):
         self._follow = True
-        card = MessageCard(speaker, text, user=speaker.startswith("You") or speaker == "Queued")
-        self.layout.insertWidget(self.layout.count()-1, card)
+        card = MessageCard(
+            speaker, text, user=speaker.startswith("You") or speaker == "Queued"
+        )
+        self.layout.insertWidget(self.layout.count() - 1, card)
         self.cards.append(card)
         self.scroll_to_end()
         return card

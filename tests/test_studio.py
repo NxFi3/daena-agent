@@ -139,12 +139,14 @@ def test_graph_reports_real_worker_and_integrated_files(window, tmp_path):
         ]
     )
 
+    runtime = {}
+
     def wait(messages):
-        ident = window.agent.loop.tool.subagents.list()[0]["agent_id"]
+        ident = runtime["agent"].loop.tool.subagents.list()[0]["agent_id"]
         return call("subagent", action="wait", agent_id=ident, wait_ms=3000)
 
     def merge(messages):
-        ident = window.agent.loop.tool.subagents.list()[0]["agent_id"]
+        ident = runtime["agent"].loop.tool.subagents.list()[0]["agent_id"]
         return call("subagent", action="merge", agent_id=ident)
 
     parent = Script(
@@ -164,6 +166,7 @@ def test_graph_reports_real_worker_and_integrated_files(window, tmp_path):
 
     def factory(config):
         agent = Agent(config, llm=parent)
+        runtime["agent"] = agent
         agent.loop.tool.subagents.agent_factory = lambda c: Agent(c, llm=worker)
         return agent
 
@@ -171,6 +174,7 @@ def test_graph_reports_real_worker_and_integrated_files(window, tmp_path):
     window.input.setPlainText("Delegate and integrate")
     window.send()
     wait_until(lambda: not window.busy)
+    assert window._result["metrics"]["completed"], window._result
     assert (tmp_path / "child.txt").read_text().strip() == "child output"
     assert len(window.graph.nodes) == 2 and len(window.graph.edges) == 1
     child = next(iter(window.children))

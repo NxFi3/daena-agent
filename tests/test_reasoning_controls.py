@@ -13,7 +13,7 @@ def test_gemini_reasoning_control_reaches_provider_wire(server,monkeypatch,mode,
     state["events"]=[{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}]
     options=set_reasoning({"base_url":url},mode)
     GeminiProvider().generate(LLMInput("test",[{"role":"user","content":"hello"}],options=options))
-    assert state["requests"][0]["generationConfig"]["thinkingConfig"]["thinkingBudget"]==budget
+    assert state["requests"][0]["generationConfig"]["thinkingConfig"].get("thinkingBudget")==budget, state["requests"][0]
 
 
 def test_reasoning_auto_clears_native_overrides_and_custom_preserves_them():

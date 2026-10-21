@@ -17,7 +17,7 @@ is for headless tests, not the interactive desktop launcher.
 
 ## Conversation
 
-Enter a task and press **Send message** or **Ctrl+Enter**. Responses and provider
+Enter a task and press **Send message** or **Enter** (Shift+Enter inserts a newline; Ctrl+Enter also sends). Responses and provider
 reasoning stream in separate views. **Activity** shows tool receipts and runtime
 errors; **Context** shows the actual request estimate including tool schemas.
 **Stop** cooperatively cancels model I/O, processes and delegated work. Closing the
@@ -28,7 +28,7 @@ or **Queue next message** for a follow-up after completion. No second turn runs
 concurrently on the same Agent. New conversation keeps workspace files and plans,
 but begins a new chat session. A plan is background state, not a new user request.
 
-Double-click a recent run to inspect it and continue its persistent session. Run
+Select a saved conversation to restore its archived turns and continue its persistent session. The sidebar groups turns by session and supports search. Run
 archives are JSON under `.daena/studio/runs`; the SQLite history and compaction
 checkpoints live alongside them. Export a run with **Export run**. Archives are
 local and may contain your prompts and tool output.
@@ -36,8 +36,7 @@ local and may contain your prompts and tool output.
 ## Agent graph
 
 Select a node to inspect its assignment, status, current tool, token estimates,
-report, errors, file changes and recent events. Nodes move by dragging; Ctrl+wheel
-zooms and **Fit graph** frames the nodes. Child contexts are independent: the
+report, errors, file changes and recent events. Nodes move by dragging. Wheel zooms at the pointer; drag the background, use the middle button, or Space+drag to pan. Visible minus/plus/100% controls and **Fit graph** provide explicit navigation. Child contexts are independent: the
 parent supplies their task and optional bounded reference context.
 
 **Cancel child** requests cooperative stopping. **Inspect diff** reads a finished
@@ -98,3 +97,5 @@ settings scopes, graph reports and worker merges, blueprint validation and actua
 multi-node file work. Provider tests exercise the real Ollama SDK, HTTPX SSE and
 Google SDK against local HTTP fixtures. Live model access and output quality must
 be checked with the user's configured provider.
+
+See [the 0.6 desktop guide](upgrade-0.6.md) for the keyboard, reasoning and tool controls.

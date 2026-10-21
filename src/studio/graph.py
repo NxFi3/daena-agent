@@ -70,7 +70,9 @@ class AgentNode(QGraphicsObject):
         p.setPen(color)
         p.setFont(QFont("Sans Serif", 8, QFont.Bold))
         p.drawText(
-            QRectF(28, 103, 230, 16), Qt.AlignLeft, self.status.upper().replace("_", " ")
+            QRectF(28, 103, 230, 16),
+            Qt.AlignLeft,
+            self.status.upper().replace("_", " "),
         )
         p.setBrush(QColor("#101726"))
         p.setPen(QPen(color, 2))
@@ -218,16 +220,23 @@ class GraphCanvas(QGraphicsView):
     def wheelEvent(self, event):
         delta = event.angleDelta().y() or event.pixelDelta().y()
         if event.modifiers() & Qt.ShiftModifier:
-            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - int(delta))
+            self.horizontalScrollBar().setValue(
+                self.horizontalScrollBar().value() - int(delta)
+            )
         elif delta:
-            self.zoom_to(self.transform().m11() * 1.15 ** (delta / 120), event.position().toPoint())
+            self.zoom_to(
+                self.transform().m11() * 1.15 ** (delta / 120),
+                event.position().toPoint(),
+            )
         event.accept()
 
     def mousePressEvent(self, event):
         self.setFocus(Qt.MouseFocusReason)
         item = self.itemAt(event.position().toPoint())
         background = not isinstance(item, AgentNode)
-        if event.button() == Qt.MiddleButton or (event.button() == Qt.LeftButton and (self._space or background)):
+        if event.button() == Qt.MiddleButton or (
+            event.button() == Qt.LeftButton and (self._space or background)
+        ):
             self._panning = True
             self._pan_last = event.position().toPoint()
             self.viewport().setCursor(Qt.ClosedHandCursor)
@@ -242,8 +251,12 @@ class GraphCanvas(QGraphicsView):
             pos = event.position().toPoint()
             delta = pos - self._pan_last
             self._pan_last = pos
-            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
-            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
+            self.horizontalScrollBar().setValue(
+                self.horizontalScrollBar().value() - delta.x()
+            )
+            self.verticalScrollBar().setValue(
+                self.verticalScrollBar().value() - delta.y()
+            )
             event.accept()
             return
         super().mouseMoveEvent(event)
@@ -251,7 +264,9 @@ class GraphCanvas(QGraphicsView):
     def mouseReleaseEvent(self, event):
         if self._panning:
             self._panning = False
-            self.viewport().setCursor(Qt.OpenHandCursor if self._space else Qt.ArrowCursor)
+            self.viewport().setCursor(
+                Qt.OpenHandCursor if self._space else Qt.ArrowCursor
+            )
             event.accept()
             return
         super().mouseReleaseEvent(event)
