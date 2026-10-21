@@ -149,20 +149,19 @@ class GeminiProvider(ProviderBase):
                 }
             elif think is not None:
                 options["thinking_config"] = {"include_thoughts": True}
+        if isinstance(options.get("thinking_config"), dict):
+            # SDK dict unions may preserve native keys verbatim. Use typed
+            # nested models so the transport emits the provider's wire aliases.
+            options["thinking_config"] = types.ThinkingConfig(**options["thinking_config"])
         if system:
             options["system_instruction"] = system
         if tools:
             options["tools"] = tools
-            options["automatic_function_calling"] = {"disable": True}
-            options["tool_config"] = {
-                "function_calling_config": {
-                    "mode": "NONE"
-                    if choice == "none"
-                    else "ANY"
-                    if choice in {"required", "any"}
-                    else "AUTO"
-                }
-            }
+            options["automatic_function_calling"] = types.AutomaticFunctionCallingConfig(disable=True)
+            mode = "NONE" if choice == "none" else "ANY" if choice in {"required", "any"} else "AUTO"
+            options["tool_config"] = types.ToolConfig(
+                function_calling_config=types.FunctionCallingConfig(mode=mode)
+            )
         config = types.GenerateContentConfig(**options)
         http = {}
         if read is not None:
