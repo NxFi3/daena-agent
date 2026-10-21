@@ -136,7 +136,9 @@ class ExecutionBar(QWidget):
         self.provider.setMinimumWidth(120)
         self.model = QComboBox()
         self.model.setEditable(True)
-        self.model.setToolTip("Type an installed model name or provider model ID; Enter applies it.")
+        self.model.setToolTip(
+            "Type an installed model name or provider model ID; Enter applies it."
+        )
         self.model.setMinimumWidth(230)
         self.model.setInsertPolicy(QComboBox.NoInsert)
         self.model.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)

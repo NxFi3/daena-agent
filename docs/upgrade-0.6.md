@@ -68,3 +68,12 @@ controls; raw JSON is optional.
 
 Canvas scrollbars are hidden; navigation is handled directly by the canvas.
 Automation uses the same improved canvas without adding new execution features.
+
+## Validation
+
+GitHub Actions verified 230 tests with PySide6 enabled, including real Qt keyboard,
+mouse, graph and conversation interactions. Core checks passed on Python 3.11,
+3.12 and 3.13. The built 0.6.0 wheel was installed outside the source checkout
+and exercised through a desktop turn using real file tools and a scripted model.
+Gemini request serialization was checked with its SDK against a local HTTP fixture.
+These checks do not measure live model quality or verify a user's Ollama server.

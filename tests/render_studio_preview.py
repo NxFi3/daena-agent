@@ -1,56 +1,12 @@
 """CI-only UI previews with labelled sample data; does not call any model."""
 
-import base64
-import json
+import faulthandler
 import os
 from pathlib import Path
-import subprocess
-import sys
 from tempfile import TemporaryDirectory
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-# Return a bounded source-format snapshot for review when no local executor is available.
-subprocess.run(
-    [
-        sys.executable,
-        "-m",
-        "ruff",
-        "format",
-        "src/studio",
-        "tests/test_studio.py",
-        "tests/test_studio_interactions.py",
-        "tests/render_studio_preview.py",
-        "tests/smoke_studio_wheel.py",
-        "tests/test_reasoning_controls.py",
-        "src/engine/providers/builtin/gemini/geminiprovider.py",
-    ],
-    check=True,
-)
-changed = subprocess.check_output(["git", "diff", "--name-only"]).decode().splitlines()
-snapshot = {
-    name: Path(name).read_text()
-    for name in changed
-    if name.startswith("src/studio/")
-    or name
-    in {
-        "tests/test_studio.py",
-        "tests/test_studio_interactions.py",
-        "tests/render_studio_preview.py",
-        "tests/smoke_studio_wheel.py",
-        "tests/test_reasoning_controls.py",
-        "src/engine/providers/builtin/gemini/geminiprovider.py",
-    }
-}
-print(
-    "STUDIO_FORMAT_SNAPSHOT:"
-    + base64.b64encode(json.dumps(snapshot).encode()).decode(),
-    flush=True,
-)
-
-import faulthandler
-
 faulthandler.dump_traceback_later(25, exit=True)
-from PySide6.QtCore import QByteArray, QBuffer, QIODevice
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 from src.studio.window import StudioWindow
@@ -65,14 +21,6 @@ def capture(window, name):
     QTest.qWait(120)
     pixmap = window.grab()
     pixmap.save(str(output / (name + ".png")))
-    data = QByteArray()
-    buffer = QBuffer(data)
-    buffer.open(QIODevice.WriteOnly)
-    pixmap.save(buffer, "PNG")
-    print(
-        "STUDIO_PREVIEW_" + name.upper() + ":" + base64.b64encode(bytes(data)).decode(),
-        flush=True,
-    )
 
 
 with TemporaryDirectory() as directory:
