@@ -167,7 +167,8 @@ class TokenBudget:
             f"Context length={self.context_length}, "
             f"budget={self.budget}, "
             f"max_prompt_tokens={self.max_prompt_tokens}, "
-            f"safe_margin={self.safe_margin}, "\n            f"output_reserve={self.output_reserve_tokens}, "
+            f"safe_margin={self.safe_margin}, "
+            f"output_reserve={self.output_reserve_tokens}, "
             f"compaction_target={self.compaction_target_tokens}, "
             f"chars_per_token={self.chars_per_token}"
         )
