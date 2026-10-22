@@ -491,10 +491,13 @@ class ConversationView(QScrollArea):
             self.live.add_detail(text)
 
     def finish(self, text, status="Completed"):
+        final_text = str(text or "")
         if self.live is None:
-            self.live = self.add_message("Daena", text)
-        else:
-            self.live.set_text(text)
+            self.live = self.add_message("Daena", final_text)
+        elif final_text:
+            # Never erase visible streamed content with an empty final payload.
+            # Canonical non-empty final text may replace the live draft.
+            self.live.set_text(final_text)
         self.live.set_status(status)
         self.live.tools.finalize()
         self.scroll_to_end()
