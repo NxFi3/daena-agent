@@ -448,7 +448,8 @@ class Loop:
         except InterruptedError as exc:
             return self._stopped_result(str(exc))
         except Exception as exc:
-            self.metrics["generation_failures"] += 1
+            if not isinstance(exc, RecoverableGenerationError):
+                self.metrics["generation_failures"] += 1
             return self._stopped_result(f"{type(exc).__name__}: {exc}")
         finally:
             self.tool.close()
