@@ -116,12 +116,14 @@ class ToolActivity(QFrame):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 4, 0, 4)
         outer.setSpacing(4)
-        self.toggle = QToolButton()
-        self.toggle.setObjectName("toolToggle")
-        self.toggle.setCheckable(True)
-        self.toggle.setText("▸  Activity")
-        self.toggle.toggled.connect(self._toggle)
+        self.toggle = QLabel()
+        self.toggle.setObjectName("activityLink")
+        self.toggle.setTextFormat(Qt.RichText)
+        self.toggle.setOpenExternalLinks(False)
+        self.toggle.setText('<a href="toggle">› &nbsp; Tool calls</a>')
+        self.toggle.linkActivated.connect(self._toggle)
         outer.addWidget(self.toggle, alignment=Qt.AlignLeft)
+        self._expanded = False
         self.details = QPlainTextEdit()
         self.details.setReadOnly(True)
         self.details.setMaximumHeight(190)
@@ -130,9 +132,11 @@ class ToolActivity(QFrame):
         outer.addWidget(self.details)
         self.hide()
 
-    def _toggle(self, visible):
-        self.details.setVisible(visible)
-        self.toggle.setText(("▾" if visible else "▸") + self._label())
+    def _toggle(self, *args):
+        self._expanded = not self._expanded
+        self.details.setVisible(self._expanded)
+        arrow = "⌄" if self._expanded else "›"
+        self.toggle.setText(f'<a href="toggle">{arrow} &nbsp; {self._label().strip()}</a>')
 
     def _label(self):
         pending = sum(call["status"] == "running" for call in self.calls)
@@ -199,7 +203,8 @@ class ToolActivity(QFrame):
                 lines.append("   " + call["summary"][:1200])
         self.details.setPlainText("\n".join(lines))
         self.show()
-        self.toggle.setText(("▾" if self.toggle.isChecked() else "▸") + self._label())
+        arrow = "⌄" if self._expanded else "›"
+        self.toggle.setText(f'<a href="toggle">{arrow} &nbsp; {self._label().strip()}</a>')
 
 
 class MessageCard(QFrame):
@@ -254,10 +259,13 @@ class MessageCard(QFrame):
         self.tools = ToolActivity()
         if not user:
             layout.insertWidget(1, self.tools)
-        self.reasoning_button = QToolButton(self)
-        self.reasoning_button.setText("▸ Reasoning")
-        self.reasoning_button.setCheckable(True)
+        self.reasoning_button = QLabel(self)
+        self.reasoning_button.setObjectName("activityLink")
+        self.reasoning_button.setTextFormat(Qt.RichText)
+        self.reasoning_button.setOpenExternalLinks(False)
+        self.reasoning_button.setText('<a href="toggle">› &nbsp; Reasoning</a>')
         self.reasoning_button.hide()
+        self._reasoning_expanded = False
         if not user:
             layout.insertWidget(1, self.reasoning_button)
         self.reasoning_body = QPlainTextEdit(self)
@@ -266,7 +274,7 @@ class MessageCard(QFrame):
         self.reasoning_body.hide()
         if not user:
             layout.insertWidget(2, self.reasoning_body)
-        self.reasoning_button.toggled.connect(self._toggle_reasoning)
+        self.reasoning_button.linkActivated.connect(self._toggle_reasoning)
         self.details_button = QToolButton(self)
         self.details_button.setCheckable(True)
         self.details_button.setText("▸ Execution details")
@@ -291,9 +299,11 @@ class MessageCard(QFrame):
         self.activity_log.appendPlainText(str(label)[:550])
         self.previous_activity.show()
 
-    def _toggle_reasoning(self, visible):
-        self.reasoning_body.setVisible(visible)
-        self.reasoning_button.setText(("▾" if visible else "▸") + " Reasoning")
+    def _toggle_reasoning(self, *args):
+        self._reasoning_expanded = not self._reasoning_expanded
+        self.reasoning_body.setVisible(self._reasoning_expanded)
+        arrow = "⌄" if self._reasoning_expanded else "›"
+        self.reasoning_button.setText(f'<a href="toggle">{arrow} &nbsp; Reasoning</a>')
 
     def set_text(self, text, *, markdown=True):
         self.text = str(text)
