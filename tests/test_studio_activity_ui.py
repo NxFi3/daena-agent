@@ -38,3 +38,18 @@ def test_one_stop_control_and_subagent_timeline(app, tmp_path, monkeypatch):
         assert "{" not in window.child_events.toPlainText()
     finally:
         window.close()
+
+def test_history_survives_workspace_changes(app, tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "user-data"))
+    from src.studio.state import StudioStore
+    from uuid import uuid4
+    first = StudioStore(tmp_path / "project-a")
+    session = uuid4()
+    first.save_run(session, "A chat from project A", [
+        {"type": "user_message", "text": "Hello"},
+        {"type": "final_response", "text": "Hi"},
+    ], {"completed": True})
+    second = StudioStore(tmp_path / "project-b")
+    archives = [run for _, run in second.runs()]
+    assert any(run["session_id"] == str(session) for run in archives)
+    assert any(run.get("workspace") == str((tmp_path / "project-a").resolve()) for run in archives)
