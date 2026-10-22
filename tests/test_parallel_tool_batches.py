@@ -28,7 +28,10 @@ def test_independent_read_calls_are_concurrent():
         _emit_event=lambda kind, **kwargs: events.append((kind, kwargs)),
         _apply_result=lambda call, result, iteration: results.append(call.id),
     )
-    calls = [ToolCall(name="read_file"), ToolCall(name="read_file")]
+    calls = [
+        ToolCall(name="read_file", id="first", valid=True),
+        ToolCall(name="read_file", id="second", valid=True),
+    ]
     Loop._execute_tool_calls(runtime, calls, 1)
     assert results == [call.id for call in calls]
     assert runtime.metrics["tool_call_attempts"] == 2
