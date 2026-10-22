@@ -295,7 +295,7 @@ class MessageCard(QFrame):
 
     def set_status(self, text):
         working = any(
-            word in text.lower() for word in ("working", "generating", "using")
+            word in text.lower() for word in ("working", "generating", "using", "thinking", "reading", "waiting", "stopping")
         )
         self.status.setText(text if working else "")
         self.status.setVisible(working)
