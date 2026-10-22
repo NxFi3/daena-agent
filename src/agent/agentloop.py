@@ -16,7 +16,8 @@ from uuid import uuid4
 from src.agent.agentstate import AgentState
 from src.context.contextservice import ContextService
 from src.context.workingset import WorkingSet
-from src.engine.invoke import invoke\nfrom src.engine.errors import RecoverableGenerationError
+from src.engine.invoke import invoke
+from src.engine.errors import RecoverableGenerationError
 from src.memories.stm.STM import STM
 from src.models.ContextEvent import ContextEvent, ContextRole, ContextType
 from src.models.LLMResult import LLMResult
@@ -88,7 +89,8 @@ class Loop:
             "context_messages": 0,
             "context_tool_results": 0,
             "context_read_results": 0,
-            "generation_failures": 0,\n            "generation_retries": 0,
+            "generation_failures": 0,
+            "generation_retries": 0,
             "tool_call_attempts": 0,
             "tool_successes": 0,
             "tool_failures": 0,
