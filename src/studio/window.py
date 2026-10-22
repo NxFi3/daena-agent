@@ -329,7 +329,7 @@ class StudioWindow(QMainWindow):
     def _build_chat(self):
         page = QWidget()
         root = QVBoxLayout(page)
-        root.setContentsMargins(20, 8, 20, 18)
+        root.setContentsMargins(14, 4, 14, 16)
         root.setSpacing(0)
         self.diagnostics = QDialog(self)
         self.diagnostics.setWindowTitle("Daena · Advanced controls and diagnostics")
@@ -349,7 +349,7 @@ class StudioWindow(QMainWindow):
         centered.addStretch(1)
         column = QWidget()
         column.setObjectName("chatColumn")
-        column.setMaximumWidth(890)
+        column.setMaximumWidth(960)
         content = QVBoxLayout(column)
         content.setContentsMargins(0, 0, 0, 0)
         content.setSpacing(10)
@@ -903,7 +903,9 @@ class StudioWindow(QMainWindow):
             self.transcript.add_detail("→ " + event.get("name", "tool"))
             if self.transcript.live:
                 self.transcript.live.add_tool_call(
-                    event.get("name", "tool"), event.get("arguments")
+                    event.get("name", "tool"),
+                    event.get("arguments"),
+                    event.get("call_id"),
                 )
         if kind == "tool_result" and not self._automation_run:
             self.transcript.set_status("● Thinking")
@@ -917,6 +919,7 @@ class StudioWindow(QMainWindow):
                     event.get("name", ""),
                     bool(event.get("success")),
                     event.get("summary", ""),
+                    event.get("call_id"),
                 )
 
     def on_child_event(self, data):
