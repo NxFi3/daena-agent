@@ -11,6 +11,7 @@ from uuid import uuid4
 import httpx
 
 from src.engine.providers.ProviderBase import ProviderBase
+from src.engine.errors import OutputTokenLimitError
 from src.engine.transport import (
     canonical_messages,
     emit,
@@ -121,6 +122,14 @@ class OpenRouterProvider(ProviderBase):
                                     target["function"][field] += (
                                         call.get("function") or {}
                                     ).get(field) or ""
+            if finished in {"length", "max_tokens"}:
+                raise OutputTokenLimitError(
+                    "OpenRouter reached its output-token limit; partial tool calls were not executed.",
+                    recovery_hint=(
+                        "The previous generation was discarded before tool execution. "
+                        "Continue the same task with smaller edits/tool calls."
+                    ),
+                )
             if not marker or finished not in {"stop", "tool_calls"}:
                 raise RuntimeError(
                     f"OpenRouter stream incomplete or stopped with {finished!r}; no partial tools executed"
