@@ -82,6 +82,9 @@ class Loop:
         self._finish_request = None
         self._active_process_ids = set()
         self.workspace_revision = 0
+        # Count successful read-only observations per workspace revision. Exact
+        # observations may be rechecked once, but repeated cycling is blocked.
+        self._observation_counts = {}
         self.metrics = {
             "iterations": 0,
             "llm_calls": 0,
@@ -238,6 +241,61 @@ class Loop:
             content=result.content,
         )
 
+    def _observation_key(self, call):
+        if not call.valid:
+            return None
+        tool = self.tool.get_tool(call.name)
+        if tool is None or str(getattr(call, "action", "")).lower() != "inspect":
+            return None
+        try:
+            args = tool.duplicate_key(
+                dict(call.args or {}),
+                workspace_root=(
+                    str(self._workspace_root) if self._workspace_root else None
+                ),
+            )
+            serialized = json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)
+        except Exception:
+            serialized = json.dumps(
+                dict(call.args or {}), ensure_ascii=False, sort_keys=True, default=str
+            )
+        return (self.workspace_revision, call.name, serialized)
+
+    def _duplicate_observation_result(self, call):
+        key = self._observation_key(call)
+        if key is None or self._observation_counts.get(key, 0) < 2:
+            return None
+        return ToolResult(
+            success=False,
+            name=call.name,
+            content={
+                "error": {
+                    "type": "duplicate_observation",
+                    "message": (
+                        "This exact read-only observation was already completed twice "
+                        "without a workspace change. Reuse the existing evidence and "
+                        "take the next concrete action. If different evidence is "
+                        "actually needed, request a different file or narrower range."
+                    ),
+                }
+            },
+            metadata={
+                "duplicate_action": True,
+                "recovery_hint": (
+                    "Do not repeat this exact observation again unless the workspace "
+                    "changes. Use existing evidence or inspect a materially different "
+                    "target/range."
+                ),
+            },
+        )
+
+    def _record_observation_success(self, call, result):
+        if not result.success:
+            return
+        key = self._observation_key(call)
+        if key is not None:
+            self._observation_counts[key] = self._observation_counts.get(key, 0) + 1
+
     def _execute_tool_calls(self, calls, iteration):
         # Only tools that explicitly opt in as side-effect-free may run in
         # parallel; the model chooses what to inspect and which calls to group.
@@ -251,18 +309,37 @@ class Loop:
             )
         )
         if concurrent:
+            executable = []
+            blocked = {}
+            for index, call in enumerate(calls):
+                duplicate = self._duplicate_observation_result(call)
+                if duplicate is None:
+                    executable.append((index, call))
+                else:
+                    blocked[index] = duplicate
             for call in calls:
                 self.metrics["tool_call_attempts"] += 1
                 self._emit_event(
                     "tool_call", name=call.name, arguments=call.args, call_id=call.id
                 )
-            with ThreadPoolExecutor(max_workers=min(8, len(calls))) as executor:
-                results = list(
-                    executor.map(
-                        lambda call: self.tool.execute([call])["results"][0], calls
+            executed_results = {}
+            if executable:
+                with ThreadPoolExecutor(
+                    max_workers=min(8, len(executable))
+                ) as executor:
+                    values = list(
+                        executor.map(
+                            lambda item: self.tool.execute([item[1]])["results"][0],
+                            executable,
+                        )
                     )
-                )
-            for call, result in zip(calls, results):
+                executed_results = {
+                    index: result
+                    for (index, _call), result in zip(executable, values)
+                }
+            for index, call in enumerate(calls):
+                result = blocked.get(index) or executed_results[index]
+                self._record_observation_success(call, result)
                 self._apply_result(call, result, iteration)
             return self._stop_event is not None and self._stop_event.is_set()
 
@@ -288,7 +365,13 @@ class Loop:
                 )
                 self.metrics["resource_blocks"] += 1
             else:
-                result = self.tool.execute([call])["results"][0]
+                duplicate = self._duplicate_observation_result(call)
+                result = (
+                    duplicate
+                    if duplicate is not None
+                    else self.tool.execute([call])["results"][0]
+                )
+            self._record_observation_success(call, result)
             self._apply_result(call, result, iteration)
             if call.name == "task_finish" and result.success:
                 self._finish_request = result.content
