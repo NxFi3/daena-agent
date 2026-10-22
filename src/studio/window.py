@@ -810,9 +810,12 @@ class StudioWindow(QMainWindow):
         if kind == "generation_start":
             self.flush_stream()
             if self.transcript.live and self.transcript.live.text:
-                self.transcript.add_detail(
-                    "Model update: " + self.transcript.live.text[:1200]
-                )
+                # Preserve intermediate agent narration instead of silently erasing it
+                # when a new model/tool phase begins. Keep the final answer surface
+                # clean by folding earlier narration into Previous activity.
+                previous = self.transcript.live.text.strip()
+                self.transcript.add_detail("Model update: " + previous[:1200])
+                self.transcript.live.add_activity("Model update\n" + previous)
                 self.transcript.live.set_text("")
             if not self._automation_run:
                 self.transcript.set_status("● Generating")
@@ -857,7 +860,13 @@ class StudioWindow(QMainWindow):
         elif kind == "assistant_message":
             self.flush_stream()
             if self.transcript.live:
-                self.transcript.live.set_text(event.get("text", ""))
+                message = event.get("text", "")
+                if message:
+                    if self.transcript.live.text and self.transcript.live.text != message:
+                        self.transcript.live.add_activity(
+                            "Model update\n" + self.transcript.live.text.strip()
+                        )
+                    self.transcript.live.set_text(message)
         if kind not in {
             "content_delta",
             "thinking_delta",
