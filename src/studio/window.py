@@ -423,7 +423,7 @@ class StudioWindow(QMainWindow):
         self.stop_button.setEnabled(False)
         self.stop_button.hide()
         self.stop_button.clicked.connect(self.stop)
-        row.addWidget(self.stop_button)
+        # Stop is represented by the send button itself; no duplicate control.
         self.send_button = QPushButton("↑")
         self.send_button.setObjectName("sendMessage")
         self.send_button.setToolTip("Send message (Enter)")
@@ -753,7 +753,6 @@ class StudioWindow(QMainWindow):
             self.send_button.clicked.connect(self.send)
         self.stop_button.setEnabled(True)
         if not self._automation_run:
-            self.stop_button.show()
             self.busy_mode.show()
         self.automation.set_running(True)
         self.settings.setEnabled(False)
@@ -1015,7 +1014,6 @@ class StudioWindow(QMainWindow):
     def worker_finished(self):
         self.busy = False
         self.stop_button.setEnabled(False)
-        self.stop_button.hide()
         self.send_button.setText("↑")
         self.send_button.setEnabled(True)
         self.send_button.setToolTip("Send message (Enter)")
@@ -1302,6 +1300,16 @@ class StudioWindow(QMainWindow):
             self.new_session()
             self.session_id = UUID(run["session_id"])
             self.last_prompt = run["title"]
+            # Restore the project that originally owned this conversation.
+            original_workspace = run.get("workspace")
+            if original_workspace and Path(original_workspace).is_dir() and Path(original_workspace).resolve() != self.workspace:
+                self.workspace = Path(original_workspace).resolve()
+                self.store = StudioStore(self.workspace)
+                self.workspace_edit.setText(str(self.workspace))
+                self.workspace_edit.setToolTip(str(self.workspace))
+                self.workspace_button.setToolTip(f"Change workspace\n{self.workspace}")
+                self.automation.set_draft_path(self.store.root / "automation-draft.json")
+                self.skills.refresh()
             self._result = {"metrics": run["metrics"]}
             self.graph.upsert(
                 "parent",
