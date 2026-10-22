@@ -55,6 +55,8 @@ class Loop:
         self.context = ContextService(config, llm, self.stm)
         self.context.contextbuilder.skill_registry = self.tool.skills
         self.session_id = uuid4()
+        self.tool.set_llm_provider(self.llm)
+        self.tool.set_context_store(self.stm, lambda: self.session_id)
         self._workspace_root = None
         self._context_step = 0
         self._event_sink = None
@@ -70,7 +72,7 @@ class Loop:
         self.max_generation_retries = max(
             0, min(5, int(runtime_config.get("generation_retries", 2)))
         )
-        self.tool_definitions = self.tool.get_tools()
+        self.tool_definitions = self.tool.get_model_tools()
         self.tool.subagents.event_sink = lambda event: self._emit_event(
             "subagent_event", child_event=event
         )
@@ -79,6 +81,7 @@ class Loop:
     def _reset_run_state(self):
         self.agent_state.reset()
         self.working_set.reset()
+        self.tool.reset_tool_selection()
         self._plan_active_this_run = False
         self._finish_request = None
         self._active_process_ids = set()
@@ -398,7 +401,7 @@ class Loop:
 
     def _generate_next_action(self, user_task, workspace_directory):
         self.working_set.refresh_workspace()
-        self.tool_definitions = self.tool.get_tools()
+        self.tool_definitions = self.tool.get_model_tools()
         self.context.contextbuilder.tokenbudget.reserve_tools(self.tool_definitions)
         names = {item["function"]["name"] for item in self.tool_definitions}
         state = self.working_set.context()
