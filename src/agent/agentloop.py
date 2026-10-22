@@ -251,7 +251,9 @@ class Loop:
             args = tool.duplicate_key(
                 dict(call.args or {}),
                 workspace_root=(
-                    str(self._workspace_root) if self._workspace_root else None
+                    str(getattr(self, "_workspace_root", None))
+                    if getattr(self, "_workspace_root", None)
+                    else None
                 ),
             )
             serialized = json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)
@@ -259,11 +261,12 @@ class Loop:
             serialized = json.dumps(
                 dict(call.args or {}), ensure_ascii=False, sort_keys=True, default=str
             )
-        return (self.workspace_revision, call.name, serialized)
+        return (getattr(self, "workspace_revision", 0), call.name, serialized)
 
     def _duplicate_observation_result(self, call):
-        key = self._observation_key(call)
-        if key is None or self._observation_counts.get(key, 0) < 2:
+        key = Loop._observation_key(self, call)
+        counts = getattr(self, "_observation_counts", {})
+        if key is None or counts.get(key, 0) < 2:
             return None
         return ToolResult(
             success=False,
@@ -292,9 +295,13 @@ class Loop:
     def _record_observation_success(self, call, result):
         if not result.success:
             return
-        key = self._observation_key(call)
+        key = Loop._observation_key(self, call)
         if key is not None:
-            self._observation_counts[key] = self._observation_counts.get(key, 0) + 1
+            counts = getattr(self, "_observation_counts", None)
+            if counts is None:
+                counts = {}
+                self._observation_counts = counts
+            counts[key] = counts.get(key, 0) + 1
 
     def _execute_tool_calls(self, calls, iteration):
         # Only tools that explicitly opt in as side-effect-free may run in
@@ -312,7 +319,7 @@ class Loop:
             executable = []
             blocked = {}
             for index, call in enumerate(calls):
-                duplicate = self._duplicate_observation_result(call)
+                duplicate = Loop._duplicate_observation_result(self, call)
                 if duplicate is None:
                     executable.append((index, call))
                 else:
@@ -339,7 +346,7 @@ class Loop:
                 }
             for index, call in enumerate(calls):
                 result = blocked.get(index) or executed_results[index]
-                self._record_observation_success(call, result)
+                Loop._record_observation_success(self, call, result)
                 self._apply_result(call, result, iteration)
             return self._stop_event is not None and self._stop_event.is_set()
 
@@ -365,13 +372,13 @@ class Loop:
                 )
                 self.metrics["resource_blocks"] += 1
             else:
-                duplicate = self._duplicate_observation_result(call)
+                duplicate = Loop._duplicate_observation_result(self, call)
                 result = (
                     duplicate
                     if duplicate is not None
                     else self.tool.execute([call])["results"][0]
                 )
-            self._record_observation_success(call, result)
+            Loop._record_observation_success(self, call, result)
             self._apply_result(call, result, iteration)
             if call.name == "task_finish" and result.success:
                 self._finish_request = result.content
