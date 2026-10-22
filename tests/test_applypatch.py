@@ -89,3 +89,108 @@ body {{
         "  display: block;\n"
         "}\n"
     )
+
+
+def test_concatenated_patch_blocks_apply_every_operation(tmp_path):
+    target = tmp_path / "target.txt"
+    created = tmp_path / "created.txt"
+    target.write_text("before\n", encoding="utf-8")
+
+    result = ApplyPatch().execute(
+        f"""*** Begin Patch
+*** Update File: {target}
+@@
+-before
++after
+*** End Patch
+*** Begin Patch
+*** Add File: {created}
++hello
+*** End Patch"""
+    )
+
+    assert result.success is True
+    assert result.content["statistics"]["operations"] == 2
+    assert result.content["statistics"]["files_changed"] == 2
+    assert target.read_text(encoding="utf-8") == "after\n"
+    assert created.read_text(encoding="utf-8") == "hello\n"
+
+
+def test_replaying_update_patch_is_successful_noop(tmp_path):
+    target = tmp_path / "target.txt"
+    target.write_text("before\n", encoding="utf-8")
+    patch = f"""*** Begin Patch
+*** Update File: {target}
+@@
+-before
++after
+*** End Patch"""
+
+    first = ApplyPatch().execute(patch)
+    second = ApplyPatch().execute(patch)
+
+    assert first.success is True
+    assert second.success is True
+    assert second.content["statistics"]["files_changed"] == 0
+    assert second.content["statistics"]["already_applied"] == 1
+    assert second.metadata["idempotent_replay"] is True
+    assert "Do not retry" in second.summary
+    assert target.read_text(encoding="utf-8") == "after\n"
+
+
+def test_replaying_add_and_delete_are_idempotent(tmp_path):
+    target = tmp_path / "item.txt"
+    add_patch = f"""*** Begin Patch
+*** Add File: {target}
++value
+*** End Patch"""
+    delete_patch = f"""*** Begin Patch
+*** Delete File: {target}
+*** End Patch"""
+
+    assert ApplyPatch().execute(add_patch).success is True
+    add_replay = ApplyPatch().execute(add_patch)
+    assert add_replay.success is True
+    assert add_replay.metadata["idempotent_replay"] is True
+
+    assert ApplyPatch().execute(delete_patch).success is True
+    delete_replay = ApplyPatch().execute(delete_patch)
+    assert delete_replay.success is True
+    assert delete_replay.metadata["idempotent_replay"] is True
+
+
+def test_multi_file_application_rolls_back_on_filesystem_failure(
+    tmp_path,
+    monkeypatch,
+):
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    first.write_text("one\n", encoding="utf-8")
+    second.write_text("two\n", encoding="utf-8")
+
+    original_write_text = Path.write_text
+
+    def flaky_write_text(path, data, *args, **kwargs):
+        if path == second:
+            raise OSError("simulated disk failure")
+        return original_write_text(path, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", flaky_write_text)
+
+    result = ApplyPatch().execute(
+        f"""*** Begin Patch
+*** Update File: {first}
+@@
+-one
++ONE
+*** Update File: {second}
+@@
+-two
++TWO
+*** End Patch"""
+    )
+
+    assert result.success is False
+    assert result.content["error"]["type"] == "filesystem_error"
+    assert first.read_text(encoding="utf-8") == "one\n"
+    assert second.read_text(encoding="utf-8") == "two\n"
