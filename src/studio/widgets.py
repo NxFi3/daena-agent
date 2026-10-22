@@ -144,7 +144,9 @@ class ToolActivity(QFrame):
         self._expanded = not self._expanded
         self.details.setVisible(self._expanded)
         arrow = "⌄" if self._expanded else "›"
-        self.toggle.setText(f'<a href="toggle">{arrow} &nbsp; {self._label().strip()}</a>')
+        self.toggle.setText(
+            f'<a href="toggle">{arrow} &nbsp; {self._label().strip()}</a>'
+        )
 
     def _label(self):
         pending = sum(call["status"] == "running" for call in self.calls)
@@ -175,9 +177,10 @@ class ToolActivity(QFrame):
     def finish_call(self, name, success, summary="", call_id=None):
         # The runtime emits results in dispatch order and does not expose a call ID.
         for call in self.calls:
-            if (
-                call["status"] == "running"
-                and (call["call_id"] == call_id if call_id else (not name or call["name"] == name))
+            if call["status"] == "running" and (
+                call["call_id"] == call_id
+                if call_id
+                else (not name or call["name"] == name)
             ):
                 call["status"] = "complete" if success else "failed"
                 call["summary"] = str(summary)
@@ -209,8 +212,11 @@ class ToolActivity(QFrame):
             target = ""
             if isinstance(args, dict):
                 target = next(
-                    (str(args[key]) for key in ("file_path", "path", "query", "url")
-                     if args.get(key)),
+                    (
+                        str(args[key])
+                        for key in ("file_path", "path", "query", "url")
+                        if args.get(key)
+                    ),
                     "",
                 )
             previews.append(f"{symbol} {Path(target).name if target else call['name']}")
@@ -230,7 +236,9 @@ class ToolActivity(QFrame):
         )
         self.show()
         arrow = "⌄" if self._expanded else "›"
-        self.toggle.setText(f'<a href="toggle">{arrow} &nbsp; {self._label().strip()}</a>')
+        self.toggle.setText(
+            f'<a href="toggle">{arrow} &nbsp; {self._label().strip()}</a>'
+        )
 
 
 class MessageCard(QFrame):
@@ -252,7 +260,9 @@ class MessageCard(QFrame):
         self.previous_activity.setObjectName("activityLink")
         self.previous_activity.setTextFormat(Qt.RichText)
         self.previous_activity.setOpenExternalLinks(False)
-        self.previous_activity.setText('<a href="toggle">› &nbsp; Previous activity</a>')
+        self.previous_activity.setText(
+            '<a href="toggle">› &nbsp; Previous activity</a>'
+        )
         self.previous_activity.hide()
         layout.addWidget(self.previous_activity)
         self._activity_expanded = False
@@ -320,7 +330,9 @@ class MessageCard(QFrame):
         self._activity_expanded = not self._activity_expanded
         self.activity_log.setVisible(self._activity_expanded)
         arrow = "⌄" if self._activity_expanded else "›"
-        self.previous_activity.setText(f'<a href="toggle">{arrow} &nbsp; Previous activity</a>')
+        self.previous_activity.setText(
+            f'<a href="toggle">{arrow} &nbsp; Previous activity</a>'
+        )
 
     def add_activity(self, label):
         if not label:
@@ -379,7 +391,11 @@ class MessageCard(QFrame):
 
     def add_tool_result(self, name, success, summary="", call_id=None):
         self.tools.finish_call(name, success, summary, call_id)
-        self.add_activity(("✓  " if success else "✕  ") + str(name or "Tool") + (" · " + str(summary)[:170] if summary else ""))
+        self.add_activity(
+            ("✓  " if success else "✕  ")
+            + str(name or "Tool")
+            + (" · " + str(summary)[:170] if summary else "")
+        )
 
 
 class ConversationView(QScrollArea):
