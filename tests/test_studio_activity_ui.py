@@ -53,3 +53,23 @@ def test_history_survives_workspace_changes(app, tmp_path, monkeypatch):
     archives = [run for _, run in second.runs()]
     assert any(run["session_id"] == str(session) for run in archives)
     assert any(run.get("workspace") == str((tmp_path / "project-a").resolve()) for run in archives)
+
+
+def test_reasoning_and_tools_are_inline_disclosures(app):
+    card = MessageCard("Daena", "Answer")
+    assert card.reasoning_button.isHidden()
+    assert card.tools.isHidden()
+
+    card.append_reasoning("Thinking about the task")
+    assert not card.reasoning_button.isHidden()
+    assert card.reasoning_body.isHidden()
+    card._toggle_reasoning()
+    assert not card.reasoning_body.isHidden()
+
+    card.add_tool_call("read_file", {"file_path": "README.md"})
+    assert not card.tools.isHidden()
+    assert card.tools.details.isHidden()
+    card.tools._toggle()
+    assert not card.tools.details.isHidden()
+    card.add_tool_result("read_file", True, "Read README.md")
+    assert "README.md" in card.tools.details.toPlainText()
