@@ -101,7 +101,9 @@ class StudioStore:
     def __init__(self, workspace):
         self.root = Path(workspace).expanduser().resolve() / ".daena" / "studio"
         self.root.mkdir(parents=True, exist_ok=True)
-        data_home = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+        data_home = Path(
+            os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share"
+        )
         self.chat_root = data_home.expanduser() / "daena" / "studio"
         self.chat_root.mkdir(parents=True, exist_ok=True)
         self._register_workspace()
@@ -109,7 +111,11 @@ class StudioStore:
     def _register_workspace(self):
         registry = self.chat_root / "workspaces.json"
         try:
-            locations = json.loads(registry.read_text(encoding="utf-8")) if registry.exists() else []
+            locations = (
+                json.loads(registry.read_text(encoding="utf-8"))
+                if registry.exists()
+                else []
+            )
             if not isinstance(locations, list):
                 locations = []
             directory = str(self.root.parents[1])
@@ -190,7 +196,11 @@ class StudioStore:
         roots = [self.chat_root / "runs", self.root / "runs"]
         registry = self.chat_root / "workspaces.json"
         try:
-            known = json.loads(registry.read_text(encoding="utf-8")) if registry.exists() else []
+            known = (
+                json.loads(registry.read_text(encoding="utf-8"))
+                if registry.exists()
+                else []
+            )
             if isinstance(known, list):
                 for location in known:
                     if isinstance(location, str):
@@ -202,7 +212,9 @@ class StudioStore:
             for path in root.glob("*.json"):
                 paths[str(path)] = path
         entries = []
-        for path in sorted(paths.values(), key=lambda p: p.stat().st_mtime, reverse=True)[:500]:
+        for path in sorted(
+            paths.values(), key=lambda p: p.stat().st_mtime, reverse=True
+        )[:500]:
             try:
                 run = json.loads(path.read_text(encoding="utf-8"))
                 if "session_id" not in run:
