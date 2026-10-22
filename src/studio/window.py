@@ -737,6 +737,7 @@ class StudioWindow(QMainWindow):
         else:
             self.add_message("You", prompt)
             self.transcript.begin_turn()
+            self.transcript.set_status("● Thinking")
         self.execution.setEnabled(False)
         self.reasoning_slider.setEnabled(False)
         self.busy = True
@@ -807,6 +808,8 @@ class StudioWindow(QMainWindow):
         kind = event.get("type")
         self.record(event)
         if kind == "generation_start":
+            if not self._automation_run and self.transcript.live:
+                self.transcript.live.add_activity("●  Model generation started")
             self.flush_stream()
             if self.transcript.live and self.transcript.live.text:
                 self.transcript.add_detail(
@@ -824,11 +827,20 @@ class StudioWindow(QMainWindow):
         elif kind == "thinking_delta":
             self.pending_thought += event.get("text", "")
         elif kind == "context":
+            if not self._automation_run and self.transcript.live:
+                self.transcript.live.add_activity("◌  Context prepared")
             used, budget = event.get("estimated_tokens", 0), event.get("budget", 1)
             self.context_bar.setValue(min(100, int(100 * used / max(1, budget))))
             self.context_label.setText(f"Context {used:,} / {budget:,}")
             self.context_details.setPlainText(json.dumps(event, indent=2))
         elif kind == "subagent_event":
+            if not self._automation_run and self.transcript.live:
+                child_event = event["child_event"]
+                stage = child_event.get("event", {}).get("type", "")
+                if stage in {"spawned", "finished"}:
+                    self.transcript.live.add_activity(
+                        "◇  " + child_event.get("name", "Subagent") + " · " + stage
+                    )
             self.on_child_event(event["child_event"])
         elif kind in {"automation_event", "automation_node"}:
             self.automation.handle_event(event)
@@ -861,6 +873,8 @@ class StudioWindow(QMainWindow):
             )
             self.activity.appendPlainText(f"{kind}  {summary}")
         if kind == "generation_wait":
+            if not self._automation_run:
+                self.transcript.set_status("● Waiting for model")
             self.state_label.setText(
                 f"Model generating · {event.get('elapsed_seconds', 0):.0f}s · Stop to interrupt"
             )
@@ -1007,6 +1021,10 @@ class StudioWindow(QMainWindow):
         self.send_button.setToolTip("Send message (Enter)")
         try:
             self.send_button.clicked.disconnect(self.stop)
+        except (RuntimeError, TypeError):
+            pass
+        try:
+            self.send_button.clicked.disconnect(self.send)
         except (RuntimeError, TypeError):
             pass
         self.send_button.clicked.connect(self.send)
