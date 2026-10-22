@@ -1,7 +1,8 @@
 """Model-directed execution with ordered tool receipts and bounded resources.
 
 The runtime validates protocols and owns cancellation. It does not classify task
-intent, infer verification from command names, or veto actions based on repetition.
+intent or infer verification from command names. It only bounds exact repeated
+read-only observations when the workspace has not changed.
 """
 
 from __future__ import annotations
