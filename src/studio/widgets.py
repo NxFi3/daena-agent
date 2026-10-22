@@ -159,10 +159,11 @@ class ToolActivity(QFrame):
             + (f" · {unfinished} unfinished" if unfinished else "")
         )
 
-    def add_call(self, name, arguments=None):
+    def add_call(self, name, arguments=None, call_id=None):
         self.calls.append(
             {
                 "name": str(name),
+                "call_id": call_id,
                 "arguments": arguments,
                 "status": "running",
                 "summary": "",
@@ -171,10 +172,13 @@ class ToolActivity(QFrame):
         self.show()
         self._refresh()
 
-    def finish_call(self, name, success, summary=""):
+    def finish_call(self, name, success, summary="", call_id=None):
         # The runtime emits results in dispatch order and does not expose a call ID.
         for call in self.calls:
-            if call["status"] == "running" and (not name or call["name"] == name):
+            if (
+                call["status"] == "running"
+                and (call["call_id"] == call_id if call_id else (not name or call["name"] == name))
+            ):
                 call["status"] = "complete" if success else "failed"
                 call["summary"] = str(summary)
                 break
@@ -369,12 +373,12 @@ class MessageCard(QFrame):
     def add_detail(self, text):
         self.details.appendPlainText(text)
 
-    def add_tool_call(self, name, arguments=None):
-        self.tools.add_call(name, arguments)
+    def add_tool_call(self, name, arguments=None, call_id=None):
+        self.tools.add_call(name, arguments, call_id)
         self.add_activity("↗  " + str(name) + " · started")
 
-    def add_tool_result(self, name, success, summary=""):
-        self.tools.finish_call(name, success, summary)
+    def add_tool_result(self, name, success, summary="", call_id=None):
+        self.tools.finish_call(name, success, summary, call_id)
         self.add_activity(("✓  " if success else "✕  ") + str(name or "Tool") + (" · " + str(summary)[:170] if summary else ""))
 
 
