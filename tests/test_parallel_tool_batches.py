@@ -48,7 +48,15 @@ def test_third_identical_observation_is_blocked_without_execution():
 
     def execute(calls):
         executions.append(calls[0].id)
-        return {"results": [ToolResult(True, calls[0].name, {"path": "/tmp/a", "content": "x"})]}
+        return {
+            "results": [
+                ToolResult(
+                    True,
+                    calls[0].name,
+                    {"path": "/tmp/a", "content": "x"},
+                )
+            ]
+        }
 
     runtime = SimpleNamespace(
         tool=SimpleNamespace(get_tool=lambda name: tool, execute=execute),
