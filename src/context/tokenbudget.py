@@ -56,11 +56,25 @@ class TokenBudget:
         if self.safe_margin < 0:
             self.safe_margin = int(self.context_length * 0.15)
 
+        # Keep prompt budgeting consistent with the provider's configured output cap.
+        # Otherwise Ollama can be allowed a large prompt while num_predict truncates
+        # a tool call that the context layer believed had enough output room.
+        configured_reserve = max(0, int(self.config.get("output_reserve_tokens", 0)))
+        provider_output_cap = (
+            generation_config.get("num_predict")
+            or provider_config.get("num_predict")
+            or provider_defaults.get("num_predict")
+            or 0
+        )
+        try:
+            provider_output_cap = max(0, int(provider_output_cap))
+        except (TypeError, ValueError):
+            provider_output_cap = 0
+        self.output_reserve_tokens = max(configured_reserve, provider_output_cap)
+
         model_budget = max(
             1,
-            self.context_length
-            - self.safe_margin
-            - max(0, int(self.config.get("output_reserve_tokens", 0))),
+            self.context_length - self.safe_margin - self.output_reserve_tokens,
         )
 
         # A provider may expose a very large native context window, but an
@@ -153,7 +167,7 @@ class TokenBudget:
             f"Context length={self.context_length}, "
             f"budget={self.budget}, "
             f"max_prompt_tokens={self.max_prompt_tokens}, "
-            f"safe_margin={self.safe_margin}, "
+            f"safe_margin={self.safe_margin}, "\n            f"output_reserve={self.output_reserve_tokens}, "
             f"compaction_target={self.compaction_target_tokens}, "
             f"chars_per_token={self.chars_per_token}"
         )
