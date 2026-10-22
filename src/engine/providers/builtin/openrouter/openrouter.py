@@ -124,7 +124,7 @@ class OpenRouterProvider(ProviderBase):
                                     ).get(field) or ""
             if finished in {"length", "max_tokens"}:
                 raise OutputTokenLimitError(
-                    "OpenRouter reached its output-token limit; partial tool calls were not executed.",
+                    "OpenRouter reached its output-token limit; no partial tools were executed.",
                     recovery_hint=(
                         "The previous generation was discarded before tool execution. "
                         "Continue the same task with smaller edits/tool calls."
