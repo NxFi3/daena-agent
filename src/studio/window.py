@@ -419,6 +419,7 @@ class StudioWindow(QMainWindow):
         row.addWidget(self.busy_mode)
         self.busy_mode.hide()
         self.stop_button = QPushButton("■")
+        self.stop_button.setParent(panel)
         self.stop_button.setObjectName("danger")
         self.stop_button.setToolTip("Stop generation")
         self.stop_button.setEnabled(False)
