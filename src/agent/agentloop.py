@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import queue
+from concurrent.futures import ThreadPoolExecutor
 import time
 from pathlib import Path
 from threading import Event
@@ -231,17 +232,45 @@ class Loop:
         self._emit_event(
             "tool_result",
             name=call.name,
+            call_id=call.id,
             success=result.success,
             summary=result.summary,
             content=result.content,
         )
 
     def _execute_tool_calls(self, calls, iteration):
-        # One receipt per call, in order, including malformed and cancelled calls.
-        # Repeated calls are permitted: observations and retries can be legitimate.
+        # Only tools that explicitly opt in as side-effect-free may run in
+        # parallel; the model chooses what to inspect and which calls to group.
+        concurrent = (
+            len(calls) > 1
+            and all(
+                call.valid
+                and call.name != "task_finish"
+                and getattr(self.tool.get_tool(call.name), "parallel_safe", False)
+                for call in calls
+            )
+        )
+        if concurrent:
+            for call in calls:
+                self.metrics["tool_call_attempts"] += 1
+                self._emit_event(
+                    "tool_call", name=call.name, arguments=call.args, call_id=call.id
+                )
+            with ThreadPoolExecutor(max_workers=min(8, len(calls))) as executor:
+                results = list(
+                    executor.map(
+                        lambda call: self.tool.execute([call])["results"][0], calls
+                    )
+                )
+            for call, result in zip(calls, results):
+                self._apply_result(call, result, iteration)
+            return self._stop_event is not None and self._stop_event.is_set()
+
         for call in calls:
             self.metrics["tool_call_attempts"] += 1
-            self._emit_event("tool_call", name=call.name, arguments=call.args)
+            self._emit_event(
+                "tool_call", name=call.name, arguments=call.args, call_id=call.id
+            )
             pending = None
             if call.name == "task_finish":
                 pending = (
