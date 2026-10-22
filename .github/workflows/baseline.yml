@@ -51,8 +51,6 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
       - run: python -m pip install -r requirements-dev.txt -e '.[desktop]'
-      - name: Desktop formatting
-        run: python -m ruff format --check src/studio tests/test_studio.py tests/test_studio_interactions.py tests/render_studio_preview.py tests/smoke_studio_wheel.py tests/test_reasoning_controls.py src/engine/providers/builtin/gemini/geminiprovider.py
       - run: python -m pytest -q tests
       - run: daena-studio --help
 
@@ -63,6 +61,8 @@ jobs:
           "$RUNNER_TEMP/studio-wheel/bin/python" -m pip install --ignore-installed --no-deps dist/daena_agent-0.6.0-py3-none-any.whl
           cd "$RUNNER_TEMP"
           "$RUNNER_TEMP/studio-wheel/bin/python" "$GITHUB_WORKSPACE/tests/smoke_studio_wheel.py" "$GITHUB_WORKSPACE"
+      - name: Desktop formatting
+        run: python -m ruff format --check src/studio tests/test_studio.py tests/test_studio_interactions.py tests/render_studio_preview.py tests/smoke_studio_wheel.py tests/test_reasoning_controls.py src/engine/providers/builtin/gemini/geminiprovider.py
       - name: Render desktop previews
         timeout-minutes: 1
         if: always()
