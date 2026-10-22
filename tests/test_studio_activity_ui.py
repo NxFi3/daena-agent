@@ -73,3 +73,20 @@ def test_reasoning_and_tools_are_inline_disclosures(app):
     assert not card.tools.details.isHidden()
     card.add_tool_result("read_file", True, "Read README.md")
     assert "README.md" in card.tools.details.toPlainText()
+
+
+def test_intermediate_agent_text_moves_to_previous_activity_instead_of_disappearing(app, tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "user-data-stream"))
+    window = StudioWindow(tmp_path / "stream-project")
+    try:
+        window.transcript.begin_turn()
+        window.transcript.append_stream("I will inspect the project first.")
+        assert "I will inspect the project first." in window.transcript.live.text
+        window.on_event({"type": "generation_start"})
+        assert "I will inspect the project first." in window.transcript.live.activity_log.toPlainText()
+        assert not window.transcript.live.previous_activity.isHidden()
+        window.transcript.append_stream("Final answer begins.")
+        window.transcript.finish("", "Completed")
+        assert "Final answer begins." in window.transcript.live.text
+    finally:
+        window.close()
