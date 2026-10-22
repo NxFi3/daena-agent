@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QTextCursor, QDesktopServices
 from PySide6.QtWidgets import (
@@ -28,12 +27,10 @@ class Composer(QPlainTextEdit):
         super().__init__(parent)
         self._composing = False
         self.setObjectName("composer")
-        self.setPlaceholderText(
-            "Ask Daena to build, investigate, or improve something…"
-        )
-        self.setMinimumHeight(72)
+        self.setPlaceholderText("Message Daena")
+        self.setMinimumHeight(56)
         self.setMaximumHeight(168)
-        self.setFixedHeight(72)
+        self.setFixedHeight(56)
         self.document().documentLayout().documentSizeChanged.connect(self._resize)
 
     def inputMethodEvent(self, event):
@@ -55,8 +52,8 @@ class Composer(QPlainTextEdit):
     def _resize(self, *args):
         # QTextDocument.size() is already measured in pixels. Multiplying it by
         # lineSpacing kept the composer permanently at its maximum height.
-        height = int(self.document().size().height()) + 24
-        self.setFixedHeight(max(72, min(168, height)))
+        height = int(self.document().size().height()) + 19
+        self.setFixedHeight(max(56, min(168, height)))
 
 
 class MarkdownBody(QTextBrowser):
@@ -71,9 +68,9 @@ class MarkdownBody(QTextBrowser):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.document().setDefaultStyleSheet(
             "body {line-height:1.55;} p {margin-top:6px;margin-bottom:12px;}"
-            "pre {background:#0d1320;color:#d9e7fa;padding:14px;white-space:pre-wrap;}"
-            "code {font-family:monospace;color:#c3b6ff;}"
-            "a {color:#a795ff;} h1,h2,h3 {color:#f0f3fa;}"
+            "pre {background:#282828;color:#f1f1f1;padding:14px;white-space:pre-wrap;}"
+            "code {font-family:monospace;}"
+            "a {color:#3994dd;}"
         )
         self._resize_timer = QTimer(self)
         self._resize_timer.setSingleShot(True)
@@ -110,7 +107,7 @@ class MarkdownBody(QTextBrowser):
 
 
 class ToolActivity(QFrame):
-    """Compact, expandable receipts for the tools used in one assistant turn."""
+    """Collect per-turn receipts for diagnostics without cluttering the chat."""
 
     def __init__(self):
         super().__init__()
@@ -159,7 +156,6 @@ class ToolActivity(QFrame):
                 "summary": "",
             }
         )
-        self.show()
         self._refresh()
 
     def finish_call(self, name, success, summary=""):
@@ -211,58 +207,54 @@ class MessageCard(QFrame):
         self.setObjectName("userMessage" if user else "assistantMessage")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20 if user else 8, 14, 20 if user else 8, 14)
-        layout.setSpacing(12)
-        head = QHBoxLayout()
-        avatar = QLabel("Y" if user else "✦")
-        avatar.setObjectName("userAvatar" if user else "agentAvatar")
-        avatar.setFixedSize(30, 30)
-        avatar.setAlignment(Qt.AlignCenter)
-        head.addWidget(avatar)
-        name = QLabel(speaker)
-        name.setObjectName("messageSpeaker")
-        head.addWidget(name)
-        time = QLabel(datetime.now().strftime("%H:%M"))
-        time.setObjectName("quiet")
-        head.addWidget(time)
-        head.addStretch()
-        copy = QToolButton()
-        copy.setText("Copy")
-        copy.setToolTip("Copy message text")
-        copy.clicked.connect(lambda: QApplication.clipboard().setText(self.text))
-        head.addWidget(copy)
-        layout.addLayout(head)
+        layout.setContentsMargins(
+            18 if user else 0, 12 if user else 8, 18 if user else 0, 12 if user else 8
+        )
+        layout.setSpacing(6)
         self.status = QLabel()
         self.status.setObjectName("messageStatus")
         self.status.hide()
         layout.addWidget(self.status)
         self.body = MarkdownBody()
         layout.addWidget(self.body)
+        actions = QHBoxLayout()
+        actions.setContentsMargins(0, 0, 0, 0)
+        self.copy_button = QToolButton()
+        self.copy_button.setObjectName("messageCopy")
+        self.copy_button.setText("Copy")
+        self.copy_button.setToolTip("Copy message")
+        self.copy_button.clicked.connect(
+            lambda: QApplication.clipboard().setText(self.text)
+        )
+        actions.addWidget(self.copy_button)
+        actions.addStretch(1)
+        if user:
+            self.copy_button.hide()
+        else:
+            layout.addLayout(actions)
+        # Receipts/reasoning remain available to history and diagnostics APIs;
+        # they are deliberately not rendered in the conversational surface.
         self.tools = ToolActivity()
-        layout.addWidget(self.tools)
-        self.reasoning_button = QToolButton()
+        self.tools.setParent(self)
+        self.reasoning_button = QToolButton(self)
         self.reasoning_button.setText("▸ Reasoning")
         self.reasoning_button.setCheckable(True)
         self.reasoning_button.hide()
-        self.reasoning_body = QPlainTextEdit()
+        self.reasoning_body = QPlainTextEdit(self)
         self.reasoning_body.setReadOnly(True)
         self.reasoning_body.setMaximumHeight(220)
         self.reasoning_body.hide()
         self.reasoning_button.toggled.connect(self._toggle_reasoning)
-        layout.addWidget(self.reasoning_button)
-        layout.addWidget(self.reasoning_body)
-        self.details_button = QToolButton()
+        self.details_button = QToolButton(self)
         self.details_button.setCheckable(True)
         self.details_button.setText("▸ Execution details")
         self.details_button.hide()
-        self.details = QPlainTextEdit()
+        self.details = QPlainTextEdit(self)
         self.details.setReadOnly(True)
         self.details.setMaximumHeight(180)
         self.details.document().setMaximumBlockCount(300)
         self.details.hide()
         self.details_button.toggled.connect(self.details.setVisible)
-        layout.addWidget(self.details_button)
-        layout.addWidget(self.details)
         self.set_text(text)
 
     def _toggle_reasoning(self, visible):
@@ -287,7 +279,6 @@ class MessageCard(QFrame):
         self.reasoning += text
         # UI preview is bounded; canonical history belongs to the runtime.
         self.reasoning = self.reasoning[-100000:]
-        self.reasoning_button.show()
         cursor = self.reasoning_body.textCursor()
         cursor.movePosition(QTextCursor.End)
         cursor.insertText(text)
@@ -295,11 +286,13 @@ class MessageCard(QFrame):
             self.reasoning_body.setPlainText(self.reasoning)
 
     def set_status(self, text):
-        self.status.setText(text)
-        self.status.setVisible(bool(text))
+        working = any(
+            word in text.lower() for word in ("working", "generating", "using")
+        )
+        self.status.setText("Daena is working…" if working else "")
+        self.status.setVisible(working)
 
     def add_detail(self, text):
-        self.details_button.show()
         self.details.appendPlainText(text)
 
     def add_tool_call(self, name, arguments=None):
@@ -321,7 +314,7 @@ class ConversationView(QScrollArea):
         self.container = QWidget()
         self.container.setObjectName("conversationCanvas")
         self.layout = QVBoxLayout(self.container)
-        self.layout.setContentsMargins(16, 22, 16, 28)
+        self.layout.setContentsMargins(20, 10, 20, 30)
         self.layout.setSpacing(22)
         self.welcome = self._make_welcome()
         self.layout.addWidget(self.welcome, 1)
@@ -340,37 +333,32 @@ class ConversationView(QScrollArea):
         root.addStretch(1)
         hero = QWidget()
         self.welcome_hero = hero
-        hero.setMaximumWidth(640)
+        hero.setMaximumWidth(600)
         hero.setMinimumWidth(300)
         panel = QVBoxLayout(hero)
         panel.setSpacing(12)
-        symbol = QLabel("✦")
+        symbol = QLabel("✳")
         symbol.setObjectName("welcomeSymbol")
+        symbol.setAlignment(Qt.AlignCenter)
         panel.addWidget(symbol)
-        title = QLabel("What can we build together?")
+        title = QLabel("What's on your mind?")
         title.setObjectName("welcomeTitle")
         title.setWordWrap(True)
         title.setMinimumHeight(48)
+        title.setAlignment(Qt.AlignCenter)
         panel.addWidget(title)
-        subtitle = QLabel(
-            "Code, research, automate, or explore your workspace. Daena can plan and use tools while you stay in control."
-        )
-        subtitle.setObjectName("welcomeSubtitle")
-        subtitle.setWordWrap(True)
-        subtitle.setMinimumHeight(42)
-        panel.addWidget(subtitle)
         self.welcome_buttons = []
         for heading, prompt in [
             (
-                "⌘   Explore my codebase",
+                "Explore my codebase  ↗",
                 "Explore this workspace and explain its architecture, entry points, and important files.",
             ),
             (
-                "✦   Build a new feature",
+                "Build a new feature  ↗",
                 "Help me plan and implement a useful feature in this project. Start by inspecting the codebase.",
             ),
             (
-                "◇   Find and fix a bug",
+                "Find and fix a bug  ↗",
                 "Inspect this project for a high-impact bug, fix it, and run relevant tests.",
             ),
         ]:
@@ -390,7 +378,7 @@ class ConversationView(QScrollArea):
         super().resizeEvent(event)
         if hasattr(self, "welcome_hero"):
             self.welcome_hero.setFixedWidth(
-                max(300, min(640, self.viewport().width() - 76))
+                max(300, min(600, self.viewport().width() - 76))
             )
             available = self.viewport().height()
             for index, button in enumerate(self.welcome_buttons):
@@ -417,19 +405,16 @@ class ConversationView(QScrollArea):
         card = MessageCard(
             speaker, text, user=speaker.startswith("You") or speaker == "Queued"
         )
-        card.setMaximumWidth(720 if card.objectName() == "userMessage" else 860)
+        card.setMaximumWidth(680 if card.objectName() == "userMessage" else 820)
         row = QWidget()
         row.setObjectName("messageRow")
         line = QHBoxLayout(row)
         line.setContentsMargins(0, 0, 0, 0)
         if card.objectName() == "userMessage":
-            line.addStretch(2)
-            line.addWidget(card, 7)
             line.addStretch(1)
+            line.addWidget(card, 0)
         else:
-            line.addStretch(1)
-            line.addWidget(card, 8)
-            line.addStretch(1)
+            line.addWidget(card, 1)
         self.layout.insertWidget(self.layout.count() - 1, row)
         self.cards.append(card)
         self.scroll_to_end()

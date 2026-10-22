@@ -130,6 +130,22 @@ class StudioStore:
         )
         return ident
 
+    def save_automation_run(self, title, blueprint, events, metrics):
+        """Automation receipts never become chat history entries."""
+        ident = uuid4().hex
+        write_json(
+            self.root / "automation_runs" / (ident + ".json"),
+            {
+                "schema_version": 1,
+                "id": ident,
+                "title": title[:160],
+                "blueprint": blueprint,
+                "events": events,
+                "metrics": metrics,
+            },
+        )
+        return ident
+
     def runs(self):
         paths = sorted(
             (self.root / "runs").glob("*.json"),

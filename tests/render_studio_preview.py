@@ -111,6 +111,24 @@ with TemporaryDirectory() as directory:
     window.toggle_theme()
     capture(window, "graph-light")
     window.toggle_theme()
+    window.nav.setCurrentRow(2)
+    window.automation.add_node()
+    window.automation.title.setText("Research")
+    window.automation.prompt.setPlainText(
+        "Investigate the design and capture concrete requirements."
+    )
+    window.automation.add_node()
+    window.automation.title.setText("Implementation")
+    window.automation.prompt.setPlainText(
+        "Build the feature using the research report."
+    )
+    first, second = window.automation.graph.nodes
+    window.automation.wire(first.id, second.id)
+    window.automation.canvas.fit_graph()
+    capture(window, "automation")
+    window.toggle_theme()
+    capture(window, "automation-light")
+    window.toggle_theme()
     window.nav.setCurrentRow(4)
     window.settings.show_section(0)
     capture(window, "settings")

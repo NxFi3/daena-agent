@@ -8,7 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 
 pytest.importorskip("PySide6")
-from PySide6.QtCore import Qt, QPoint, QPointF, QEvent
+from PySide6.QtCore import Qt, QPoint, QPointF, QEvent, QThread, Signal
 from PySide6.QtGui import QWheelEvent, QMouseEvent, QInputMethodEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox, QDialog
@@ -167,6 +167,9 @@ def test_tool_receipts_restore_from_archived_conversation(ui):
     assert card.tools.calls[0]["status"] == "complete"
     assert "README.md" in card.tools.details.toPlainText()
     assert card.reasoning == "Reasoning summary"
+    assert not card.tools.isVisible()
+    assert not card.reasoning_button.isVisible()
+    assert not card.details_button.isVisible()
 
 
 def test_rename_history_updates_every_turn_without_changing_session(ui, monkeypatch):
@@ -256,6 +259,179 @@ def test_quick_provider_and_reasoning_controls_persist_independent_profiles(ui):
     ui.settings.apply_form()
     assert ui.config["llm"]["provider_config"]["generation_config"]["think"] is False
     assert ui.execution.reasoning.currentData() == "off"
+
+
+def test_chat_header_model_selector_and_reasoning_slider(ui):
+    ui._refresh_model_menu()
+    assert "Choose another model" in " ".join(a.text() for a in ui.model_menu.actions())
+    ui._select_model("qwen-test:9b")
+    assert ui.config["llm"]["provider_config"]["model_name"] == "qwen-test:9b"
+    assert "qwen-test:9b" in ui.model_hint.text()
+    ui.reasoning_slider.setValue(3)
+    assert ui.execution.reasoning.currentData() == "medium"
+    assert ui.config["llm"]["provider_config"]["generation_config"]["think"] == "medium"
+    assert ui.reasoning_label.text() == "Medium"
+    ui.open_diagnostics()
+    assert ui.stream_tabs.isVisible() and ui.execution.isVisible()
+    ui.diagnostics.close()
+
+
+def test_automation_keeps_each_agents_edits_and_results_separate(ui):
+    panel = ui.automation
+    panel.add_node()
+    a = panel.selected
+    panel.title.setText("First agent")
+    panel.prompt.setPlainText("Investigate the API")
+    panel.add_node()  # Commits agent 1 even without pressing Update.
+    b = panel.selected
+    panel.title.setText("Second agent")
+    panel.prompt.setPlainText("Write tests for the API")
+    panel.select_node(a)
+    assert panel.title.text() == "First agent"
+    assert panel.prompt.toPlainText() == "Investigate the API"
+    panel.select_node(b)
+    assert panel.title.text() == "Second agent"
+    assert panel.prompt.toPlainText() == "Write tests for the API"
+    panel.handle_event(
+        {
+            "type": "automation_node",
+            "node_id": a,
+            "status": "completed",
+            "response": "API reviewed",
+        }
+    )
+    panel.handle_event(
+        {
+            "type": "automation_node",
+            "node_id": b,
+            "status": "completed",
+            "response": "Tests written",
+        }
+    )
+    assert panel.report.toPlainText() == "Tests written"
+    panel.select_node(a)
+    assert panel.report.toPlainText() == "API reviewed"
+    panel.select_node(b)
+    assert panel.report.toPlainText() == "Tests written"
+    assert panel.graph.nodes[0].title == "First agent"
+    assert panel.graph.nodes[1].prompt == "Write tests for the API"
+
+
+def test_automation_draft_survives_panel_reload(ui):
+    from src.studio.automation import AutomationPanel
+
+    panel = ui.automation
+    panel.add_node()
+    panel.title.setText("Draft researcher")
+    panel.prompt.setPlainText("Find the requirements")
+    assert panel.flush_draft()
+    assert (ui.store.root / "automation-draft.json").exists()
+    restored = AutomationPanel()
+    restored.set_draft_path(ui.store.root / "automation-draft.json")
+    assert len(restored.graph.nodes) == 1
+    assert restored.graph.nodes[0].title == "Draft researcher"
+    assert restored.graph.nodes[0].prompt == "Find the requirements"
+    restored.select_node(restored.graph.nodes[0].id)
+    assert restored.prompt.toPlainText() == "Find the requirements"
+    restored.close()
+
+
+def test_automation_runs_away_from_chat_history(ui, monkeypatch):
+    chat = ui.add_message("You", "Original conversation")
+    ui.journal = [{"type": "user_message", "text": "Original conversation"}]
+    first_session = ui.session_id
+
+    class Worker(QThread):
+        ready = Signal(object)
+        event = Signal(dict)
+        result = Signal(dict)
+
+        def __init__(
+            self,
+            config,
+            prompt,
+            *,
+            agent=None,
+            session_id=None,
+            blueprint=None,
+            parent=None,
+        ):
+            super().__init__(parent)
+            from threading import Event
+
+            self.stop = Event()
+            self.blueprint = blueprint
+
+        def run(self):
+            self.event.emit(
+                {
+                    "type": "automation_node",
+                    "node_id": self.blueprint.nodes[0].id,
+                    "status": "running",
+                }
+            )
+            self.event.emit(
+                {
+                    "type": "automation_event",
+                    "node_id": self.blueprint.nodes[0].id,
+                    "event": {"type": "content_delta", "text": "Progress"},
+                }
+            )
+            self.event.emit(
+                {
+                    "type": "automation_node",
+                    "node_id": self.blueprint.nodes[0].id,
+                    "status": "completed",
+                    "response": "Done",
+                }
+            )
+            self.result.emit(
+                {
+                    "text": "Automation completed",
+                    "metrics": {"completed": True, "outputs": {}},
+                }
+            )
+
+    monkeypatch.setattr("src.studio.window.RuntimeWorker", Worker)
+    panel = ui.automation
+    panel.add_node()
+    panel.title.setText("Independent agent")
+    panel.prompt.setPlainText("Do independent work")
+    panel.start()
+    wait_until(lambda: not ui.busy)
+    assert ui.session_id == first_session
+    assert ui.transcript.cards == [chat]
+    assert ui.journal == [{"type": "user_message", "text": "Original conversation"}]
+    assert ui.store.runs() == []
+    assert list((ui.store.root / "automation_runs").glob("*.json"))
+    assert panel.node_results[panel.graph.nodes[0].id] == "Done"
+    assert not panel.stop_button.isVisible()
+
+
+def test_automation_ports_support_drag_to_connect(app):
+    from src.studio.graph import AgentNode
+
+    canvas = GraphCanvas(editable=True)
+    canvas.resize(900, 520)
+    canvas.show()
+    canvas.upsert("first", "First", "Draft", x=0, y=0)
+    canvas.upsert("second", "Second", "Review", x=520, y=0)
+    canvas.fit_graph()
+    app.processEvents()
+    emitted = []
+    canvas.wireRequested.connect(
+        lambda source, target: emitted.append((source, target))
+    )
+    start = canvas.mapFromScene(
+        canvas.nodes["first"].pos() + QPointF(AgentNode.WIDTH, AgentNode.HEIGHT / 2)
+    )
+    end = canvas.mapFromScene(
+        canvas.nodes["second"].pos() + QPointF(0, AgentNode.HEIGHT / 2)
+    )
+    drag(canvas, start, end)
+    assert emitted == [("first", "second")]
+    assert canvas.pending_wire is None and canvas.wire_preview is None
+    canvas.close()
 
 
 def test_tool_picker_saves_real_names_and_searches_descriptions(ui, monkeypatch):
