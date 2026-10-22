@@ -33,6 +33,10 @@ class WorkingSet:
     }
 
     MAX_ARTIFACTS = 8
+    # Keep a cheap durable ledger of inspected files even after rich artifact
+    # previews age out. This prevents large-repository exploration from
+    # forgetting which files were already observed and cycling back to them.
+    MAX_OBSERVED_FILES = 128
     MAX_ARTIFACT_PREVIEW_CHARS = 3000
 
     # Deterministic filesystem state prevents the model from forgetting that
@@ -87,6 +91,8 @@ class WorkingSet:
         ] = OrderedDict()
 
         self.facts: list[str] = []
+
+        self.observed_files: OrderedDict[str, dict[str, Any]] = OrderedDict()
 
         self.unresolved: list[str] = []
 
@@ -242,6 +248,11 @@ class WorkingSet:
         )
 
         self._record_observation(result)
+        self._record_observed_file(
+            tool_call=tool_call,
+            result=result,
+            iteration=iteration,
+        )
         self._update_process_state(result=result, iteration=iteration)
 
         for effect in result.effects:
@@ -335,6 +346,33 @@ class WorkingSet:
 
         if len(self.observations) > self.MAX_OBSERVATIONS:
             del self.observations[: len(self.observations) - self.MAX_OBSERVATIONS]
+
+    def _record_observed_file(
+        self,
+        tool_call: ToolCall,
+        result: ToolResult,
+        iteration: int,
+    ) -> None:
+        """Remember successful file observations without retaining full contents."""
+        if not result.success:
+            return
+        evidence = result.evidence if isinstance(result.evidence, dict) else {}
+        path = str(evidence.get("path", "") or "").strip()
+        if not path:
+            return
+        canonical = self._canonical_path(path)
+        receipt = {
+            "path": canonical,
+            "iteration": iteration,
+            "tool": str(getattr(tool_call, "name", result.name)).strip(),
+        }
+        for key in ("start_line", "end_line", "total_lines", "truncated"):
+            if key in evidence:
+                receipt[key] = evidence[key]
+        self.observed_files.pop(canonical, None)
+        self.observed_files[canonical] = receipt
+        while len(self.observed_files) > self.MAX_OBSERVED_FILES:
+            self.observed_files.popitem(last=False)
 
     def _update_process_state(
         self,
@@ -815,6 +853,7 @@ class WorkingSet:
             "workspace_file_count": self.workspace_file_count,
             "workspace_directory_count": self.workspace_directory_count,
             "artifacts": dict(self.artifacts),
+            "observed_files": list(self.observed_files.values()),
             "verification": dict(self.verification),
             "last_failed_verification": dict(self.last_failed_verification),
             "processes": dict(self.processes),
