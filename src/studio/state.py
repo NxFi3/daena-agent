@@ -93,6 +93,22 @@ class StudioStore:
     def __init__(self, workspace):
         self.root = Path(workspace).expanduser().resolve() / ".daena" / "studio"
         self.root.mkdir(parents=True, exist_ok=True)
+        data_home = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+        self.chat_root = data_home.expanduser() / "daena" / "studio"
+        self.chat_root.mkdir(parents=True, exist_ok=True)
+        self._register_workspace()
+
+    def _register_workspace(self):
+        registry = self.chat_root / "workspaces.json"
+        try:
+            locations = json.loads(registry.read_text(encoding="utf-8")) if registry.exists() else []
+            if not isinstance(locations, list):
+                locations = []
+            directory = str(self.root.parents[1])
+            if directory not in locations:
+                write_json(registry, locations + [directory])
+        except (OSError, ValueError):
+            pass
 
     @property
     def profile(self):
@@ -118,11 +134,12 @@ class StudioStore:
     def save_run(self, session, title, events, metrics):
         ident = uuid4().hex
         write_json(
-            self.root / "runs" / (ident + ".json"),
+            self.chat_root / "runs" / (ident + ".json"),
             {
                 "schema_version": 1,
                 "id": ident,
                 "session_id": str(session),
+                "workspace": str(self.root.parents[1]),
                 "title": title[:160],
                 "events": events,
                 "metrics": metrics,
@@ -147,9 +164,30 @@ class StudioStore:
         return ident
 
     def runs(self):
-        paths = sorted(
-            (self.root / "runs").glob("*.json"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        return [(p, json.loads(p.read_text())) for p in paths[:100]]
+        # New archives are global; older workspace-local archives remain readable.
+        roots = [self.chat_root / "runs", self.root / "runs"]
+        registry = self.chat_root / "workspaces.json"
+        try:
+            known = json.loads(registry.read_text(encoding="utf-8")) if registry.exists() else []
+            if isinstance(known, list):
+                for location in known:
+                    if isinstance(location, str):
+                        roots.append(Path(location) / ".daena" / "studio" / "runs")
+        except (OSError, ValueError):
+            pass
+        paths = {}
+        for root in roots:
+            for path in root.glob("*.json"):
+                paths[str(path)] = path
+        entries = []
+        for path in sorted(paths.values(), key=lambda p: p.stat().st_mtime, reverse=True)[:500]:
+            try:
+                run = json.loads(path.read_text(encoding="utf-8"))
+                if "session_id" not in run:
+                    continue
+                if "workspace" not in run and path.parent != self.chat_root / "runs":
+                    run["workspace"] = str(path.parent.parent.parent.parent)
+                entries.append((path, run))
+            except (OSError, ValueError):
+                continue
+        return entries
