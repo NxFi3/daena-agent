@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QTextCursor, QDesktopServices
 from PySide6.QtWidgets import (
@@ -94,7 +96,8 @@ class MarkdownBody(QTextBrowser):
         width = max(80, self.viewport().width())
         if abs(self.document().textWidth() - width) > 1:
             self.document().setTextWidth(width)
-        height = max(36, min(780, int(self.document().size().height()) + 16))
+        # Avoid a nested scrollbar for normal long answers/code blocks.
+        height = max(36, min(16000, int(self.document().size().height()) + 20))
         if self.height() != height:
             self.setFixedHeight(height)
 
@@ -130,6 +133,11 @@ class ToolActivity(QFrame):
         self.details.setObjectName("toolReceipts")
         self.details.hide()
         outer.addWidget(self.details)
+        self.preview = QLabel()
+        self.preview.setObjectName("toolPreview")
+        self.preview.setTextFormat(Qt.PlainText)
+        self.preview.setWordWrap(True)
+        outer.addWidget(self.preview)
         self.hide()
 
     def _toggle(self, *args):
@@ -184,6 +192,7 @@ class ToolActivity(QFrame):
         import json
 
         lines = []
+        previews = []
         for index, call in enumerate(self.calls, 1):
             symbol = {
                 "running": "…",
@@ -193,6 +202,14 @@ class ToolActivity(QFrame):
             }[call["status"]]
             lines.append(f"{index}. {symbol} {call['name']}")
             args = call["arguments"]
+            target = ""
+            if isinstance(args, dict):
+                target = next(
+                    (str(args[key]) for key in ("file_path", "path", "query", "url")
+                     if args.get(key)),
+                    "",
+                )
+            previews.append(f"{symbol} {Path(target).name if target else call['name']}")
             if args:
                 try:
                     rendered = json.dumps(args, ensure_ascii=False, default=str)
@@ -202,6 +219,11 @@ class ToolActivity(QFrame):
             if call["summary"]:
                 lines.append("   " + call["summary"][:1200])
         self.details.setPlainText("\n".join(lines))
+        visible = previews[-5:]
+        self.preview.setText(
+            "   ·   ".join(visible)
+            + (f"   ·   +{len(previews) - 5} earlier" if len(previews) > 5 else "")
+        )
         self.show()
         arrow = "⌄" if self._expanded else "›"
         self.toggle.setText(f'<a href="toggle">{arrow} &nbsp; {self._label().strip()}</a>')
@@ -266,6 +288,9 @@ class MessageCard(QFrame):
         self.reasoning_button.setText('<a href="toggle">› &nbsp; Reasoning</a>')
         self.reasoning_button.hide()
         self._reasoning_expanded = False
+        self._render_timer = QTimer(self)
+        self._render_timer.setSingleShot(True)
+        self._render_timer.timeout.connect(self._render_stream_markdown)
         if not user:
             layout.insertWidget(1, self.reasoning_button)
         self.reasoning_body = QPlainTextEdit(self)
@@ -306,6 +331,7 @@ class MessageCard(QFrame):
         self.reasoning_button.setText(f'<a href="toggle">{arrow} &nbsp; Reasoning</a>')
 
     def set_text(self, text, *, markdown=True):
+        self._render_timer.stop()
         self.text = str(text)
         if markdown:
             self.body.setMarkdown(self.text)
@@ -317,7 +343,12 @@ class MessageCard(QFrame):
     def append_stream(self, text):
         self.text += text
         self.body.show()
-        self.body.append_text(text)
+        if not self._render_timer.isActive():
+            self._render_timer.start(90)
+
+    def _render_stream_markdown(self):
+        self.body.setMarkdown(self.text)
+        self.body.reflow()
 
     def append_reasoning(self, text):
         self.reasoning += text
@@ -331,9 +362,7 @@ class MessageCard(QFrame):
             self.reasoning_body.setPlainText(self.reasoning)
 
     def set_status(self, text):
-        working = any(
-            word in text.lower() for word in ("working", "generating", "using", "thinking", "reading", "waiting", "stopping")
-        )
+        working = str(text).startswith("●")
         self.status.setText(text if working else "")
         self.status.setVisible(working)
 
