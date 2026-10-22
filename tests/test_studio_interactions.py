@@ -202,13 +202,19 @@ def test_delete_history_removes_every_turn_for_session(ui, monkeypatch):
     ui.store.save_run(
         session,
         "Delete me",
-        [{"type": "user_message", "text": "one"}, {"type": "final_response", "text": "1"}],
+        [
+            {"type": "user_message", "text": "one"},
+            {"type": "final_response", "text": "1"},
+        ],
         {"completed": True},
     )
     ui.store.save_run(
         session,
         "Delete me",
-        [{"type": "user_message", "text": "two"}, {"type": "final_response", "text": "2"}],
+        [
+            {"type": "user_message", "text": "two"},
+            {"type": "final_response", "text": "2"},
+        ],
         {"completed": True},
     )
     ui.refresh_history()
@@ -217,10 +223,15 @@ def test_delete_history_removes_every_turn_for_session(ui, monkeypatch):
         for index in range(ui.history.count())
         if "Delete me" in ui.history.item(index).text()
     )
-    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes
+    )
     ui.delete_history(target)
     assert all(run["session_id"] != str(session) for _, run in ui.store.runs())
-    assert all("Delete me" not in ui.history.item(index).text() for index in range(ui.history.count()))
+    assert all(
+        "Delete me" not in ui.history.item(index).text()
+        for index in range(ui.history.count())
+    )
 
 def test_wheel_zoom_without_modifiers_and_visible_reset(app):
     canvas = GraphCanvas()
