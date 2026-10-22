@@ -9,7 +9,7 @@ from typing import Any, Callable, ClassVar
 import httpx
 import ollama
 
-from src.engine.providers.ProviderBase import ProviderBase
+from src.engine.providers.ProviderBase import ProviderBase\nfrom src.engine.errors import OutputTokenLimitError
 from src.models.LLMInput import LLMInput
 from src.models.LLMResult import LLMResult
 from src.utils.logger import get_logger
@@ -22,7 +22,7 @@ class OllamaProvider(ProviderBase):
 
     name = "ollama"
     defaultModel = "qwen3.6:35b-a3b-q4_K_M"
-    defaultConfig: ClassVar[dict] = {"temperature": 0.3, "num_ctx": 32768}
+    defaultConfig: ClassVar[dict] = {"temperature": 0.3, "num_ctx": 32768, "num_predict": 8192}
     DEFAULT_THINK: ClassVar[Any] = None
 
     @staticmethod
@@ -248,8 +248,13 @@ class OllamaProvider(ProviderBase):
                     "Ollama stream ended without a completion marker; partial tool calls were not executed."
                 )
             if getattr(final, "done_reason", None) == "length":
-                raise RuntimeError(
-                    "Ollama reached its output-token limit; partial tool calls were not executed. Increase num_predict or request smaller edits."
+                raise OutputTokenLimitError(
+                    "Ollama reached its output-token limit; partial tool calls were not executed.",
+                    recovery_hint=(
+                        "The previous generation was discarded before tool execution. "
+                        "Continue the same task, but split large edits into smaller tool calls "
+                        "and avoid reproducing already-completed work."
+                    ),
                 )
             serialized = [
                 call.model_dump() if hasattr(call, "model_dump") else dict(call)
