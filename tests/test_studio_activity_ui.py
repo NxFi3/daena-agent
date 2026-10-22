@@ -7,9 +7,9 @@ from PySide6.QtWidgets import QApplication
 from src.studio.window import StudioWindow
 from src.studio.widgets import MessageCard
 
-@pytest.fixture
-def app():
-    return QApplication.instance() or QApplication([])
+@pytest.fixture(scope="module")
+def app(qt_app):
+    return qt_app
 
 def test_activity_link_requires_actual_events(app):
     card = MessageCard("Daena", "Answer")
