@@ -16,7 +16,7 @@ from uuid import uuid4
 from src.agent.agentstate import AgentState
 from src.context.contextservice import ContextService
 from src.context.workingset import WorkingSet
-from src.engine.invoke import invoke
+from src.engine.invoke import invoke\nfrom src.engine.errors import RecoverableGenerationError
 from src.memories.stm.STM import STM
 from src.models.ContextEvent import ContextEvent, ContextRole, ContextType
 from src.models.LLMResult import LLMResult
@@ -63,6 +63,10 @@ class Loop:
         self.recent_context_limit = self.context.default_recent_limit
         self.search_context_top_k = self.context.default_search_top_k
         self.max_iterations = max(1, int(config.get("max_agent_iterations", 100)))
+        runtime_config = config.get("runtime") or {}
+        self.max_generation_retries = max(
+            0, min(5, int(runtime_config.get("generation_retries", 2)))
+        )
         self.tool_definitions = self.tool.get_tools()
         self.tool.subagents.event_sink = lambda event: self._emit_event(
             "subagent_event", child_event=event
@@ -84,7 +88,7 @@ class Loop:
             "context_messages": 0,
             "context_tool_results": 0,
             "context_read_results": 0,
-            "generation_failures": 0,
+            "generation_failures": 0,\n            "generation_retries": 0,
             "tool_call_attempts": 0,
             "tool_successes": 0,
             "tool_failures": 0,
