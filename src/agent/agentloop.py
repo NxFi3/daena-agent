@@ -409,7 +409,31 @@ class Loop:
                     raise InterruptedError("Interrupted by user")
                 self._consume_steering()
                 self._emit_event("iteration_start", max_iterations=self.max_iterations)
-                result = self._generate_next_action(user_task, directory)
+                try:
+                    result = self._generate_next_action(user_task, directory)
+                except RecoverableGenerationError as exc:
+                    if self._stop_event.is_set():
+                        raise InterruptedError("Interrupted by user") from exc
+                    self.metrics["generation_failures"] += 1
+                    if self.metrics["generation_retries"] >= self.max_generation_retries:
+                        raise RecoverableGenerationError(
+                            f"{exc} Recovery limit ({self.max_generation_retries}) exhausted.",
+                            recovery_hint=exc.recovery_hint,
+                        ) from exc
+                    self.metrics["generation_retries"] += 1
+                    hint = exc.recovery_hint or (
+                        "The previous generation was discarded before any tool call was executed. "
+                        "Continue with a smaller response and smaller tool calls."
+                    )
+                    self._store_nudge(hint)
+                    self._emit_event(
+                        "generation_retry",
+                        reason=str(exc),
+                        attempt=self.metrics["generation_retries"],
+                        max_attempts=self.max_generation_retries,
+                        recovery_hint=hint,
+                    )
+                    continue
                 if self._stop_event.is_set():
                     raise InterruptedError("Interrupted by user")
                 if result.tool_calls:
