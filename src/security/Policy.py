@@ -44,6 +44,15 @@ DEFAULT_ALLOWED_TOOLS = {
     "subagent",
     "task_finish",
     "make_directory",
+    "computer_use",
+    "context_search",
+    "edit_file",
+    "explore",
+    "glob",
+    "grep",
+    "list_dir",
+    "tool_search",
+    "write_file",
 }
 
 
