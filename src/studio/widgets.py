@@ -217,18 +217,21 @@ class MessageCard(QFrame):
         self.status.setObjectName("messageStatus")
         self.status.hide()
         layout.addWidget(self.status)
-        self.previous_activity = QToolButton(self)
-        self.previous_activity.setText("▸ Previous activity")
-        self.previous_activity.setCheckable(True)
+        self.previous_activity = QLabel(self)
+        self.previous_activity.setObjectName("activityLink")
+        self.previous_activity.setTextFormat(Qt.RichText)
+        self.previous_activity.setOpenExternalLinks(False)
+        self.previous_activity.setText('<a href="toggle">› &nbsp; Previous activity</a>')
         self.previous_activity.hide()
         layout.addWidget(self.previous_activity)
+        self._activity_expanded = False
         self.activity_log = QPlainTextEdit(self)
         self.activity_log.setReadOnly(True)
         self.activity_log.setMaximumHeight(170)
         self.activity_log.document().setMaximumBlockCount(150)
         self.activity_log.hide()
         layout.addWidget(self.activity_log)
-        self.previous_activity.toggled.connect(self._toggle_activity)
+        self.previous_activity.linkActivated.connect(self._toggle_activity)
         self.body = MarkdownBody()
         layout.addWidget(self.body)
         actions = QHBoxLayout()
@@ -276,9 +279,11 @@ class MessageCard(QFrame):
         self.details_button.toggled.connect(self.details.setVisible)
         self.set_text(text)
 
-    def _toggle_activity(self, visible):
-        self.activity_log.setVisible(visible)
-        self.previous_activity.setText(("▾" if visible else "▸") + " Previous activity")
+    def _toggle_activity(self, *args):
+        self._activity_expanded = not self._activity_expanded
+        self.activity_log.setVisible(self._activity_expanded)
+        arrow = "⌄" if self._activity_expanded else "›"
+        self.previous_activity.setText(f'<a href="toggle">{arrow} &nbsp; Previous activity</a>')
 
     def add_activity(self, label):
         if not label:
