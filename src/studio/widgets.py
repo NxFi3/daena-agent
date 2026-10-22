@@ -217,6 +217,18 @@ class MessageCard(QFrame):
         self.status.setObjectName("messageStatus")
         self.status.hide()
         layout.addWidget(self.status)
+        self.previous_activity = QToolButton(self)
+        self.previous_activity.setText("▸ Previous activity")
+        self.previous_activity.setCheckable(True)
+        self.previous_activity.hide()
+        layout.addWidget(self.previous_activity)
+        self.activity_log = QPlainTextEdit(self)
+        self.activity_log.setReadOnly(True)
+        self.activity_log.setMaximumHeight(170)
+        self.activity_log.document().setMaximumBlockCount(150)
+        self.activity_log.hide()
+        layout.addWidget(self.activity_log)
+        self.previous_activity.toggled.connect(self._toggle_activity)
         self.body = MarkdownBody()
         layout.addWidget(self.body)
         actions = QHBoxLayout()
@@ -264,6 +276,16 @@ class MessageCard(QFrame):
         self.details_button.toggled.connect(self.details.setVisible)
         self.set_text(text)
 
+    def _toggle_activity(self, visible):
+        self.activity_log.setVisible(visible)
+        self.previous_activity.setText(("▾" if visible else "▸") + " Previous activity")
+
+    def add_activity(self, label):
+        if not label:
+            return
+        self.activity_log.appendPlainText(str(label)[:550])
+        self.previous_activity.show()
+
     def _toggle_reasoning(self, visible):
         self.reasoning_body.setVisible(visible)
         self.reasoning_button.setText(("▾" if visible else "▸") + " Reasoning")
@@ -305,9 +327,11 @@ class MessageCard(QFrame):
 
     def add_tool_call(self, name, arguments=None):
         self.tools.add_call(name, arguments)
+        self.add_activity("↗  " + str(name) + " · started")
 
     def add_tool_result(self, name, success, summary=""):
         self.tools.finish_call(name, success, summary)
+        self.add_activity(("✓  " if success else "✕  ") + str(name or "Tool") + (" · " + str(summary)[:170] if summary else ""))
 
 
 class ConversationView(QScrollArea):
