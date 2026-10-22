@@ -21,6 +21,8 @@ class Tool(ABC):
     action: ClassVar[str] = "execute"
 
     allow_same_revision_repeat: ClassVar[bool] = False
+    # Only side-effect-free, thread-safe tools may opt into parallel execution.
+    parallel_safe: ClassVar[bool] = False
 
     def duplicate_key(
         self,
