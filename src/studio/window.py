@@ -1128,8 +1128,10 @@ class StudioWindow(QMainWindow):
         )
         error = str(child.get("error") or "")
         integration = str(child.get("integration") or "none")
+
         def block(value):
             return escape(str(value)).replace("\n", "<br>")
+
         self.agent_summary.setHtml(
             "<div style='line-height:1.55'>"
             "<h2>" + block(child.get("name", ident)) + "</h2>"
