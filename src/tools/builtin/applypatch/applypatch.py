@@ -264,28 +264,40 @@ class ApplyPatch(Tool):
         if not lines:
             raise ValueError("Patch is empty.")
 
-        # Be tolerant if the model omitted Begin Patch.
-        if lines[0].strip() != self._BEGIN:
-            if self._is_operation_line(lines[0]):
-                lines.insert(0, self._BEGIN)
-            else:
-                raise ValueError(
-                    f"Patch must start with '{self._BEGIN}' "
-                    f"or directly with a file operation."
-                )
+        begin_count = sum(1 for line in lines if line.strip() == self._BEGIN)
+        end_count = sum(1 for line in lines if line.strip() == self._END)
 
-        # Be tolerant if the model omitted End Patch.
-        #
-        # We only auto-add it when there is no existing End marker.
-        # If End exists in the middle, keep parsing strict and report it.
-        end_positions = [
-            index for index, line in enumerate(lines) if line.strip() == self._END
-        ]
+        # Some models concatenate multiple complete patch blocks into one tool
+        # argument. The old parser stopped at the first End Patch and silently
+        # ignored everything after it, which produced partial multi-file edits.
+        # Collapse those wrappers into one transaction and parse every operation.
+        if begin_count > 1 or end_count > 1:
+            payload = [
+                line
+                for line in lines
+                if line.strip() not in {self._BEGIN, self._END}
+            ]
+            lines = [self._BEGIN, *payload, self._END]
+        else:
+            # Be tolerant if the model omitted Begin Patch.
+            if lines[0].strip() != self._BEGIN:
+                if self._is_operation_line(lines[0]):
+                    lines.insert(0, self._BEGIN)
+                else:
+                    raise ValueError(
+                        f"Patch must start with '{self._BEGIN}' "
+                        f"or directly with a file operation."
+                    )
 
-        if not end_positions:
-            lines.append(self._END)
-        elif end_positions[-1] != len(lines) - 1:
-            raise ValueError(f"'{self._END}' must be the final patch marker.")
+            # Be tolerant if the model omitted End Patch.
+            end_positions = [
+                index for index, line in enumerate(lines)
+                if line.strip() == self._END
+            ]
+            if not end_positions:
+                lines.append(self._END)
+            elif end_positions[-1] != len(lines) - 1:
+                raise ValueError(f"'{self._END}' must be the final patch marker.")
 
         return "\n".join(lines)
 
@@ -407,7 +419,9 @@ class ApplyPatch(Tool):
                 continue
 
             if line.strip() == self._END:
-                break
+                raise ValueError(
+                    f"Unexpected '{self._END}' before the final patch marker."
+                )
 
             raise ValueError(
                 f"Unexpected patch line: {line!r}. "
