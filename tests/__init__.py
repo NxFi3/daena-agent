@@ -1,1 +1,5 @@
-"""Daena test package.\n\nThis marker prevents third-party installed packages named tests from shadowing\nlocal test helpers during collection.\n"""\n
+"""Daena test package.
+
+This marker prevents third-party installed packages named tests from shadowing
+local test helpers during collection.
+"""
