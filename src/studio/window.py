@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from html import escape
 import json
 from pathlib import Path
 from uuid import uuid4, UUID
@@ -609,8 +610,8 @@ class StudioWindow(QMainWindow):
         self.child_events.setReadOnly(True)
         self.inspector_tabs = QTabWidget()
         self.inspector_tabs.addTab(self.agent_summary, "Overview")
-        self.inspector_tabs.addTab(self.agent_detail, "Details")
-        self.inspector_tabs.addTab(self.child_events, "Events")
+        self.inspector_tabs.addTab(self.agent_detail, "Raw data")
+        self.inspector_tabs.addTab(self.child_events, "Activity")
         p.addWidget(self.inspector_tabs)
         row = QHBoxLayout()
         cancel = QPushButton("Cancel child")
@@ -1072,12 +1073,11 @@ class StudioWindow(QMainWindow):
             )
             self.agent_summary.setMarkdown(
                 "## Coordinator\n\n"
-                + getattr(
-                    self, "last_prompt", "Select a task to inspect its execution."
-                )
+                + getattr(self, "last_prompt", "Select a task to inspect its execution.")
                 + "\n\n"
                 + self.state_label.text()
             )
+            self.child_events.setPlainText("Select a subagent to see its activity.")
             return
         child = deepcopy(self.children.get(ident, {}))
         if self.agent and ident in self.agent.loop.tool.subagents.tasks:
@@ -1092,18 +1092,52 @@ class StudioWindow(QMainWindow):
             for item in child.get("changes", [])
         )
         metrics = child.get("metrics", {})
-        self.agent_summary.setMarkdown(
-            f"**{child.get('status', 'running').upper()}** · {child.get('mode', '')}\n\n"
-            f"### Assignment\n{child.get('task', '')}\n\n"
-            f"### Report\n{child.get('response') or 'No final report yet.'}\n\n"
-            + (f"### Error\n{child['error']}\n\n" if child.get("error") else "")
-            + f"### File changes · {child.get('integration', 'none')}\n{changes or 'No file changes recorded.'}\n\n"
-            + f"Iterations: {metrics.get('iterations', '—')} · Tokens: {metrics.get('tokens', '—')}"
+        status = str(child.get("status", "running")).replace("_", " ").title()
+        mode = str(child.get("mode", "Agent"))
+        task = str(child.get("task") or "No assignment recorded.")
+        report = str(child.get("response") or "The agent has not returned a final report.")
+        error = str(child.get("error") or "")
+        integration = str(child.get("integration") or "none")
+        def block(value):
+            return escape(str(value)).replace("\n", "<br>")
+        self.agent_summary.setHtml(
+            "<div style='line-height:1.55'>"
+            "<h2>" + block(child.get("name", ident)) + "</h2>"
+            "<p><b>● " + block(status) + "</b> &nbsp; · &nbsp; " + block(mode) + "</p>"
+            "<h3>Assignment</h3><p>" + block(task) + "</p>"
+            "<h3>Result</h3><p>" + block(report) + "</p>"
+            + ("<h3>Error</h3><p>" + block(error) + "</p>" if error else "")
+            + "<h3>Files &amp; integration</h3><p>"
+            + block(changes or "No file changes recorded.") + "</p>"
+            + "<p>Integration: " + block(integration) + "</p>"
+            + "<p>Iterations: " + block(metrics.get("iterations", "—"))
+            + " &nbsp; · &nbsp; Tokens: " + block(metrics.get("tokens", "—")) + "</p>"
+            + "</div>"
         )
-        self.child_events.setPlainText(
-            "\n".join(
-                json.dumps(e, ensure_ascii=False, default=str) for e in events[-50:]
+        # Human-readable event timeline. Full JSON remains available in Raw data.
+        event_rows = []
+        for item in events[-80:]:
+            event_type = item.get("type", "update")
+            names = {
+                "spawned": "Started",
+                "finished": "Finished",
+                "tool_call": "Using a tool",
+                "tool_result": "Tool finished",
+                "context": "Preparing context",
+                "generation_start": "Generating",
+                "generation_done": "Generated response",
+                "error": "Error",
+            }
+            title = names.get(event_type, event_type.replace("_", " ").title())
+            description = (
+                item.get("summary") or item.get("name") or item.get("task")
+                or item.get("response") or item.get("error") or ""
             )
+            if not isinstance(description, str):
+                description = str(description)
+            event_rows.append(f"• {title}" + (f" — {description[:350]}" if description else ""))
+        self.child_events.setPlainText(
+            "\n\n".join(event_rows) if event_rows else "No activity recorded yet."
         )
 
     def cancel_child(self):
