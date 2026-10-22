@@ -193,6 +193,35 @@ def test_rename_history_updates_every_turn_without_changing_session(ui, monkeypa
     assert ui.session_id == original_session
 
 
+
+def test_delete_history_removes_every_turn_for_session(ui, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    from uuid import uuid4
+
+    session = uuid4()
+    ui.store.save_run(
+        session,
+        "Delete me",
+        [{"type": "user_message", "text": "one"}, {"type": "final_response", "text": "1"}],
+        {"completed": True},
+    )
+    ui.store.save_run(
+        session,
+        "Delete me",
+        [{"type": "user_message", "text": "two"}, {"type": "final_response", "text": "2"}],
+        {"completed": True},
+    )
+    ui.refresh_history()
+    target = next(
+        ui.history.item(index)
+        for index in range(ui.history.count())
+        if "Delete me" in ui.history.item(index).text()
+    )
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    ui.delete_history(target)
+    assert all(run["session_id"] != str(session) for _, run in ui.store.runs())
+    assert all("Delete me" not in ui.history.item(index).text() for index in range(ui.history.count()))
+
 def test_wheel_zoom_without_modifiers_and_visible_reset(app):
     canvas = GraphCanvas()
     canvas.resize(800, 550)
