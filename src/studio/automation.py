@@ -75,6 +75,9 @@ class AutomationPanel(QWidget):
         self.stop_button.hide()
         row.addWidget(self.stop_button)
         root.addLayout(row)
+        self.run_state = QLabel("Ready to run")
+        self.run_state.setObjectName("muted")
+        root.addWidget(self.run_state)
         split = QSplitter()
         root.addWidget(split)
         self.canvas = GraphCanvas(editable=True)
@@ -143,6 +146,7 @@ class AutomationPanel(QWidget):
         except Exception as exc:
             self.error.emit(f"Could not restore automation draft: {exc}")
         self.name.setText(self.graph.name)
+        self.run_state.setText("Draft restored" if self.graph.nodes else "Ready to run")
         self.draw()
         self.canvas.fit_graph()
 
@@ -391,6 +395,11 @@ class AutomationPanel(QWidget):
         if event.get("type") == "automation_node":
             ident = event["node_id"]
             self.node_statuses[ident] = event["status"]
+            agent = next((n for n in self.graph.nodes if n.id == ident), None)
+            if agent:
+                self.run_state.setText(
+                    f"{agent.title} · {event['status'].replace('_', ' ').title()}"
+                )
             node = self.canvas.nodes.get(event["node_id"])
             if node:
                 node.status = event["status"]
@@ -412,7 +421,8 @@ class AutomationPanel(QWidget):
         for node in self.canvas.nodes.values():
             node.status = "idle"
             node.update()
-        self.report.setPlainText("Automation is starting…")
+        self.run_state.setText("Automation is starting…")
+        self.report.setPlainText("Waiting for this agent's result…")
 
     def set_running(self, running):
         self.name.setEnabled(not running)

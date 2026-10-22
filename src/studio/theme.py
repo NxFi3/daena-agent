@@ -81,6 +81,7 @@ QPushButton#modelBadge:hover {background:$hover;}
 QToolButton#composerAccessory {background:transparent;border:0;border-radius:16px;font-size:19px;padding:5px 9px;}
 QToolButton#composerAccessory:hover {background:$hover;}
 QSlider#reasoningSlider::groove:horizontal {height:4px;background:$border;border-radius:2px;}
+QSlider#reasoningSlider::sub-page:horizontal {background:$accent;border-radius:2px;}
 QSlider#reasoningSlider::handle:horizontal {background:$accent;width:13px;height:13px;border-radius:6px;margin:-5px 0;}
 QPushButton#sendMessage {background:$accent;color:$accent_text;border:0;border-radius:17px;font-size:20px;font-weight:800;padding:0;}
 QPushButton#sendMessage:hover {background:$accent;}
@@ -119,7 +120,7 @@ QPlainTextEdit#composer {background:transparent;border:0;padding:5px 8px;font-si
 QScrollArea#conversation,QWidget#conversationCanvas,QWidget#messageRow,QWidget#welcomeHost {background:$bg;border:0;}
 QFrame#assistantMessage {background:transparent;border:0;border-radius:0;}
 QFrame#userMessage {background:$user;border:0;border-radius:20px;}
-QFrame#assistantMessage QTextBrowser,QFrame#userMessage QTextBrowser {background:transparent;border:0;padding:0;font-size:14px;}
+QFrame#assistantMessage QTextBrowser,QFrame#userMessage QTextBrowser {background:transparent;border:0;padding:0;font-size:15px;}
 QLabel#messageStatus {color:$muted;font-size:12px;}
 QToolButton#messageCopy {background:transparent;border:0;color:$dim;padding:4px 7px;font-size:11px;}
 QToolButton#messageCopy:hover {color:$text;background:$hover;}

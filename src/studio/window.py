@@ -395,7 +395,7 @@ class StudioWindow(QMainWindow):
         self.reasoning_slider.setSingleStep(1)
         self.reasoning_slider.setPageStep(1)
         self.reasoning_slider.setTickInterval(1)
-        self.reasoning_slider.setFixedWidth(110)
+        self.reasoning_slider.setFixedWidth(150)
         self.reasoning_slider.setToolTip("Auto · Off · Low · Medium · High")
         self.reasoning_slider.valueChanged.connect(self._reasoning_slider_changed)
         row.addWidget(self.reasoning_slider)
@@ -932,7 +932,7 @@ class StudioWindow(QMainWindow):
                     or result["metrics"].get("stop_reason", "")
                 )
             )
-            self.automation.report.setPlainText(summary)
+            self.automation.run_state.setText(summary)
             try:
                 self.store.save_automation_run(
                     self.automation_blueprint.name,
@@ -1010,6 +1010,8 @@ class StudioWindow(QMainWindow):
         if self.worker:
             self.worker.stop.set()
             self.state_label.setText("Stopping · waiting for resource cleanup")
+            if self._automation_run:
+                self.automation.run_state.setText("Stopping automation…")
 
     def inspect_child(self, ident):
         self.selected_child = ident

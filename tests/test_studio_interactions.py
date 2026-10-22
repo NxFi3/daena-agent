@@ -340,6 +340,7 @@ def test_automation_runs_away_from_chat_history(ui, monkeypatch):
     chat = ui.add_message("You", "Original conversation")
     ui.journal = [{"type": "user_message", "text": "Original conversation"}]
     first_session = ui.session_id
+    ui.graph.upsert("parent", "Daena", "Original graph", "completed")
 
     class Worker(QThread):
         ready = Signal(object)
@@ -402,9 +403,12 @@ def test_automation_runs_away_from_chat_history(ui, monkeypatch):
     assert ui.session_id == first_session
     assert ui.transcript.cards == [chat]
     assert ui.journal == [{"type": "user_message", "text": "Original conversation"}]
+    assert set(ui.graph.nodes) == {"parent"}
     assert ui.store.runs() == []
     assert list((ui.store.root / "automation_runs").glob("*.json"))
     assert panel.node_results[panel.graph.nodes[0].id] == "Done"
+    assert panel.report.toPlainText() == "Done"
+    assert panel.run_state.text() == "Automation completed"
     assert not panel.stop_button.isVisible()
 
 
