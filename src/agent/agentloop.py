@@ -83,8 +83,9 @@ class Loop:
         self._finish_request = None
         self._active_process_ids = set()
         self.workspace_revision = 0
-        # Count successful read-only observations per workspace revision. Exact
-        # observations may be rechecked once, but repeated cycling is blocked.
+        # Count successful read-only observations per workspace revision.
+        # An exact observation is authoritative until the workspace changes;
+        # repeating it only burns context and commonly causes inspection loops.
         self._observation_counts = {}
         self.metrics = {
             "iterations": 0,
@@ -267,7 +268,7 @@ class Loop:
     def _duplicate_observation_result(self, call):
         key = Loop._observation_key(self, call)
         counts = getattr(self, "_observation_counts", {})
-        if key is None or counts.get(key, 0) < 2:
+        if key is None or counts.get(key, 0) < 1:
             return None
         return ToolResult(
             success=False,
@@ -276,7 +277,7 @@ class Loop:
                 "error": {
                     "type": "duplicate_observation",
                     "message": (
-                        "This exact read-only observation was already completed twice "
+                        "This exact read-only observation was already completed "
                         "without a workspace change. Reuse the existing evidence and "
                         "take the next concrete action. If different evidence is "
                         "actually needed, request a different file or narrower range."
