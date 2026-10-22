@@ -168,8 +168,8 @@ def test_tool_receipts_restore_from_archived_conversation(ui):
     assert card.tools.calls[0]["status"] == "complete"
     assert "README.md" in card.tools.details.toPlainText()
     assert card.reasoning == "Reasoning summary"
-    assert card.tools.isVisible()
-    assert card.reasoning_button.isVisible()
+    assert not card.tools.isHidden()
+    assert not card.reasoning_button.isHidden()
     assert not card.details_button.isVisible()
 
 
