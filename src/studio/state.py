@@ -42,6 +42,11 @@ def validate_config(value):
         raise ValueError("generation_config must be an object")
     if not isinstance(provider.get("model_name", ""), str):
         raise ValueError("model_name must be a string")
+    generation = provider.get("generation_config", {})
+    if "num_predict" in generation and (
+        type(generation["num_predict"]) is not int or generation["num_predict"] <= 0
+    ):
+        raise ValueError("generation_config.num_predict must be a positive integer")
     from src.agent.subagents import SubagentManager
     from src.skills.registry import SkillRegistry
 
@@ -56,6 +61,9 @@ def validate_config(value):
     protocol = value.get("runtime", {}).get("completion_protocol", "implicit")
     if protocol not in {"implicit", "explicit"}:
         raise ValueError("Invalid completion_protocol")
+    retries = value.get("runtime", {}).get("generation_retries", 2)
+    if type(retries) is not int or not 0 <= retries <= 5:
+        raise ValueError("runtime.generation_retries must be an integer from 0 to 5")
     if (
         protocol == "explicit"
         and "task_finish"
