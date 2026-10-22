@@ -22,8 +22,8 @@ from tests.test_studio import Script, wait_until
 
 
 @pytest.fixture(scope="module")
-def app():
-    return QApplication.instance() or QApplication([])
+def app(qt_app):
+    return qt_app
 
 
 @pytest.fixture
