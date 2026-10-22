@@ -28,6 +28,7 @@ def app():
 
 @pytest.fixture
 def ui(tmp_path, app, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "user-data"))
     errors = []
     monkeypatch.setattr(QMessageBox, "warning", lambda *args: errors.append(args[-1]))
     window = StudioWindow(tmp_path)
