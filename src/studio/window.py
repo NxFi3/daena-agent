@@ -315,6 +315,8 @@ class StudioWindow(QMainWindow):
         self._update_badge()
         self._apply_appearance()
         self.refresh_history()
+        if self.history.count():
+            self.open_history(self.history.item(0))
         QShortcut(QKeySequence("Ctrl+L"), self, activated=self.input.setFocus)
         QShortcut(QKeySequence("Ctrl+B"), self, activated=self.toggle_sidebar)
         QShortcut(QKeySequence("Ctrl+N"), self, activated=self.new_session)
@@ -353,6 +355,12 @@ class StudioWindow(QMainWindow):
         self.transcript = ConversationView()
         self.transcript.suggestedPrompt.connect(self.use_suggestion)
         content.addWidget(self.transcript, 1)
+        self.agents_shortcut = QPushButton("◇  Agents")
+        self.agents_shortcut.setObjectName("sidebarFooter")
+        self.agents_shortcut.setToolTip("Open the live agent graph")
+        self.agents_shortcut.clicked.connect(lambda: self.nav.setCurrentRow(1))
+        self.agents_shortcut.hide()
+        content.addWidget(self.agents_shortcut)
         self.stream_tabs = QTabWidget()
         self.stream = QPlainTextEdit()
         self.stream.setReadOnly(True)
@@ -704,6 +712,7 @@ class StudioWindow(QMainWindow):
         else:
             self.journal = []
             self.children = {}
+            self.agents_shortcut.hide()
             self.selected_child = None
             self.graph.clear_graph()
             self.graph.upsert(
@@ -731,7 +740,16 @@ class StudioWindow(QMainWindow):
         self.execution.setEnabled(False)
         self.reasoning_slider.setEnabled(False)
         self.busy = True
-        self.send_button.setText("↑")
+        self.send_button.setText("■" if not self._automation_run else "↑")
+        self.send_button.setToolTip("Stop current task" if not self._automation_run else "Send message")
+        try:
+            self.send_button.clicked.disconnect(self.send)
+        except (RuntimeError, TypeError):
+            pass
+        if not self._automation_run:
+            self.send_button.clicked.connect(self.stop)
+        else:
+            self.send_button.clicked.connect(self.send)
         self.stop_button.setEnabled(True)
         if not self._automation_run:
             self.stop_button.show()
@@ -795,7 +813,12 @@ class StudioWindow(QMainWindow):
                     "Model update: " + self.transcript.live.text[:1200]
                 )
                 self.transcript.live.set_text("")
+            if not self._automation_run:
+                self.transcript.set_status("● Generating")
+        if kind == "content_delta" and not self._automation_run:
             self.transcript.set_status("● Generating")
+        elif kind == "thinking_delta" and not self._automation_run:
+            self.transcript.set_status("● Thinking")
         if kind == "content_delta":
             self.pending_text += event.get("text", "")
         elif kind == "thinking_delta":
@@ -843,12 +866,15 @@ class StudioWindow(QMainWindow):
             )
         elif kind == "tool_call":
             self.state_label.setText("Using tool · " + event.get("name", ""))
-            self.transcript.set_status("Using " + event.get("name", "tool"))
+            if not self._automation_run:
+                self.transcript.set_status("● Working · " + event.get("name", "tool"))
             self.transcript.add_detail("→ " + event.get("name", "tool"))
             if self.transcript.live:
                 self.transcript.live.add_tool_call(
                     event.get("name", "tool"), event.get("arguments")
                 )
+        if kind == "tool_result" and not self._automation_run:
+            self.transcript.set_status("● Thinking")
         if kind == "tool_result":
             self.transcript.add_detail(
                 ("✓ " if event.get("success") else "× ")
@@ -894,6 +920,9 @@ class StudioWindow(QMainWindow):
             y=index * 155,
         )
         self.graph.connect_nodes("parent", ident)
+        active = sum(child.get("status", "running") == "running" for child in self.children.values())
+        self.agents_shortcut.setText(f"◇  {len(self.children)} Agents · {active} working   ›")
+        self.agents_shortcut.setVisible(bool(self.children))
         if kind == "spawned":
             self.graph.fit_graph()
         if self.selected_child == ident:
@@ -974,6 +1003,13 @@ class StudioWindow(QMainWindow):
         self.stop_button.setEnabled(False)
         self.stop_button.hide()
         self.send_button.setText("↑")
+        self.send_button.setEnabled(True)
+        self.send_button.setToolTip("Send message (Enter)")
+        try:
+            self.send_button.clicked.disconnect(self.stop)
+        except (RuntimeError, TypeError):
+            pass
+        self.send_button.clicked.connect(self.send)
         self.busy_mode.hide()
         self.execution.setEnabled(True)
         self.reasoning_slider.setEnabled(True)
@@ -1008,6 +1044,8 @@ class StudioWindow(QMainWindow):
     def stop(self):
         self.queued.clear()
         if self.worker:
+            self.send_button.setEnabled(False)
+            self.send_button.setToolTip("Stopping…")
             self.worker.stop.set()
             self.state_label.setText("Stopping · waiting for resource cleanup")
             if self._automation_run:
@@ -1109,6 +1147,7 @@ class StudioWindow(QMainWindow):
         self.session_id = uuid4()
         self.journal = []
         self.children = {}
+        self.agents_shortcut.hide()
         self._result = None
         self.selected_child = None
         self.graph.clear_graph()
