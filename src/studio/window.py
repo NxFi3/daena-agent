@@ -819,6 +819,19 @@ class StudioWindow(QMainWindow):
                 self.transcript.live.set_text("")
             if not self._automation_run:
                 self.transcript.set_status("● Generating")
+        if kind == "generation_retry" and not self._automation_run:
+            # The provider explicitly discarded the previous generation, so no
+            # partial prose/reasoning from that attempt should look authoritative.
+            self.pending_text = ""
+            self.pending_thought = ""
+            if self.transcript.live:
+                self.transcript.live.set_text("")
+                self.transcript.live.reasoning = ""
+                self.transcript.live.reasoning_body.clear()
+                self.transcript.live.reasoning_button.hide()
+            attempt = event.get("attempt", 1)
+            maximum = event.get("max_attempts", 1)
+            self.transcript.set_status(f"● Retrying smaller response · {attempt}/{maximum}")
         if kind == "content_delta" and not self._automation_run:
             self.transcript.set_status("● Generating")
         elif kind == "thinking_delta" and not self._automation_run:
