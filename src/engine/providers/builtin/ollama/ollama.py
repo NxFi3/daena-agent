@@ -9,7 +9,8 @@ from typing import Any, Callable, ClassVar
 import httpx
 import ollama
 
-from src.engine.providers.ProviderBase import ProviderBase\nfrom src.engine.errors import OutputTokenLimitError
+from src.engine.providers.ProviderBase import ProviderBase
+from src.engine.errors import OutputTokenLimitError
 from src.models.LLMInput import LLMInput
 from src.models.LLMResult import LLMResult
 from src.utils.logger import get_logger
