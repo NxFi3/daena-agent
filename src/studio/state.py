@@ -163,6 +163,20 @@ class StudioStore:
         )
         return ident
 
+    def delete_session(self, session_id):
+        """Delete every archived turn for one conversation session."""
+        target = str(session_id)
+        deleted = 0
+        for path, run in list(self.runs()):
+            if str(run.get("session_id")) != target:
+                continue
+            try:
+                path.unlink()
+                deleted += 1
+            except FileNotFoundError:
+                continue
+        return deleted
+
     def runs(self):
         # New archives are global; older workspace-local archives remain readable.
         roots = [self.chat_root / "runs", self.root / "runs"]
