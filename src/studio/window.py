@@ -1099,7 +1099,9 @@ class StudioWindow(QMainWindow):
             )
             self.agent_summary.setMarkdown(
                 "## Coordinator\n\n"
-                + getattr(self, "last_prompt", "Select a task to inspect its execution.")
+                + getattr(
+                    self, "last_prompt", "Select a task to inspect its execution."
+                )
                 + "\n\n"
                 + self.state_label.text()
             )
@@ -1121,7 +1123,9 @@ class StudioWindow(QMainWindow):
         status = str(child.get("status", "running")).replace("_", " ").title()
         mode = str(child.get("mode", "Agent"))
         task = str(child.get("task") or "No assignment recorded.")
-        report = str(child.get("response") or "The agent has not returned a final report.")
+        report = str(
+            child.get("response") or "The agent has not returned a final report."
+        )
         error = str(child.get("error") or "")
         integration = str(child.get("integration") or "none")
         def block(value):
@@ -1131,13 +1135,21 @@ class StudioWindow(QMainWindow):
             "<h2>" + block(child.get("name", ident)) + "</h2>"
             "<p><b>● " + block(status) + "</b> &nbsp; · &nbsp; " + block(mode) + "</p>"
             "<h3>Assignment</h3><p>" + block(task) + "</p>"
-            "<h3>Result</h3><p>" + block(report) + "</p>"
+            "<h3>Result</h3><p>"
+            + block(report)
+            + "</p>"
             + ("<h3>Error</h3><p>" + block(error) + "</p>" if error else "")
             + "<h3>Files &amp; integration</h3><p>"
-            + block(changes or "No file changes recorded.") + "</p>"
-            + "<p>Integration: " + block(integration) + "</p>"
-            + "<p>Iterations: " + block(metrics.get("iterations", "—"))
-            + " &nbsp; · &nbsp; Tokens: " + block(metrics.get("tokens", "—")) + "</p>"
+            + block(changes or "No file changes recorded.")
+            + "</p>"
+            + "<p>Integration: "
+            + block(integration)
+            + "</p>"
+            + "<p>Iterations: "
+            + block(metrics.get("iterations", "—"))
+            + " &nbsp; · &nbsp; Tokens: "
+            + block(metrics.get("tokens", "—"))
+            + "</p>"
             + "</div>"
         )
         # Human-readable event timeline. Full JSON remains available in Raw data.
@@ -1156,12 +1168,18 @@ class StudioWindow(QMainWindow):
             }
             title = names.get(event_type, event_type.replace("_", " ").title())
             description = (
-                item.get("summary") or item.get("name") or item.get("task")
-                or item.get("response") or item.get("error") or ""
+                item.get("summary")
+                or item.get("name")
+                or item.get("task")
+                or item.get("response")
+                or item.get("error")
+                or ""
             )
             if not isinstance(description, str):
                 description = str(description)
-            event_rows.append(f"• {title}" + (f" — {description[:350]}" if description else ""))
+            event_rows.append(
+                f"• {title}" + (f" — {description[:350]}" if description else "")
+            )
         self.child_events.setPlainText(
             "\n\n".join(event_rows) if event_rows else "No activity recorded yet."
         )
@@ -1389,13 +1407,19 @@ class StudioWindow(QMainWindow):
             self.last_prompt = run["title"]
             # Restore the project that originally owned this conversation.
             original_workspace = run.get("workspace")
-            if original_workspace and Path(original_workspace).is_dir() and Path(original_workspace).resolve() != self.workspace:
+            if (
+                original_workspace
+                and Path(original_workspace).is_dir()
+                and Path(original_workspace).resolve() != self.workspace
+            ):
                 self.workspace = Path(original_workspace).resolve()
                 self.store = StudioStore(self.workspace)
                 self.workspace_edit.setText(str(self.workspace))
                 self.workspace_edit.setToolTip(str(self.workspace))
                 self.workspace_button.setToolTip(f"Change workspace\n{self.workspace}")
-                self.automation.set_draft_path(self.store.root / "automation-draft.json")
+                self.automation.set_draft_path(
+                    self.store.root / "automation-draft.json"
+                )
                 self.skills.refresh()
             self._result = {"metrics": run["metrics"]}
             self.graph.upsert(
