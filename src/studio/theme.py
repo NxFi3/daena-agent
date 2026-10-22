@@ -59,7 +59,7 @@ QLabel#modelHint {color:$dim;font-size:12px;padding:4px 9px;}
 QLabel#composerHint {color:$muted;font-size:12px;}
 QLabel#composerNote {color:$dim;font-size:11px;padding-top:4px;}
 QLabel#runtimeStatus {color:$muted;font-size:11px;}
-QFrame#header {background:$bg;border:0;}
+QFrame#header {background:$bg;border:0;border-bottom:1px solid $border;}
 QFrame#sidebar {background:$sidebar;border:0;}
 QFrame#statusBar {background:$bg;border-top:1px solid $border;}
 QPushButton,QToolButton {background:$surface;border:1px solid $border;border-radius:10px;padding:8px 12px;font-weight:550;color:$text;}
@@ -120,14 +120,16 @@ QPlainTextEdit#composer {background:transparent;border:0;padding:5px 8px;font-si
 QScrollArea#conversation,QWidget#conversationCanvas,QWidget#messageRow,QWidget#welcomeHost {background:$bg;border:0;}
 QFrame#assistantMessage {background:transparent;border:0;border-radius:0;}
 QFrame#userMessage {background:$user;border:0;border-radius:20px;}
-QFrame#assistantMessage QTextBrowser,QFrame#userMessage QTextBrowser {background:transparent;border:0;padding:0;font-size:15px;}
-QLabel#messageStatus {color:$muted;font-size:12px;}
+QFrame#assistantMessage QTextBrowser,QFrame#userMessage QTextBrowser {background:transparent;border:0;padding:0;font-size:15px;selection-background-color:$selected;}
+QLabel#messageStatus {color:$muted;font-size:12px;padding:2px 0 4px;}
 QToolButton#messageCopy {background:transparent;border:0;color:$dim;padding:4px 7px;font-size:11px;}
 QToolButton#messageCopy:hover {color:$text;background:$hover;}
-QFrame#toolActivity {background:transparent;border:0;}
+QFrame#toolActivity {background:transparent;border:0;margin:0;padding:2px 0 6px;}
+QLabel#toolPreview {color:$muted;font-size:11px;padding:3px 0 4px;}
+QLabel#activityLink {color:$muted;font-size:12px;}
 QPlainTextEdit#toolReceipts {background:$code;color:$text;border:1px solid $border;border-radius:8px;font-family:monospace;font-size:11px;}
 QLabel#welcomeSymbol {font-size:38px;font-weight:600;color:$text;}
-QLabel#welcomeTitle {font-size:29px;font-weight:600;color:$text;}
+QLabel#welcomeTitle {font-size:30px;font-weight:600;color:$text;padding:4px 0 10px;}
 QPushButton#suggestion {text-align:left;background:transparent;border:1px solid $border;border-radius:18px;padding:12px 16px;color:$muted;font-size:13px;font-weight:500;}
 QPushButton#suggestion:hover {background:$hover;color:$text;}
 QCheckBox {spacing:9px;padding:4px;background:transparent;}
