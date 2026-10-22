@@ -62,8 +62,17 @@ class TokenBudget:
         configured_reserve = max(0, int(self.config.get("output_reserve_tokens", 0)))
         provider_output_cap = (
             generation_config.get("num_predict")
+            or generation_config.get("max_output_tokens")
+            or generation_config.get("max_completion_tokens")
+            or generation_config.get("max_tokens")
             or provider_config.get("num_predict")
+            or provider_config.get("max_output_tokens")
+            or provider_config.get("max_completion_tokens")
+            or provider_config.get("max_tokens")
             or provider_defaults.get("num_predict")
+            or provider_defaults.get("max_output_tokens")
+            or provider_defaults.get("max_completion_tokens")
+            or provider_defaults.get("max_tokens")
             or 0
         )
         try:
