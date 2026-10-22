@@ -14,6 +14,7 @@ from src.studio.widgets import MessageCard, ToolActivity
 
 def test_tool_receipts_are_correlated_and_previewed():
     app = QApplication.instance() or QApplication([])
+    assert app is not None
     panel = ToolActivity()
     panel.add_call("read_file", {"file_path": "a.py"}, "a")
     panel.add_call("read_file", {"file_path": "b.py"}, "b")
