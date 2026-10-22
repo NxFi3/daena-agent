@@ -744,7 +744,9 @@ class StudioWindow(QMainWindow):
         self.reasoning_slider.setEnabled(False)
         self.busy = True
         self.send_button.setText("■" if not self._automation_run else "↑")
-        self.send_button.setToolTip("Stop current task" if not self._automation_run else "Send message")
+        self.send_button.setToolTip(
+            "Stop current task" if not self._automation_run else "Send message"
+        )
         try:
             self.send_button.clicked.disconnect(self.send)
         except (RuntimeError, TypeError):
@@ -832,7 +834,9 @@ class StudioWindow(QMainWindow):
                 self.transcript.live.reasoning_button.hide()
             attempt = event.get("attempt", 1)
             maximum = event.get("max_attempts", 1)
-            self.transcript.set_status(f"● Retrying smaller response · {attempt}/{maximum}")
+            self.transcript.set_status(
+                f"● Retrying smaller response · {attempt}/{maximum}"
+            )
         if kind == "content_delta" and not self._automation_run:
             self.transcript.set_status("● Generating")
         elif kind == "thinking_delta" and not self._automation_run:
@@ -876,7 +880,10 @@ class StudioWindow(QMainWindow):
             if self.transcript.live:
                 message = event.get("text", "")
                 if message:
-                    if self.transcript.live.text and self.transcript.live.text != message:
+                    if (
+                        self.transcript.live.text
+                        and self.transcript.live.text != message
+                    ):
                         self.transcript.live.add_activity(
                             "Model update\n" + self.transcript.live.text.strip()
                         )
@@ -956,8 +963,13 @@ class StudioWindow(QMainWindow):
             y=index * 155,
         )
         self.graph.connect_nodes("parent", ident)
-        active = sum(child.get("status", "running") == "running" for child in self.children.values())
-        self.agents_shortcut.setText(f"◇  {len(self.children)} Agents · {active} working   ›")
+        active = sum(
+            child.get("status", "running") == "running"
+            for child in self.children.values()
+        )
+        self.agents_shortcut.setText(
+            f"◇  {len(self.children)} Agents · {active} working   ›"
+        )
         self.agents_shortcut.setVisible(bool(self.children))
         if kind == "spawned":
             self.graph.fit_graph()
