@@ -807,8 +807,6 @@ class StudioWindow(QMainWindow):
         kind = event.get("type")
         self.record(event)
         if kind == "generation_start":
-            if not self._automation_run and self.transcript.live:
-                self.transcript.live.add_activity("●  Model generation started")
             self.flush_stream()
             if self.transcript.live and self.transcript.live.text:
                 self.transcript.add_detail(
@@ -826,8 +824,6 @@ class StudioWindow(QMainWindow):
         elif kind == "thinking_delta":
             self.pending_thought += event.get("text", "")
         elif kind == "context":
-            if not self._automation_run and self.transcript.live:
-                self.transcript.live.add_activity("◌  Context prepared")
             used, budget = event.get("estimated_tokens", 0), event.get("budget", 1)
             self.context_bar.setValue(min(100, int(100 * used / max(1, budget))))
             self.context_label.setText(f"Context {used:,} / {budget:,}")
