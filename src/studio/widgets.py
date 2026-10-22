@@ -156,6 +156,7 @@ class ToolActivity(QFrame):
                 "summary": "",
             }
         )
+        self.show()
         self._refresh()
 
     def finish_call(self, name, success, summary=""):
@@ -197,6 +198,7 @@ class ToolActivity(QFrame):
             if call["summary"]:
                 lines.append("   " + call["summary"][:1200])
         self.details.setPlainText("\n".join(lines))
+        self.show()
         self.toggle.setText(("▾" if self.toggle.isChecked() else "▸") + self._label())
 
 
@@ -235,15 +237,20 @@ class MessageCard(QFrame):
         # Receipts/reasoning remain available to history and diagnostics APIs;
         # they are deliberately not rendered in the conversational surface.
         self.tools = ToolActivity()
-        self.tools.setParent(self)
+        if not user:
+            layout.insertWidget(1, self.tools)
         self.reasoning_button = QToolButton(self)
         self.reasoning_button.setText("▸ Reasoning")
         self.reasoning_button.setCheckable(True)
         self.reasoning_button.hide()
+        if not user:
+            layout.insertWidget(1, self.reasoning_button)
         self.reasoning_body = QPlainTextEdit(self)
         self.reasoning_body.setReadOnly(True)
         self.reasoning_body.setMaximumHeight(220)
         self.reasoning_body.hide()
+        if not user:
+            layout.insertWidget(2, self.reasoning_body)
         self.reasoning_button.toggled.connect(self._toggle_reasoning)
         self.details_button = QToolButton(self)
         self.details_button.setCheckable(True)
@@ -279,6 +286,7 @@ class MessageCard(QFrame):
         self.reasoning += text
         # UI preview is bounded; canonical history belongs to the runtime.
         self.reasoning = self.reasoning[-100000:]
+        self.reasoning_button.show()
         cursor = self.reasoning_body.textCursor()
         cursor.movePosition(QTextCursor.End)
         cursor.insertText(text)
@@ -289,7 +297,7 @@ class MessageCard(QFrame):
         working = any(
             word in text.lower() for word in ("working", "generating", "using")
         )
-        self.status.setText("Daena is working…" if working else "")
+        self.status.setText(text if working else "")
         self.status.setVisible(working)
 
     def add_detail(self, text):
