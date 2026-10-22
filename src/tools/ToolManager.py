@@ -35,8 +35,24 @@ class ToolManager:
         self.skills = SkillRegistry(self.config)
         self.subagents = SubagentManager(self.config)
         self.stop_event = None
+        self._workspace_root: Path | None = None
+        self._llm_provider = None
+        self._context_stm = None
+        self._session_id_provider = None
+        self._active_tool_names: list[str] = []
+        self._last_tool_search_query = ""
+
+    def set_llm_provider(self, llm_provider) -> None:
+        self._llm_provider = llm_provider
+        self._bind_runtime_services()
+
+    def set_context_store(self, stm, session_id_provider) -> None:
+        self._context_stm = stm
+        self._session_id_provider = session_id_provider
+        self._bind_runtime_services()
 
     def set_workspace(self, directory: str) -> None:
+        self._workspace_root = Path(directory).expanduser().resolve()
         self.subagents.set_workspace(directory)
         self.skills.set_workspace(directory)
         self.security.set_workspace(directory)
@@ -89,11 +105,28 @@ class ToolManager:
                 tool.skill_registry = self.skills
             if hasattr(tool, "subagent_manager"):
                 tool.subagent_manager = self.subagents
-            setter = getattr(tool, "set_process_manager", None)
-            if callable(setter):
-                setter(self.process_manager)
+
+            process_setter = getattr(tool, "set_process_manager", None)
+            if callable(process_setter):
+                process_setter(self.process_manager)
             elif hasattr(tool, "process_manager"):
                 tool.process_manager = self.process_manager
+
+            workspace_setter = getattr(tool, "set_workspace", None)
+            if callable(workspace_setter) and self._workspace_root is not None:
+                workspace_setter(self._workspace_root)
+
+            llm_setter = getattr(tool, "set_llm_provider", None)
+            if callable(llm_setter) and self._llm_provider is not None:
+                llm_setter(self._llm_provider)
+
+            context_setter = getattr(tool, "set_context_store", None)
+            if callable(context_setter) and self._context_stm is not None:
+                context_setter(self._context_stm, self._session_id_provider)
+
+            search_setter = getattr(tool, "set_searcher", None)
+            if callable(search_setter):
+                search_setter(self._search_and_activate_tools)
 
     def get_tools(self) -> list[dict]:
         if self._definitions is None:
@@ -125,6 +158,206 @@ class ToolManager:
             visible.append(definition)
 
         return visible
+
+    CORE_MODEL_TOOLS = frozenset({
+        "tool_search",
+        "read_file",
+        "apply_patch",
+        "command_exec",
+        "process_poll",
+        "process_write",
+        "process_stop",
+        "make_directory",
+        "skill_list",
+        "skill_read",
+        "subagent",
+        "task_finish",
+    })
+
+    @staticmethod
+    def _search_tokens(value: str) -> list[str]:
+        expanded = re.sub(r"([a-z])([A-Z])", r"\1 \2", str(value or ""))
+        tokens = re.findall(r"[a-z0-9]+", expanded.casefold())
+        aliases = {
+            "editing": "edit",
+            "edited": "edit",
+            "writing": "write",
+            "written": "write",
+            "files": "file",
+            "directories": "directory",
+            "searching": "search",
+            "finding": "find",
+            "browsing": "browse",
+            "desktop": "computer",
+            "gui": "computer",
+            "screen": "computer",
+            "history": "context",
+            "memory": "context",
+        }
+        return [aliases.get(token, token) for token in tokens]
+
+    def _search_and_activate_tools(
+        self,
+        query: str,
+        top_k: int = 5,
+    ) -> dict[str, Any]:
+        """Find allowed capabilities and expose the best matches next turn."""
+        try:
+            limit = max(1, min(8, int(top_k)))
+        except (TypeError, ValueError):
+            limit = 5
+
+        query_tokens = set(self._search_tokens(query))
+        stop = {
+            "a", "an", "and", "for", "from", "i", "in", "is", "it",
+            "of", "on", "or", "please", "the", "this", "to", "tool",
+            "tools", "use", "want", "with", "you", "your", "need",
+        }
+        query_tokens.difference_update(stop)
+        if not query_tokens:
+            return {
+                "matches": [],
+                "active_tools": list(self._active_tool_names),
+            }
+
+        synonyms = {
+            "fix": {"edit", "patch", "write"},
+            "edit": {"fix", "patch", "replace", "file"},
+            "write": {"create", "file", "save"},
+            "create": {"write", "file", "directory"},
+            "search": {"find", "grep", "glob", "context"},
+            "find": {"search", "grep", "glob"},
+            "inspect": {"read", "list", "explore"},
+            "codebase": {"explore", "grep", "glob", "list"},
+            "repository": {"explore", "grep", "glob", "list"},
+            "computer": {"desktop", "gui", "screen", "click", "type"},
+            "browser": {"computer", "web"},
+            "context": {"history", "memory", "previous", "earlier"},
+            "previous": {"context", "history", "memory"},
+            "earlier": {"context", "history", "memory"},
+        }
+        expanded = set(query_tokens)
+        for token in tuple(query_tokens):
+            expanded.update(synonyms.get(token, set()))
+
+        definitions = self.get_tools()
+        scored: list[tuple[float, dict[str, Any]]] = []
+        for definition in definitions:
+            function = (
+                definition.get("function", {})
+                if isinstance(definition, dict)
+                else {}
+            )
+            name = str(function.get("name", "")).strip().lower()
+            if not name or name == "tool_search":
+                continue
+
+            name_tokens = set(self._search_tokens(name.replace("_", " ")))
+            description_tokens = set(
+                self._search_tokens(function.get("description", ""))
+            )
+            parameters = function.get("parameters", {})
+            schema_tokens = set(self._search_tokens(str(parameters)))
+
+            score = 0.0
+            score += 6.0 * len(expanded & name_tokens)
+            score += 2.0 * len(expanded & description_tokens)
+            score += 0.5 * len(expanded & schema_tokens)
+            normalized_query = " ".join(self._search_tokens(query))
+            normalized_name = " ".join(self._search_tokens(name.replace("_", " ")))
+            if normalized_name and normalized_name in normalized_query:
+                score += 10.0
+
+            if score > 0:
+                scored.append((score, definition))
+
+        scored.sort(
+            key=lambda item: (
+                -item[0],
+                str((item[1].get("function") or {}).get("name", "")),
+            )
+        )
+        selected = scored[:limit]
+
+        matched_names = [
+            str((definition.get("function") or {}).get("name", "")).strip().lower()
+            for _, definition in selected
+        ]
+        tool_config = self.config.get("tools") or {}
+        try:
+            max_active = int(tool_config.get("max_active_search_tools", 8))
+        except (AttributeError, TypeError, ValueError):
+            max_active = 8
+        max_active = max(1, min(12, max_active))
+
+        previous = [
+            name for name in self._active_tool_names
+            if name not in matched_names
+        ]
+        self._active_tool_names = (matched_names + previous)[:max_active]
+        self._last_tool_search_query = str(query)
+
+        matches = [
+            {
+                "name": str((definition.get("function") or {}).get("name", "")),
+                "description": str(
+                    (definition.get("function") or {}).get("description", "")
+                )[:260],
+                "relevance": round(score, 3),
+            }
+            for score, definition in selected
+        ]
+        return {
+            "matches": matches,
+            "active_tools": list(self._active_tool_names),
+        }
+
+    def reset_tool_selection(self) -> None:
+        self._active_tool_names = []
+        self._last_tool_search_query = ""
+
+    def get_model_tools(self) -> list[dict]:
+        """Expose core tools plus capabilities selected through tool_search."""
+        visible = self.get_tools()
+        by_name = {
+            str((definition.get("function") or {}).get("name", "")).strip().lower():
+                definition
+            for definition in visible
+            if isinstance(definition, dict)
+            and isinstance(definition.get("function"), dict)
+        }
+
+        search_definition = by_name.get("tool_search")
+        if search_definition is None:
+            return visible
+
+        always_names = set(self.CORE_MODEL_TOOLS)
+        for name in by_name:
+            tool = self.toolregistry.get(name)
+            if str(getattr(tool, "model_exposure", "")).strip().lower() == "always":
+                always_names.add(name)
+
+        ordered: list[dict] = []
+        emitted: set[str] = set()
+
+        def add(name: str) -> None:
+            if name in emitted:
+                return
+            definition = by_name.get(name)
+            if definition is None:
+                return
+            emitted.add(name)
+            ordered.append(definition)
+
+        add("tool_search")
+        for definition in visible:
+            name = str((definition.get("function") or {}).get("name", "")).strip().lower()
+            if name in always_names and name != "tool_search":
+                add(name)
+        for name in self._active_tool_names:
+            add(name)
+
+        return ordered
 
     def _find_tool(self, name: str):
         return self.toolregistry.get(str(name).strip().lower())
@@ -160,7 +393,7 @@ class ToolManager:
         if name == "make_directory":
             args["paths"] = [str(self._resolve_execution_path(p)) for p in args["paths"]]
 
-        elif name == "read_file":
+        elif name in {"read_file", "write_file", "edit_file"}:
             args["file_path"] = str(
                 self._resolve_execution_path(args["file_path"])
             )
