@@ -176,30 +176,51 @@ class ApplyPatch(Tool):
                 message=str(exc),
             )
 
-        files_changed = len(results)
+        already_applied = sum(
+            1 for item in results if item.get("already_applied", False)
+        )
+        files_changed = len(results) - already_applied
         added = sum(item["added"] for item in results)
         removed = sum(item["removed"] for item in results)
 
         ops_summary = []
-
         for item in results:
             filename = Path(item["path"]).name
-            ops_summary.append(f"{item['operation']}:{filename}")
+            suffix = " (already applied)" if item.get("already_applied") else ""
+            ops_summary.append(f"{item['operation']}:{filename}{suffix}")
+
+        idempotent_replay = bool(results) and already_applied == len(results)
+        if idempotent_replay:
+            summary = (
+                "Patch is already fully applied; no files changed. "
+                f"Operations: [{', '.join(ops_summary)}]. "
+                "Do not retry this patch; continue with the next action."
+            )
+        else:
+            replay_note = (
+                f" {already_applied} operation(s) were already satisfied."
+                if already_applied
+                else ""
+            )
+            summary = (
+                f"Applied patch to {files_changed} file(s): "
+                f"{added} addition(s), {removed} deletion(s)."
+                f"{replay_note} Operations: [{', '.join(ops_summary)}]. "
+                "Use the returned file preview when available; "
+                "re-read large files only when necessary."
+            )
 
         return self._success(
-            summary=(
-                f"Applied patch to {files_changed} file(s): "
-                f"{added} addition(s), {removed} deletion(s). "
-                f"Operations: [{', '.join(ops_summary)}]. "
-                f"Use the returned file preview when available; "
-                f"re-read large files only when necessary."
-            ),
+            summary=summary,
             files=results,
             statistics={
+                "operations": len(results),
                 "files_changed": files_changed,
+                "already_applied": already_applied,
                 "added": added,
                 "removed": removed,
             },
+            idempotent_replay=idempotent_replay,
         )
 
     def _parse_patch(self, patch: str) -> list[PatchOperation]:
@@ -1084,7 +1105,17 @@ class ApplyPatch(Tool):
         summary: str,
         files: list[dict[str, Any]],
         statistics: dict[str, int],
+        idempotent_replay: bool = False,
     ) -> ToolResult:
+
+        metadata: dict[str, Any] = {
+            "idempotent_replay": idempotent_replay,
+        }
+        if idempotent_replay:
+            metadata["recovery_hint"] = (
+                "This exact patch is already reflected in the workspace. "
+                "Do not retry it; continue with the next distinct action."
+            )
 
         return ToolResult(
             success=True,
@@ -1096,7 +1127,7 @@ class ApplyPatch(Tool):
                 "files": files,
                 "statistics": statistics,
             },
-            metadata={},
+            metadata=metadata,
         )
 
     def _failure(
