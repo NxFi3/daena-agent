@@ -560,14 +560,29 @@ class ApplyPatch(Tool):
         path: Path,
         operation: PatchOperation,
     ) -> dict[str, Any]:
+        content = operation.content or ""
 
         if path.exists():
-            raise ValueError(f"Cannot add '{path}': file already exists.")
-
-        if path.is_dir():
-            raise ValueError(f"Cannot add '{path}': path is a directory.")
-
-        content = operation.content or ""
+            if not path.is_file():
+                raise ValueError(f"Cannot add '{path}': path is not a file.")
+            try:
+                current = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError as exc:
+                raise ValueError(
+                    f"Cannot add '{path}': existing file is not UTF-8 text."
+                ) from exc
+            if current == content:
+                return {
+                    "operation": "add",
+                    "path": path,
+                    "content": current,
+                    "added": 0,
+                    "removed": 0,
+                    "already_applied": True,
+                }
+            raise ValueError(
+                f"Cannot add '{path}': file already exists with different content."
+            )
 
         return {
             "operation": "add",
@@ -575,6 +590,7 @@ class ApplyPatch(Tool):
             "content": content,
             "added": self._count_lines(content),
             "removed": 0,
+            "already_applied": False,
         }
 
     def _plan_update(
@@ -595,7 +611,7 @@ class ApplyPatch(Tool):
             raise ValueError(f"Cannot update non-UTF-8/binary file '{path}'.") from exc
 
         try:
-            updated, added, removed = self._apply_hunks(
+            updated, added, removed, replayed_hunks = self._apply_hunks(
                 original=original,
                 hunks=operation.hunks,
                 path=str(path),
@@ -624,12 +640,19 @@ class ApplyPatch(Tool):
                 ) from exc
             raise
 
+        already_applied = (
+            updated == original
+            and bool(operation.hunks)
+            and replayed_hunks == len(operation.hunks)
+        )
+
         return {
             "operation": "update",
             "path": path,
             "content": updated,
             "added": added,
             "removed": removed,
+            "already_applied": already_applied,
         }
 
     def _plan_delete(
@@ -638,16 +661,21 @@ class ApplyPatch(Tool):
     ) -> dict[str, Any]:
 
         if not path.exists():
-            raise ValueError(f"Cannot delete '{path}': file does not exist.")
+            return {
+                "operation": "delete",
+                "path": path,
+                "content": None,
+                "added": 0,
+                "removed": 0,
+                "already_applied": True,
+            }
 
         if not path.is_file():
             raise ValueError(f"Cannot delete '{path}': path is not a file.")
 
         try:
             file_content = path.read_text(encoding="utf-8")
-
             removed_lines = self._count_lines(file_content)
-
         except (UnicodeDecodeError, OSError):
             removed_lines = 0
 
@@ -657,6 +685,7 @@ class ApplyPatch(Tool):
             "content": None,
             "added": 0,
             "removed": removed_lines,
+            "already_applied": False,
         }
 
     def _apply_hunks(
@@ -664,21 +693,16 @@ class ApplyPatch(Tool):
         original: str,
         hunks: list[list[str]],
         path: str,
-    ) -> tuple[str, int, int]:
+    ) -> tuple[str, int, int, int]:
 
         newline = self._detect_newline(original)
-
         file_lines = original.splitlines(keepends=True)
-
         additions = 0
         removals = 0
-
+        replayed_hunks = 0
         search_from = 0
 
-        for hunk_index, hunk in enumerate(
-            hunks,
-            start=1,
-        ):
+        for hunk_index, hunk in enumerate(hunks, start=1):
             old_lines: list[str] = []
             new_lines: list[str] = []
 
@@ -689,13 +713,10 @@ class ApplyPatch(Tool):
                 if prefix == " ":
                     old_lines.append(value)
                     new_lines.append(value)
-
                 elif prefix == "-":
                     old_lines.append(value)
-
                 elif prefix == "+":
                     new_lines.append(value)
-
                 else:
                     raise ValueError(
                         f"Invalid hunk line in '{path}', "
@@ -711,17 +732,40 @@ class ApplyPatch(Tool):
                 )
 
             old_normalized = [self._remove_newline(line) for line in old_lines]
+            new_normalized = [self._remove_newline(line) for line in new_lines]
 
             matches = self._find_matches(
                 file_lines=file_lines,
                 target=old_normalized,
             )
-
             forward_matches = [
                 position for position in matches if position >= search_from
             ]
 
             if not forward_matches:
+                # Idempotent replay: if the desired post-patch sequence is
+                # already present exactly once, this hunk succeeded earlier.
+                # Treat it as satisfied instead of turning a successful prior
+                # mutation into a misleading context-mismatch failure.
+                replay_matches = (
+                    self._find_matches(
+                        file_lines=file_lines,
+                        target=new_normalized,
+                    )
+                    if new_normalized
+                    else []
+                )
+                replay_forward = [
+                    position
+                    for position in replay_matches
+                    if position >= search_from
+                ]
+                if len(replay_forward) == 1:
+                    position = replay_forward[0]
+                    search_from = position + len(new_normalized)
+                    replayed_hunks += 1
+                    continue
+
                 raise ValueError(
                     f"Patch context did not match in '{path}', "
                     f"hunk {hunk_index}. "
@@ -738,27 +782,21 @@ class ApplyPatch(Tool):
                 )
 
             position = forward_matches[0]
-
             replacement = [
-                self._format_new_line(
-                    line=line,
-                    newline=newline,
-                )
+                self._format_new_line(line=line, newline=newline)
                 for line in new_lines
             ]
-
             file_lines[position : position + len(old_normalized)] = replacement
-
             search_from = position + len(replacement)
 
             additions += sum(1 for line in hunk if line.startswith("+"))
-
             removals += sum(1 for line in hunk if line.startswith("-"))
 
         return (
             "".join(file_lines),
             additions,
             removals,
+            replayed_hunks,
         )
 
     def _find_matches(
@@ -799,70 +837,119 @@ class ApplyPatch(Tool):
         self,
         plan: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
+        """Apply a fully validated plan atomically.
 
+        Every target is snapshotted before the first mutation. If any filesystem
+        operation fails, previously changed targets are restored so a multi-file
+        patch cannot leave the workspace half-applied.
+        """
         results: list[dict[str, Any]] = []
+        snapshots: list[tuple[Path, bool, bytes | None, int | None]] = []
 
         for item in plan:
             path: Path = item["path"]
-            operation = item["operation"]
-
-            if operation == "add":
-                path.parent.mkdir(
-                    parents=True,
-                    exist_ok=True,
+            if path.exists() and path.is_file():
+                snapshots.append(
+                    (path, True, path.read_bytes(), path.stat().st_mode)
                 )
-
-                path.write_text(
-                    item["content"],
-                    encoding="utf-8",
-                )
-
-                content = item.get("content") or ""
-
-                results.append(
-                    self._build_file_result(
-                        operation="add",
-                        path=path,
-                        content=content,
-                        added=item["added"],
-                        removed=item["removed"],
-                    )
-                )
-
-            elif operation == "update":
-                path.write_text(
-                    item["content"],
-                    encoding="utf-8",
-                )
-
-                content = item.get("content") or ""
-
-                results.append(
-                    self._build_file_result(
-                        operation="update",
-                        path=path,
-                        content=content,
-                        added=item["added"],
-                        removed=item["removed"],
-                    )
-                )
-
-            elif operation == "delete":
-                path.unlink()
-
-                results.append(
-                    {
-                        "path": str(path),
-                        "operation": "delete",
-                        "added": item["added"],
-                        "removed": item["removed"],
-                    }
-                )
-
             else:
-                raise RuntimeError(f"Unknown planned operation: " f"{operation}")
+                snapshots.append((path, False, None, None))
 
-        return results
+        try:
+            for item in plan:
+                path: Path = item["path"]
+                operation = item["operation"]
+                already_applied = bool(item.get("already_applied", False))
+
+                if already_applied:
+                    if operation in {"add", "update"}:
+                        content = item.get("content") or ""
+                        results.append(
+                            self._build_file_result(
+                                operation=operation,
+                                path=path,
+                                content=content,
+                                added=0,
+                                removed=0,
+                                already_applied=True,
+                            )
+                        )
+                    else:
+                        results.append(
+                            {
+                                "path": str(path),
+                                "operation": operation,
+                                "added": 0,
+                                "removed": 0,
+                                "already_applied": True,
+                            }
+                        )
+                    continue
+
+                if operation == "add":
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(item["content"], encoding="utf-8")
+                    content = item.get("content") or ""
+                    results.append(
+                        self._build_file_result(
+                            operation="add",
+                            path=path,
+                            content=content,
+                            added=item["added"],
+                            removed=item["removed"],
+                            already_applied=False,
+                        )
+                    )
+
+                elif operation == "update":
+                    path.write_text(item["content"], encoding="utf-8")
+                    content = item.get("content") or ""
+                    results.append(
+                        self._build_file_result(
+                            operation="update",
+                            path=path,
+                            content=content,
+                            added=item["added"],
+                            removed=item["removed"],
+                            already_applied=False,
+                        )
+                    )
+
+                elif operation == "delete":
+                    path.unlink()
+                    results.append(
+                        {
+                            "path": str(path),
+                            "operation": "delete",
+                            "added": item["added"],
+                            "removed": item["removed"],
+                            "already_applied": False,
+                        }
+                    )
+
+                else:
+                    raise RuntimeError(
+                        f"Unknown planned operation: {operation}"
+                    )
+
+            return results
+
+        except Exception:
+            for path, existed, original_bytes, mode in reversed(snapshots):
+                try:
+                    if existed:
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(original_bytes or b"")
+                        if mode is not None:
+                            path.chmod(mode)
+                    elif path.exists() and path.is_file():
+                        path.unlink()
+                except OSError:
+                    # Preserve the original exception. The caller reports the
+                    # filesystem failure; rollback is best-effort if the disk
+                    # itself has become unavailable.
+                    pass
+            raise
 
     def _build_file_result(
         self,
@@ -872,6 +959,7 @@ class ApplyPatch(Tool):
         content: str,
         added: int,
         removed: int,
+        already_applied: bool = False,
     ) -> dict[str, Any]:
 
         result: dict[str, Any] = {
@@ -879,6 +967,7 @@ class ApplyPatch(Tool):
             "operation": operation,
             "added": added,
             "removed": removed,
+            "already_applied": already_applied,
             "content_preview": self._bounded_preview(content),
             "total_lines": self._count_lines(content),
         }
