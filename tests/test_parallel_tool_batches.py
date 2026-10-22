@@ -37,7 +37,7 @@ def test_independent_read_calls_are_concurrent():
     assert runtime.metrics["tool_call_attempts"] == 2
 
 
-def test_third_identical_observation_is_blocked_without_execution():
+def test_second_identical_observation_is_blocked_without_execution():
     executions = []
     applied = []
 
@@ -69,7 +69,7 @@ def test_third_identical_observation_is_blocked_without_execution():
         _apply_result=lambda call, result, iteration: applied.append(result),
     )
 
-    for index in range(3):
+    for index in range(2):
         call = ToolCall(
             name="read_file",
             id=f"read-{index}",
@@ -79,8 +79,8 @@ def test_third_identical_observation_is_blocked_without_execution():
         )
         Loop._execute_tool_calls(runtime, [call], index + 1)
 
-    assert executions == ["read-0", "read-1"]
-    assert len(applied) == 3
+    assert executions == ["read-0"]
+    assert len(applied) == 2
     assert applied[-1].success is False
     assert applied[-1].content["error"]["type"] == "duplicate_observation"
     assert applied[-1].metadata["duplicate_action"] is True
@@ -106,7 +106,6 @@ def test_observation_repeat_is_allowed_after_workspace_revision_changes():
     )
     result = ToolResult(True, "read_file", {"path": "/tmp/a", "content": "x"})
 
-    Loop._record_observation_success(runtime, call, result)
     Loop._record_observation_success(runtime, call, result)
     assert Loop._duplicate_observation_result(runtime, call) is not None
 
