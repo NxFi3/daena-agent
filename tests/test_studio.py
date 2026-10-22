@@ -49,9 +49,8 @@ def call(tool_name, **arguments):
 
 
 @pytest.fixture(scope="module")
-def app():
-    app = QApplication.instance() or QApplication([])
-    yield app
+def app(qt_app):
+    return qt_app
 
 
 @pytest.fixture
