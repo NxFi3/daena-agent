@@ -109,6 +109,86 @@ def test_composer_respects_ime_preedit(app):
     composer.close()
 
 
+def test_welcome_suggestions_sidebar_toggle_and_keyboard_focus(ui):
+    assert ui.transcript.welcome.isVisible()
+    ui.transcript.suggestedPrompt.emit("Explain this project")
+    assert ui.input.toPlainText() == "Explain this project"
+    assert ui.input.hasFocus()
+    assert ui.sidebar.isVisible()
+    ui.toggle_sidebar()
+    assert not ui.sidebar.isVisible()
+    ui.toggle_sidebar()
+    assert ui.sidebar.isVisible()
+    ui.add_message("You", "A real message")
+    assert not ui.transcript.welcome.isVisible()
+    ui.new_session()
+    assert ui.transcript.welcome.isVisible()
+
+
+def test_theme_switch_persists_without_resetting_session(ui):
+    original_session = ui.session_id
+    assert ui.config.get("studio", {}).get("theme", "dark") == "dark"
+    ui.toggle_theme()
+    assert ui.config["studio"]["theme"] == "light"
+    assert ui.store.load_config()["studio"]["theme"] == "light"
+    assert ui.session_id == original_session
+    ui.toggle_theme()
+    assert ui.config["studio"]["theme"] == "dark"
+
+
+def test_tool_receipts_restore_from_archived_conversation(ui):
+    session = ui.session_id
+    ui.store.save_run(
+        session,
+        "Check tools",
+        [
+            {"type": "user_message", "text": "Check tools"},
+            {
+                "type": "tool_call",
+                "name": "read_file",
+                "arguments": {"file_path": "README.md"},
+            },
+            {
+                "type": "tool_result",
+                "name": "read_file",
+                "success": True,
+                "summary": "Read README.md",
+            },
+            {"type": "thinking_delta", "text": "Reasoning summary"},
+            {"type": "final_response", "text": "All set"},
+        ],
+        {"completed": True},
+    )
+    ui.refresh_history()
+    ui.open_history(ui.history.item(0))
+    card = ui.transcript.cards[-1]
+    assert card.text == "All set"
+    assert len(card.tools.calls) == 1
+    assert card.tools.calls[0]["status"] == "complete"
+    assert "README.md" in card.tools.details.toPlainText()
+    assert card.reasoning == "Reasoning summary"
+
+
+def test_rename_history_updates_every_turn_without_changing_session(ui, monkeypatch):
+    original_session = ui.session_id
+    for title in ("First", "Second"):
+        ui.store.save_run(
+            original_session,
+            title,
+            [{"type": "user_message", "text": title}],
+            {"completed": True},
+        )
+    ui.refresh_history()
+    monkeypatch.setattr(
+        "src.studio.window.QInputDialog.getText",
+        lambda *args, **kwargs: ("  My research chat  ", True),
+    )
+    ui.rename_history(ui.history.item(0))
+    assert ui.history.item(0).toolTip() == "My research chat"
+    assert {run["title"] for _, run in ui.store.runs()} == {"My research chat"}
+    assert ui.session_id == original_session
+
+
 def test_wheel_zoom_without_modifiers_and_visible_reset(app):
     canvas = GraphCanvas()
     canvas.resize(800, 550)

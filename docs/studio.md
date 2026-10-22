@@ -17,8 +17,24 @@ is for headless tests, not the interactive desktop launcher.
 
 ## Conversation
 
+The chat-first layout starts with suggested tasks; clicking a suggestion fills the
+composer for review, without sending anything. The sidebar keeps conversation
+history and the other Studio workspaces close at hand. Toggle it with **Ctrl+B**,
+start a conversation with **Ctrl+N**, search history with **Ctrl+K**, or focus the
+composer with **Ctrl+L**. The moon/sun control switches between persistent dark
+and light appearances. Appearance changes do not reset an active agent session.
+Right-click a saved chat to open or rename it; renaming updates the saved run
+titles without changing the underlying conversation ID.
+
+User messages use compact bubbles while agent responses use a readable centered
+column. Tool calls are shown as an expandable activity receipt on the same agent
+message, including success/failure and bounded arguments or summaries. Archived
+conversations restore these receipts and captured reasoning when they exist in
+the stored journal. The optional **Inspector** still has raw events, streaming,
+context, and troubleshooting details.
+
 Enter a task and press **Send message** or **Enter** (Shift+Enter inserts a newline; Ctrl+Enter also sends). Responses and provider
-reasoning stream in separate views. **Activity** shows tool receipts and runtime
+reasoning stream in separate views. **Activity** shows raw tool receipts and runtime
 errors; **Context** shows the actual request estimate including tool schemas.
 **Stop** cooperatively cancels model I/O, processes and delegated work. Closing the
 window during a run requests cancellation and waits for the worker thread to end.

@@ -31,6 +31,8 @@ from PySide6.QtWidgets import (
     QFrame,
     QToolButton,
     QDialog,
+    QInputDialog,
+    QMenu,
 )
 
 from src import __version__
@@ -42,7 +44,7 @@ from src.studio.automation import AutomationPanel
 from src.studio.worker import RuntimeWorker
 from src.studio.widgets import Composer, ConversationView
 from src.studio.controls import ExecutionBar, ToolScopeDialog
-from src.studio.theme import STYLE
+from src.studio.theme import style_for_theme
 
 
 class SkillsPanel(QWidget):
@@ -164,78 +166,112 @@ class StudioWindow(QMainWindow):
         self._result = None
         self._closing = False
         self.setWindowTitle(f"Daena Studio {__version__}")
-        self.resize(1440, 940)
-        self.setMinimumSize(1000, 680)
-        self.setStyleSheet(STYLE)
+        self.resize(1460, 960)
+        self.setMinimumSize(900, 640)
+        self.setStyleSheet(
+            style_for_theme(self.config.get("studio", {}).get("theme", "dark"))
+        )
         central = QWidget()
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
-        layout.setContentsMargins(18, 14, 18, 8)
-        layout.setSpacing(14)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
         header = QFrame()
         header.setObjectName("header")
         h = QHBoxLayout(header)
-        brand = QLabel("◈ DAENA")
+        h.setContentsMargins(20, 12, 24, 12)
+        h.setSpacing(12)
+        self.sidebar_toggle = QToolButton()
+        self.sidebar_toggle.setObjectName("sidebarToggle")
+        self.sidebar_toggle.setText("☰")
+        self.sidebar_toggle.setToolTip("Show or hide the sidebar · Ctrl+B")
+        self.sidebar_toggle.clicked.connect(self.toggle_sidebar)
+        h.addWidget(self.sidebar_toggle)
+        brand = QLabel("✦  daena")
         brand.setObjectName("brand")
         h.addWidget(brand)
-        edition = QLabel("STUDIO  /  " + __version__)
+        edition = QLabel("/  studio")
         edition.setObjectName("muted")
         h.addWidget(edition)
         h.addStretch()
         self.model_badge = QLabel()
+        self.model_badge.setObjectName("modelBadge")
         h.addWidget(self.model_badge)
+        self.theme_button = QToolButton()
+        self.theme_button.setObjectName("sidebarToggle")
+        self.theme_button.setToolTip("Switch between light and dark appearance")
+        self.theme_button.clicked.connect(self.toggle_theme)
+        h.addWidget(self.theme_button)
+        self._refresh_theme_button()
         self.workspace_edit = QLineEdit(str(self.workspace))
         self.workspace_edit.setReadOnly(True)
-        self.workspace_edit.setMinimumWidth(250)
+        self.workspace_edit.setObjectName("workspacePath")
+        self.workspace_edit.setFixedWidth(210)
+        self.workspace_edit.setToolTip(str(self.workspace))
         h.addWidget(self.workspace_edit)
-        choose = QPushButton("Workspace…")
+        choose = QPushButton("⌄  Workspace")
+        choose.setObjectName("workspaceButton")
         choose.clicked.connect(self.choose_workspace)
         h.addWidget(choose)
         layout.addWidget(header)
-        main = QSplitter()
+        main = QSplitter(Qt.Horizontal)
+        main.setChildrenCollapsible(False)
         layout.addWidget(main, 1)
         sidebar = QFrame()
+        self.sidebar = sidebar
         sidebar.setObjectName("sidebar")
         side = QVBoxLayout(sidebar)
-        side.setContentsMargins(0, 0, 6, 0)
-        new = QPushButton("+ New conversation")
+        side.setContentsMargins(14, 20, 14, 18)
+        side.setSpacing(7)
+        new = QPushButton("＋   New chat")
+        new.setObjectName("newChat")
         new.clicked.connect(self.new_session)
         side.addWidget(new)
+        navigation_label = QLabel("WORKSPACE")
+        navigation_label.setObjectName("sidebarHeading")
+        side.addWidget(navigation_label)
         self.nav = QListWidget()
-        self.nav.setMaximumHeight(260)
+        self.nav.setObjectName("navigation")
+        self.nav.setFixedHeight(240)
         self.nav.addItems(
             [
-                "◌  Conversation",
-                "◇  Agent graph",
-                "⌘  Automations",
-                "▤  Skills",
-                "⚙  Settings",
+                "▢   Chat",
+                "◇   Agent graph",
+                "⌘   Automations",
+                "▤   Skills",
+                "⚙   Settings",
             ]
         )
         side.addWidget(self.nav)
-        label = QLabel("CONVERSATIONS")
-        label.setObjectName("muted")
+        label = QLabel("RECENT CHATS")
+        label.setObjectName("sidebarHeading")
         side.addWidget(label)
         self.history_search = QLineEdit()
-        self.history_search.setPlaceholderText("Search conversations…")
+        self.history_search.setObjectName("historySearch")
+        self.history_search.setPlaceholderText("⌕  Search chats")
         self.history_search.textChanged.connect(self.filter_history)
         side.addWidget(self.history_search)
         self.history = QListWidget()
+        self.history.setObjectName("historyList")
         self.history.itemActivated.connect(self.open_history)
         self.history.itemClicked.connect(self.open_history)
+        self.history.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.history.customContextMenuRequested.connect(self.history_menu)
         side.addWidget(self.history)
-        export = QPushButton("Export run…")
+        export = QPushButton("⇧   Export current run")
+        export.setObjectName("sidebarFooter")
         export.clicked.connect(self.export_run)
         side.addWidget(export)
-        hint = QLabel(
-            "Enter to send\nShift+Enter for a new line\nCtrl+L to focus the composer"
-        )
+        hint = QLabel("Ctrl+L compose   ·   Ctrl+B sidebar")
         hint.setObjectName("muted")
         side.addWidget(hint)
         main.addWidget(sidebar)
+        sidebar.setMinimumWidth(210)
+        sidebar.setMaximumWidth(310)
         self.pages = QStackedWidget()
         main.addWidget(self.pages)
-        main.setSizes([220, 1150])
+        self.main_splitter = main
+        main.setSizes([265, 1195])
         self._build_chat()
         self._build_graph()
         self.automation = AutomationPanel()
@@ -250,29 +286,33 @@ class StudioWindow(QMainWindow):
         self.pages.addWidget(self.settings)
         self.nav.currentRowChanged.connect(self.page_changed)
         self.nav.setCurrentRow(0)
-        footer = QHBoxLayout()
-        self.state_label = QLabel("Ready · your workspace, your tools")
+        footer_panel = QFrame()
+        footer_panel.setObjectName("statusBar")
+        footer = QHBoxLayout(footer_panel)
+        footer.setContentsMargins(22, 8, 22, 8)
+        self.state_label = QLabel("●  Ready to work")
+        self.state_label.setObjectName("runtimeStatus")
         footer.addWidget(self.state_label)
         footer.addStretch()
         self.context_bar = QProgressBar()
-        self.context_bar.setFixedWidth(140)
+        self.context_bar.setFixedWidth(90)
         self.context_bar.setRange(0, 100)
         self.context_bar.setValue(0)
         footer.addWidget(self.context_bar)
         self.context_label = QLabel("Context —")
         footer.addWidget(self.context_label)
-        layout.addLayout(footer)
+        layout.addWidget(footer_panel)
         self.flush_timer = QTimer(self)
         self.flush_timer.setInterval(70)
         self.flush_timer.timeout.connect(self.flush_stream)
         self.flush_timer.start()
         self._update_badge()
+        self._apply_appearance()
         self.refresh_history()
-        self.add_message(
-            "Daena Studio",
-            "Ready when you are. Choose a workspace, check your model, and give Daena a task.\n\nUse Agent graph to inspect delegated work, or Automations to connect independent agent steps.",
-        )
         QShortcut(QKeySequence("Ctrl+L"), self, activated=self.input.setFocus)
+        QShortcut(QKeySequence("Ctrl+B"), self, activated=self.toggle_sidebar)
+        QShortcut(QKeySequence("Ctrl+N"), self, activated=self.new_session)
+        QShortcut(QKeySequence("Ctrl+K"), self, activated=self.focus_history)
         QShortcut(
             QKeySequence("Ctrl+,"), self, activated=lambda: self.nav.setCurrentRow(4)
         )
@@ -280,15 +320,19 @@ class StudioWindow(QMainWindow):
     def _build_chat(self):
         page = QWidget()
         root = QVBoxLayout(page)
-        root.setContentsMargins(12, 0, 0, 0)
-        root.setSpacing(14)
+        root.setContentsMargins(26, 20, 28, 20)
+        root.setSpacing(12)
         head = QHBoxLayout()
-        title = QLabel("Conversation")
+        title = QLabel("Chat")
         title.setObjectName("pageTitle")
         head.addWidget(title)
+        subtitle = QLabel("  /  your AI workspace")
+        subtitle.setObjectName("muted")
+        head.addWidget(subtitle)
         head.addStretch()
         self.details_toggle = QToolButton()
-        self.details_toggle.setText("Run details")
+        self.details_toggle.setText("☷  Inspector")
+        self.details_toggle.setObjectName("inspectorToggle")
         self.details_toggle.setCheckable(True)
         head.addWidget(self.details_toggle)
         root.addLayout(head)
@@ -298,6 +342,7 @@ class StudioWindow(QMainWindow):
         root.addWidget(self.execution)
         split = QSplitter(Qt.Horizontal)
         self.transcript = ConversationView()
+        self.transcript.suggestedPrompt.connect(self.use_suggestion)
         split.addWidget(self.transcript)
         self.stream_tabs = QTabWidget()
         self.stream_tabs.setMinimumWidth(260)
@@ -320,17 +365,18 @@ class StudioWindow(QMainWindow):
         self.stream_tabs.hide()
         self.details_toggle.toggled.connect(self.stream_tabs.setVisible)
         split.addWidget(self.stream_tabs)
-        split.setSizes([900, 300])
+        split.setSizes([900, 310])
         root.addWidget(split, 1)
         panel = QFrame()
         panel.setObjectName("composerPanel")
         composer_layout = QVBoxLayout(panel)
-        composer_layout.setContentsMargins(10, 8, 10, 10)
+        composer_layout.setContentsMargins(16, 12, 16, 12)
+        composer_layout.setSpacing(5)
         self.input = Composer()
         self.input.submitted.connect(self.send)
         composer_layout.addWidget(self.input)
         row = QHBoxLayout()
-        hint = QLabel("Enter to send  ·  Shift+Enter for a new line")
+        hint = QLabel("↵ Send   ·   ⇧↵ New line")
         hint.setObjectName("quiet")
         row.addWidget(hint)
         row.addStretch()
@@ -338,12 +384,14 @@ class StudioWindow(QMainWindow):
         self.busy_mode.addItems(["Steer current task", "Queue next message"])
         self.busy_mode.setToolTip("What a new message does while Daena is working")
         row.addWidget(self.busy_mode)
-        self.stop_button = QPushButton("■ Stop")
+        self.busy_mode.hide()
+        self.stop_button = QPushButton("■  Stop")
         self.stop_button.setObjectName("danger")
         self.stop_button.setEnabled(False)
+        self.stop_button.hide()
         self.stop_button.clicked.connect(self.stop)
         row.addWidget(self.stop_button)
-        self.send_button = QPushButton("Send  ↑")
+        self.send_button = QPushButton("Send  ↗")
         self.send_button.setObjectName("primary")
         self.send_button.clicked.connect(self.send)
         row.addWidget(self.send_button)
@@ -351,6 +399,43 @@ class StudioWindow(QMainWindow):
         root.addWidget(panel)
         self.queued = []
         self.pages.addWidget(page)
+
+    def toggle_sidebar(self):
+        self.sidebar.setVisible(not self.sidebar.isVisible())
+
+    def focus_history(self):
+        self.sidebar.show()
+        self.history_search.setFocus()
+        self.history_search.selectAll()
+
+    def _refresh_theme_button(self):
+        self.theme_button.setText(
+            "☀" if self.config.get("studio", {}).get("theme") == "light" else "☾"
+        )
+
+    def _apply_appearance(self):
+        theme = self.config.get("studio", {}).get("theme", "dark")
+        self.setStyleSheet(style_for_theme(theme))
+        self.graph.apply_theme(theme)
+        self.automation.canvas.apply_theme(theme)
+        self._refresh_theme_button()
+
+    def toggle_theme(self):
+        config = deepcopy(self.config)
+        current = config.setdefault("studio", {}).get("theme", "dark")
+        config["studio"]["theme"] = "light" if current == "dark" else "dark"
+        try:
+            self.store.save_config(config)
+        except Exception as exc:
+            self.error(str(exc))
+            return
+        self.config = config
+        self._apply_appearance()
+
+    def use_suggestion(self, prompt):
+        self.nav.setCurrentRow(0)
+        self.input.setPlainText(prompt)
+        self.input.setFocus()
 
     def choose_tools(self):
         if self.busy:
@@ -467,7 +552,7 @@ class StudioWindow(QMainWindow):
             QDesktopServices.openUrl(url)
 
     def add_message(self, speaker, text):
-        self.transcript.add_message(speaker, text)
+        return self.transcript.add_message(speaker, text)
 
     def send(self):
         text = self.input.toPlainText().strip()
@@ -524,8 +609,10 @@ class StudioWindow(QMainWindow):
         self.transcript.begin_turn()
         self.execution.setEnabled(False)
         self.busy = True
-        self.send_button.setText("Send guidance  ↑")
+        self.send_button.setText("Guide  ↗")
         self.stop_button.setEnabled(True)
+        self.stop_button.show()
+        self.busy_mode.show()
         self.automation.set_running(True)
         self.settings.setEnabled(False)
         config = self.store.runtime_config(self.config)
@@ -632,11 +719,21 @@ class StudioWindow(QMainWindow):
             self.state_label.setText("Using tool · " + event.get("name", ""))
             self.transcript.set_status("Using " + event.get("name", "tool"))
             self.transcript.add_detail("→ " + event.get("name", "tool"))
+            if self.transcript.live:
+                self.transcript.live.add_tool_call(
+                    event.get("name", "tool"), event.get("arguments")
+                )
         if kind == "tool_result":
             self.transcript.add_detail(
                 ("✓ " if event.get("success") else "× ")
                 + event.get("summary", event.get("name", ""))
             )
+            if self.transcript.live:
+                self.transcript.live.add_tool_result(
+                    event.get("name", ""),
+                    bool(event.get("success")),
+                    event.get("summary", ""),
+                )
 
     def on_child_event(self, data):
         ident = data["agent_id"]
@@ -724,7 +821,9 @@ class StudioWindow(QMainWindow):
     def worker_finished(self):
         self.busy = False
         self.stop_button.setEnabled(False)
-        self.send_button.setText("Send  ↑")
+        self.stop_button.hide()
+        self.send_button.setText("Send  ↗")
+        self.busy_mode.hide()
         self.execution.setEnabled(True)
         self.transcript.end_turn()
         self.automation.set_running(False)
@@ -877,6 +976,7 @@ class StudioWindow(QMainWindow):
             self.settings.populate(config)
             self.skills.refresh()
             self._update_badge()
+            self._apply_appearance()
             self.state_label.setText("Profile saved · applies to the next message")
         except Exception as exc:
             self.error(str(exc))
@@ -898,10 +998,12 @@ class StudioWindow(QMainWindow):
             self.store = store
             self.config = config
             self.workspace_edit.setText(str(self.workspace))
+            self.workspace_edit.setToolTip(str(self.workspace))
             self.settings.populate(config)
             self.skills.refresh()
             self.refresh_history()
             self._update_badge()
+            self._apply_appearance()
         except Exception as exc:
             self.error(str(exc))
 
@@ -933,6 +1035,39 @@ class StudioWindow(QMainWindow):
                 text.casefold() not in (item.text() + " " + item.toolTip()).casefold()
             )
 
+    def history_menu(self, point):
+        item = self.history.itemAt(point)
+        if item is None or self.busy:
+            return
+        menu = QMenu(self)
+        open_action = menu.addAction("Open chat")
+        rename_action = menu.addAction("Rename chat…")
+        action = menu.exec(self.history.mapToGlobal(point))
+        if action == open_action:
+            self.open_history(item)
+        elif action == rename_action:
+            self.rename_history(item)
+
+    def rename_history(self, item):
+        if self.busy:
+            self.error("Stop the current run before renaming a conversation")
+            return
+        try:
+            selected = json.loads(Path(item.data(Qt.UserRole)).read_text())
+            title, accepted = QInputDialog.getText(
+                self, "Rename conversation", "Conversation title:", text=item.toolTip()
+            )
+            title = title.strip()[:160]
+            if not accepted or not title:
+                return
+            for path, run in self.store.runs():
+                if run["session_id"] == selected["session_id"]:
+                    run["title"] = title
+                    write_json(path, run)
+            self.refresh_history()
+        except Exception as exc:
+            self.error(str(exc))
+
     def open_history(self, item):
         if self.busy:
             self.error("Stop the running task before opening another conversation")
@@ -957,16 +1092,26 @@ class StudioWindow(QMainWindow):
                 y=170,
             )
             for turn in turns:
+                receipts = []
+                reasoning = []
                 for event in turn["events"]:
                     kind = event.get("type")
                     if kind == "user_message":
                         self.add_message("You", event["text"])
+                    elif kind == "tool_call":
+                        receipts.append(("call", event))
+                    elif kind == "tool_result":
+                        receipts.append(("result", event))
+                    elif kind == "thinking_delta":
+                        reasoning.append(event.get("text", ""))
                     elif kind == "final_response":
-                        self.add_message("Daena", event["text"])
+                        card = self.add_message("Daena", event["text"])
+                        self._restore_receipts(card, receipts, reasoning)
                     elif kind == "studio_result" and not any(
                         e.get("type") == "final_response" for e in turn["events"]
                     ):
-                        self.add_message("Daena", event["text"])
+                        card = self.add_message("Daena", event["text"])
+                        self._restore_receipts(card, receipts, reasoning)
             for event in run["events"]:
                 kind = event.get("type")
                 if kind == "subagent_event":
@@ -985,6 +1130,20 @@ class StudioWindow(QMainWindow):
             )
         except Exception as exc:
             self.error(str(exc))
+
+    @staticmethod
+    def _restore_receipts(card, receipts, reasoning):
+        for action, event in receipts:
+            if action == "call":
+                card.add_tool_call(event.get("name", "tool"), event.get("arguments"))
+            else:
+                card.add_tool_result(
+                    event.get("name", ""),
+                    bool(event.get("success")),
+                    event.get("summary", ""),
+                )
+        if reasoning:
+            card.append_reasoning("".join(reasoning))
 
     def export_run(self):
         path, _ = QFileDialog.getSaveFileName(
