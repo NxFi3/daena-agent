@@ -1290,11 +1290,42 @@ class StudioWindow(QMainWindow):
         menu = QMenu(self)
         open_action = menu.addAction("Open chat")
         rename_action = menu.addAction("Rename chat…")
+        menu.addSeparator()
+        delete_action = menu.addAction("Delete chat")
         action = menu.exec(self.history.mapToGlobal(point))
         if action == open_action:
             self.open_history(item)
         elif action == rename_action:
             self.rename_history(item)
+        elif action == delete_action:
+            self.delete_history(item)
+
+    def delete_history(self, item):
+        if self.busy:
+            self.error("Stop the current run before deleting a conversation")
+            return
+        try:
+            selected = json.loads(Path(item.data(Qt.UserRole)).read_text())
+            session_id = selected["session_id"]
+            answer = QMessageBox.question(
+                self,
+                "Delete conversation",
+                "Delete this conversation and all of its turns?\n\nThis cannot be undone.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+            active = str(self.session_id) == str(session_id)
+            deleted = self.store.delete_session(session_id)
+            self.refresh_history()
+            if active:
+                self.new_session()
+            self.state_label.setText(
+                f"Deleted conversation · {deleted} archived turn{'s' if deleted != 1 else ''} removed"
+            )
+        except Exception as exc:
+            self.error(str(exc))
 
     def rename_history(self, item):
         if self.busy:
