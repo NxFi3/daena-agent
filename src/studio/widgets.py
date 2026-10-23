@@ -21,6 +21,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from src.studio.theme import markdown_css
+
 
 class Composer(QPlainTextEdit):
     submitted = Signal()
@@ -61,24 +63,22 @@ class Composer(QPlainTextEdit):
 class MarkdownBody(QTextBrowser):
     """Size short messages to their contents; long code keeps an internal scroll."""
 
-    def __init__(self):
+    def __init__(self, theme="dark"):
         super().__init__()
         self.setFrameShape(QFrame.NoFrame)
         self.setOpenLinks(False)
         self.anchorClicked.connect(self._open_link)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.document().setDefaultStyleSheet(
-            "body {line-height:1.55;} p {margin-top:6px;margin-bottom:12px;}"
-            "pre {background:#282828;color:#f1f1f1;padding:14px;white-space:pre-wrap;}"
-            "code {font-family:monospace;}"
-            "a {color:#3994dd;}"
-        )
+        self.document().setDefaultStyleSheet(markdown_css(theme))
         self._resize_timer = QTimer(self)
         self._resize_timer.setSingleShot(True)
         self._resize_timer.timeout.connect(self._apply_reflow)
         self.document().documentLayout().documentSizeChanged.connect(self.reflow)
         self.setMinimumHeight(36)
+
+    def set_theme(self, theme):
+        self.document().setDefaultStyleSheet(markdown_css(theme))
 
     def _open_link(self, url):
         if url.scheme() in {"https", "http"}:
@@ -242,20 +242,26 @@ class ToolActivity(QFrame):
 
 
 class MessageCard(QFrame):
-    def __init__(self, speaker, text="", *, user=False):
+    def __init__(self, speaker, text="", *, user=False, theme="dark"):
         super().__init__()
         self.speaker, self.text, self.reasoning = speaker, str(text), ""
+        self._user = user
+        self._status_base = ""
+        self._dots = 0
         self.setObjectName("userMessage" if user else "assistantMessage")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(
-            18 if user else 0, 12 if user else 8, 18 if user else 0, 12 if user else 8
+            18 if user else 0, 11 if user else 2, 18 if user else 0, 11 if user else 2
         )
         layout.setSpacing(6)
         self.status = QLabel()
-        self.status.setObjectName("messageStatus")
+        self.status.setObjectName("thinkingDots")
         self.status.hide()
         layout.addWidget(self.status)
+        self._dots_timer = QTimer(self)
+        self._dots_timer.setInterval(420)
+        self._dots_timer.timeout.connect(self._tick_status)
         self.previous_activity = QLabel(self)
         self.previous_activity.setObjectName("activityLink")
         self.previous_activity.setTextFormat(Qt.RichText)
@@ -273,17 +279,16 @@ class MessageCard(QFrame):
         self.activity_log.hide()
         layout.addWidget(self.activity_log)
         self.previous_activity.linkActivated.connect(self._toggle_activity)
-        self.body = MarkdownBody()
+        self.body = MarkdownBody(theme)
         layout.addWidget(self.body)
         actions = QHBoxLayout()
         actions.setContentsMargins(0, 0, 0, 0)
         self.copy_button = QToolButton()
         self.copy_button.setObjectName("messageCopy")
-        self.copy_button.setText("Copy")
+        self.copy_button.setText("⧉  Copy")
         self.copy_button.setToolTip("Copy message")
-        self.copy_button.clicked.connect(
-            lambda: QApplication.clipboard().setText(self.text)
-        )
+        self.copy_button.setCursor(Qt.PointingHandCursor)
+        self.copy_button.clicked.connect(self._copy)
         actions.addWidget(self.copy_button)
         actions.addStretch(1)
         if user:
@@ -325,6 +330,27 @@ class MessageCard(QFrame):
         self.details.hide()
         self.details_button.toggled.connect(self.details.setVisible)
         self.set_text(text)
+
+    def _copy(self, *args):
+        QApplication.clipboard().setText(self.text)
+        self.copy_button.setText("✓  Copied")
+        QTimer.singleShot(1500, self._reset_copy_label)
+
+    def _reset_copy_label(self):
+        try:
+            self.copy_button.setText("⧉  Copy")
+        except RuntimeError:  # the card was deleted before the timer fired
+            pass
+
+    def set_theme(self, theme):
+        self.body.set_theme(theme)
+        if self.text:
+            self.body.setMarkdown(self.text)
+            self.body.reflow()
+
+    def _tick_status(self):
+        self._dots = (self._dots + 1) % 4
+        self.status.setText(self._status_base + "." * self._dots)
 
     def _toggle_activity(self, *args):
         self._activity_expanded = not self._activity_expanded
@@ -379,8 +405,17 @@ class MessageCard(QFrame):
 
     def set_status(self, text):
         working = str(text).startswith("●")
+<<<<<<< HEAD
+=======
+        self._status_base = str(text).rstrip(".… ") if working else ""
+        self._dots = 0
+>>>>>>> 8904218 (checkpoint)
         self.status.setText(text if working else "")
         self.status.setVisible(working)
+        if working:
+            self._dots_timer.start()
+        else:
+            self._dots_timer.stop()
 
     def add_detail(self, text):
         self.details.appendPlainText(text)
@@ -401,8 +436,9 @@ class MessageCard(QFrame):
 class ConversationView(QScrollArea):
     suggestedPrompt = Signal(str)
 
-    def __init__(self):
+    def __init__(self, theme="dark"):
         super().__init__()
+        self.theme = theme
         self.setObjectName("conversation")
         self.setWidgetResizable(True)
         self.setFrameShape(QFrame.NoFrame)
@@ -410,8 +446,8 @@ class ConversationView(QScrollArea):
         self.container = QWidget()
         self.container.setObjectName("conversationCanvas")
         self.layout = QVBoxLayout(self.container)
-        self.layout.setContentsMargins(20, 10, 20, 30)
-        self.layout.setSpacing(22)
+        self.layout.setContentsMargins(24, 12, 24, 32)
+        self.layout.setSpacing(26)
         self.welcome = self._make_welcome()
         self.layout.addWidget(self.welcome, 1)
         self.layout.addStretch()
@@ -437,12 +473,17 @@ class ConversationView(QScrollArea):
         symbol.setObjectName("welcomeSymbol")
         symbol.setAlignment(Qt.AlignCenter)
         panel.addWidget(symbol)
-        title = QLabel("What's on your mind?")
+        title = QLabel("How can I help today?")
         title.setObjectName("welcomeTitle")
         title.setWordWrap(True)
         title.setMinimumHeight(48)
         title.setAlignment(Qt.AlignCenter)
         panel.addWidget(title)
+        subtitle = QLabel("Ask Daena to explore, build or fix things in your workspace.")
+        subtitle.setObjectName("welcomeSub")
+        subtitle.setWordWrap(True)
+        subtitle.setAlignment(Qt.AlignCenter)
+        panel.addWidget(subtitle)
         self.welcome_buttons = []
         for heading, prompt in [
             (
@@ -460,6 +501,7 @@ class ConversationView(QScrollArea):
         ]:
             button = QPushButton(heading)
             button.setObjectName("suggestion")
+            button.setCursor(Qt.PointingHandCursor)
             button.setToolTip(prompt)
             button.clicked.connect(
                 lambda checked=False, text=prompt: self.suggestedPrompt.emit(text)
@@ -482,6 +524,11 @@ class ConversationView(QScrollArea):
                     index == 0 or available >= (385 if index == 1 else 445)
                 )
 
+    def apply_theme(self, theme):
+        self.theme = theme
+        for card in self.cards:
+            card.set_theme(theme)
+
     def _track_scroll(self, value):
         bar = self.verticalScrollBar()
         self._follow = bar.maximum() - value < 70
@@ -499,17 +546,26 @@ class ConversationView(QScrollArea):
         self._follow = True
         self.welcome.hide()
         card = MessageCard(
-            speaker, text, user=speaker.startswith("You") or speaker == "Queued"
+            speaker,
+            text,
+            user=speaker.startswith("You") or speaker == "Queued",
+            theme=self.theme,
         )
-        card.setMaximumWidth(680 if card.objectName() == "userMessage" else 820)
+        card.setMaximumWidth(640 if card.objectName() == "userMessage" else 780)
         row = QWidget()
         row.setObjectName("messageRow")
         line = QHBoxLayout(row)
         line.setContentsMargins(0, 0, 0, 0)
+        line.setSpacing(14)
         if card.objectName() == "userMessage":
             line.addStretch(1)
             line.addWidget(card, 0)
         else:
+            avatar = QLabel("✳")
+            avatar.setObjectName("avatar")
+            avatar.setFixedSize(28, 28)
+            avatar.setAlignment(Qt.AlignCenter)
+            line.addWidget(avatar, 0, Qt.AlignTop)
             line.addWidget(card, 1)
         self.layout.insertWidget(self.layout.count() - 1, row)
         self.cards.append(card)

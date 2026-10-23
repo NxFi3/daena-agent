@@ -26,6 +26,8 @@ and light appearances. Appearance changes do not reset an active agent session.
 Right-click a saved chat to open or rename it; renaming updates the saved run
 titles without changing the underlying conversation ID.
 
+The interface uses a warm neutral palette with one accent colour in both dark and light appearances; the active theme also restyles rendered Markdown and code blocks. Daena's replies carry a small avatar, a hover-friendly **Copy** action and an animated *Working* indicator while a turn runs.
+
 User messages use compact right-aligned bubbles; Daena's replies are shown in a
 readable centered column. Debug receipts and model reasoning are stored but hidden
 from the chat surface. Click the **Daena** model selector in the top bar, then

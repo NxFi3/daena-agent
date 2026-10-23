@@ -28,7 +28,24 @@
     "workspace_only": true,
     "allow_background": true,
     "allow_network_tools": true,
-    "force_approve": false
+    "force_approve": false,
+    "allowed_tools": [
+      "apply_patch",
+      "command_exec",
+      "make_directory",
+      "plan",
+      "process_poll",
+      "process_stop",
+      "process_write",
+      "read_file",
+      "skill_list",
+      "skill_read",
+      "subagent",
+      "task_finish",
+      "web_fetch",
+      "web_search",
+      "computer_use"
+    ]
   },
   "models": {
     "embedding": {

@@ -42,6 +42,11 @@ class GeminiProvider(ProviderBase):
     def _convert_messages(messages):
         contents, systems, names, response_ids = [], [], {}, {}
         for m in messages:
+            # DAENA_COMPUTER_GEMINI_V1
+            if m.get('role') == 'user' and m.get('computer_image'):
+                from src.tools.builtin.computer_use.integration import gemini_image_parts
+                contents.append(types.Content(role='user', parts=gemini_image_parts(m, types)))
+                continue
             role, text = m.get("role"), m.get("content") or ""
             if role == "system":
                 systems.append(str(text))

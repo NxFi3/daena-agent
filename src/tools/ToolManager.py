@@ -111,6 +111,9 @@ class ToolManager:
                 process_setter(self.process_manager)
             elif hasattr(tool, "process_manager"):
                 tool.process_manager = self.process_manager
+        # DAENA_COMPUTER_BIND_V1
+        from src.tools.builtin.computer_use.integration import bind_manager
+        bind_manager(self)
 
             workspace_setter = getattr(tool, "set_workspace", None)
             if callable(workspace_setter) and self._workspace_root is not None:

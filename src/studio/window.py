@@ -185,7 +185,7 @@ class StudioWindow(QMainWindow):
         header = QFrame()
         header.setObjectName("header")
         h = QHBoxLayout(header)
-        h.setContentsMargins(18, 10, 24, 10)
+        h.setContentsMargins(14, 8, 20, 6)
         h.setSpacing(8)
         self.sidebar_toggle = QToolButton()
         self.sidebar_toggle.setObjectName("sidebarToggle")
@@ -228,18 +228,19 @@ class StudioWindow(QMainWindow):
         self.sidebar = sidebar
         sidebar.setObjectName("sidebar")
         side = QVBoxLayout(sidebar)
-        side.setContentsMargins(12, 16, 12, 12)
+        side.setContentsMargins(12, 14, 12, 12)
         side.setSpacing(8)
         sidebar_brand = QLabel("Daena")
         sidebar_brand.setObjectName("sidebarBrand")
         side.addWidget(sidebar_brand)
-        new = QPushButton("+   New chat")
+        new = QPushButton("✎   New chat")
+        new.setCursor(Qt.PointingHandCursor)
         new.setObjectName("newChat")
         new.clicked.connect(self.new_session)
         side.addWidget(new)
         self.history_search = QLineEdit()
         self.history_search.setObjectName("historySearch")
-        self.history_search.setPlaceholderText("⌕   Search chats    Ctrl+K")
+        self.history_search.setPlaceholderText("Search chats   Ctrl+K")
         self.history_search.textChanged.connect(self.filter_history)
         side.addWidget(self.history_search)
         label = QLabel("Chats")
@@ -257,11 +258,11 @@ class StudioWindow(QMainWindow):
         self.nav.setFixedHeight(180)
         self.nav.addItems(
             [
-                "Chat",
-                "Agent graph",
-                "Automations",
-                "Skills",
-                "Settings",
+                "▣   Chat",
+                "◇   Agent graph",
+                "⇄   Automations",
+                "✦   Skills",
+                "⚙   Settings",
             ]
         )
         side.addWidget(self.nav)
@@ -329,7 +330,11 @@ class StudioWindow(QMainWindow):
     def _build_chat(self):
         page = QWidget()
         root = QVBoxLayout(page)
+<<<<<<< HEAD
         root.setContentsMargins(14, 4, 14, 16)
+=======
+        root.setContentsMargins(14, 0, 14, 14)
+>>>>>>> 8904218 (checkpoint)
         root.setSpacing(0)
         self.diagnostics = QDialog(self)
         self.diagnostics.setWindowTitle("Daena · Advanced controls and diagnostics")
@@ -349,11 +354,17 @@ class StudioWindow(QMainWindow):
         centered.addStretch(1)
         column = QWidget()
         column.setObjectName("chatColumn")
+<<<<<<< HEAD
         column.setMaximumWidth(960)
+=======
+        column.setMaximumWidth(860)
+>>>>>>> 8904218 (checkpoint)
         content = QVBoxLayout(column)
         content.setContentsMargins(0, 0, 0, 0)
         content.setSpacing(10)
-        self.transcript = ConversationView()
+        self.transcript = ConversationView(
+            self.config.get("studio", {}).get("theme", "dark")
+        )
         self.transcript.suggestedPrompt.connect(self.use_suggestion)
         content.addWidget(self.transcript, 1)
         self.agents_shortcut = QPushButton("◇  Agents")
@@ -383,7 +394,7 @@ class StudioWindow(QMainWindow):
         panel = QFrame()
         panel.setObjectName("composerPanel")
         composer_layout = QVBoxLayout(panel)
-        composer_layout.setContentsMargins(14, 10, 12, 10)
+        composer_layout.setContentsMargins(16, 10, 12, 10)
         composer_layout.setSpacing(0)
         self.input = Composer()
         self.input.submitted.connect(self.send)
@@ -427,14 +438,16 @@ class StudioWindow(QMainWindow):
         self.stop_button.clicked.connect(self.stop)
         # Stop is represented by the send button itself; no duplicate control.
         self.send_button = QPushButton("↑")
+        self.send_button.setCursor(Qt.PointingHandCursor)
         self.send_button.setObjectName("sendMessage")
         self.send_button.setToolTip("Send message (Enter)")
-        self.send_button.setFixedSize(34, 34)
+        self.send_button.setFixedSize(36, 36)
         self.send_button.clicked.connect(self.send)
         row.addWidget(self.send_button)
         composer_layout.addLayout(row)
         content.addWidget(panel)
         note = QLabel("Daena can make mistakes. Check important changes.")
+        note.setWordWrap(True)
         note.setObjectName("composerNote")
         note.setAlignment(Qt.AlignCenter)
         content.addWidget(note)
@@ -530,6 +543,7 @@ class StudioWindow(QMainWindow):
         self.setStyleSheet(style_for_theme(theme))
         self.graph.apply_theme(theme)
         self.automation.canvas.apply_theme(theme)
+        self.transcript.apply_theme(theme)
         self._refresh_theme_button()
 
     def toggle_theme(self):
@@ -648,7 +662,7 @@ class StudioWindow(QMainWindow):
         llm = self.config.get("llm", {})
         provider = llm.get("provider", "ollama")
         model = llm.get("provider_config", {}).get("model_name", "default")
-        self.model_badge.setText("Daena")
+        self.model_badge.setText("Daena  ⌄")
         self.model_hint.setText(model)
         self.model_hint.setToolTip(f"{provider} · {model}")
         reasoning = self.execution.reasoning.currentData()

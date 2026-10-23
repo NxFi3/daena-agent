@@ -218,6 +218,9 @@ class Loop:
         )
 
     def _apply_result(self, call, result, iteration):
+        # DAENA_COMPUTER_RECEIPT_V1
+        from src.tools.builtin.computer_use.integration import remember_result
+        remember_result(self, call, result)
         self.agent_state.update_from_result(result)
         content = result.content
         process_id = content.get("process_id")
@@ -445,6 +448,9 @@ class Loop:
             tool_schema_tokens=builder.tokenbudget.tool_tokens,
         )
         self.metrics["llm_calls"] += 1
+        # DAENA_COMPUTER_VISION_V1
+        from src.tools.builtin.computer_use.integration import append_pending_visual
+        messages = append_pending_visual(self, messages)
         result = invoke(
             self.llm,
             messages,
