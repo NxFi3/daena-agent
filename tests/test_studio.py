@@ -189,10 +189,12 @@ def test_graph_reports_real_worker_and_integrated_files(window, tmp_path):
 
 def test_settings_persist_tool_scope_and_generation_options(window):
     settings = window.settings
+    settings.image_reserve.setValue(3072)
     settings.select_tools(False)
     settings.apply_form()
     saved = json.loads(window.store.profile.read_text())
     assert saved["security"]["allowed_tools"] == []
+    assert saved["context"]["image_token_reserve"] == 3072
     assert window.config["security"]["allowed_tools"] == []
     settings.provider.setCurrentText("openrouter")
     assert "num_ctx" not in json.loads(settings.generation.toPlainText())

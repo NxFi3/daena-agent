@@ -138,6 +138,12 @@ class SettingsPanel(QWidget):
         self.reserve = QSpinBox()
         self.reserve.setRange(0, 131072)
         self.reserve.setSingleStep(1024)
+        self.image_reserve = QSpinBox()
+        self.image_reserve.setRange(128, 32768)
+        self.image_reserve.setSingleStep(512)
+        self.image_reserve.setToolTip(
+            "Estimated tokens reserved per screenshot before fitting conversation history. Actual image costs depend on the model."
+        )
         self.summary = QSpinBox()
         self.summary.setRange(128, 32768)
         self.summary.setSingleStep(256)
@@ -150,6 +156,7 @@ class SettingsPanel(QWidget):
         for label, widget in [
             ("Prompt budget", self.context),
             ("Output reserve", self.reserve),
+            ("Tokens per screenshot · estimate", self.image_reserve),
             ("Recent events", self.recent),
             ("Summary target", self.summary),
             ("Iteration limit", self.iterations),
@@ -300,6 +307,7 @@ class SettingsPanel(QWidget):
         self.context.setValue(c.get("max_prompt_tokens", 24000))
         self.recent.setValue(c.get("recent_event_limit", 80))
         self.reserve.setValue(c.get("output_reserve_tokens", 4096))
+        self.image_reserve.setValue(c.get("image_token_reserve", 4096))
         self.summary.setValue(c.get("compaction_target_tokens", 2048))
         self.iterations.setValue(config.get("max_agent_iterations", 100))
         self.protocol.setCurrentIndex(
@@ -407,6 +415,7 @@ class SettingsPanel(QWidget):
             max_prompt_tokens=self.context.value(),
             recent_event_limit=self.recent.value(),
             output_reserve_tokens=self.reserve.value(),
+            image_token_reserve=self.image_reserve.value(),
             compaction_target_tokens=self.summary.value(),
             compaction_enabled=self.compact.isChecked(),
         )

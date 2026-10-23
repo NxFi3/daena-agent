@@ -9,6 +9,7 @@ from typing import Any
 from src.context.compactor import Compactor
 from src.context.contextwindow import ContextWindow
 from src.context.tokenbudget import TokenBudget
+from src.context.payloads import fit_json, fit_tool_text
 from src.engine.LlmProviderManager import LlmProvider
 from src.models.ContextEvent import ContextEvent
 
@@ -369,10 +370,7 @@ class ContextBuilder:
             if isinstance(evidence, dict) and evidence:
                 compact["evidence"] = evidence
 
-            text = json.dumps(compact, ensure_ascii=False, default=str)
-            if len(text) > self.MAX_TOOL_CHARS:
-                text = self._head_tail(text, self.MAX_TOOL_CHARS)
-            return text
+            return fit_json(compact, self.MAX_TOOL_CHARS)
 
         inner = event_content.get("content")
         payload = (
@@ -956,8 +954,11 @@ class ContextBuilder:
                 # complete older groups instead of rewriting their signed payload.
                 continue
             if message.get("role") in {"tool", "assistant"}:
-                message["content"] = self._head_tail(
-                    str(message.get("content") or ""), limit
+                text = str(message.get("content") or "")
+                message["content"] = (
+                    fit_tool_text(text, limit, self._head_tail)
+                    if message.get("role") == "tool"
+                    else self._head_tail(text, limit)
                 )
             if message.get("tool_calls"):
                 # Deep copy before reducing arguments: canonical events must not change.
@@ -996,7 +997,7 @@ class ContextBuilder:
             ),
         }
 
-    def _fit_protocol(self, system, requests, summary, groups):
+    def _fit_protocol(self, system, requests, summary, groups, attachments=()):
         def render():
             history = [m for group in groups for m in group]
             return [
@@ -1004,6 +1005,7 @@ class ContextBuilder:
                 *requests,
                 *summary,
                 *history,
+                *attachments,
             ]
 
         # Oldest complete groups leave first. Keep the actual task/instructions
@@ -1035,7 +1037,12 @@ class ContextBuilder:
                     if message.get("gemini_parts"):
                         continue
                     text = str(message.get("content", ""))
-                    message["content"] = self._head_tail(text, max(64, len(text) // 2))
+                    limit = max(64, len(text) // 2)
+                    message["content"] = (
+                        fit_tool_text(text, limit, self._head_tail)
+                        if message.get("role") == "tool"
+                        else self._head_tail(text, limit)
+                    )
                     for call in message.get("tool_calls", []):
                         function = call["function"]
                         arguments = json.loads(function["arguments"])
@@ -1050,7 +1057,7 @@ class ContextBuilder:
         result = self._sanitize_tool_protocol(render())
         if not self.tokenbudget.fits(result):
             raise ValueError(
-                "Context budget is too small for user instructions and the latest tool exchange"
+                "Context budget is too small for user instructions, the latest tool exchange and attached observations. Increase the context window or reduce the configured image reserve/output cap."
             )
         return [
             {key: value for key, value in message.items() if not key.startswith("_")}
@@ -1070,6 +1077,7 @@ class ContextBuilder:
         learned_experience=None,
         available_tool_names=None,
         include_plan=True,
+        attachments=None,
     ):
         task_key = str((task or {}).get("id", ""))
         if task_key != getattr(self, "_history_task", None):
@@ -1113,6 +1121,7 @@ class ContextBuilder:
             *self._requests,
             *summary,
             *[m for g in pending for m in g],
+            *(attachments or []),
         ]
         trigger = self.tokenbudget.budget * self.compaction_trigger_ratio
         if (
@@ -1147,4 +1156,6 @@ class ContextBuilder:
                 self._covered_groups.update(self._group_key(g) for g in consumed)
                 pending = [g for g in older if self._is_request(g)] + recent
                 summary = [self._summary_message()]
-        return self._fit_protocol(system, list(self._requests), summary, pending)
+        return self._fit_protocol(
+            system, list(self._requests), summary, pending, attachments or ()
+        )

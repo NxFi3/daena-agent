@@ -8,27 +8,32 @@ import shutil
 import subprocess
 import threading
 import time
+import tempfile
+
+from .runtime import ComputerError, checkpoint, pause
 from pathlib import Path
 from typing import Any, Mapping
 
-DRIVER_TOOLS = frozenset({
-    # Session lifecycle must be recoverable after the daemon expires an idle run.
-    "start_session",
-    "get_desktop_state",
-    "get_cursor_position",
-    "get_window_state",
-    "list_windows",
-    "list_apps",
-    "bring_to_front",
-    "click",
-    "double_click",
-    "right_click",
-    "drag",
-    "type_text",
-    "press_key",
-    "hotkey",
-    "scroll",
-})
+DRIVER_TOOLS = frozenset(
+    {
+        # Session lifecycle must be recoverable after the daemon expires an idle run.
+        "start_session",
+        "get_desktop_state",
+        "get_cursor_position",
+        "get_window_state",
+        "list_windows",
+        "list_apps",
+        "bring_to_front",
+        "click",
+        "double_click",
+        "right_click",
+        "drag",
+        "type_text",
+        "press_key",
+        "hotkey",
+        "scroll",
+    }
+)
 
 _SESSION_ENV_KEYS = (
     "DISPLAY",
@@ -55,8 +60,38 @@ _DAEMON_START_LOCK = threading.Lock()
 _DAEMON_START_TIMEOUT_SECONDS = 8.0
 
 
-class CuaDriverError(RuntimeError):
+class CuaDriverError(ComputerError):
     """A bounded Cua Driver invocation failed."""
+
+    def __init__(
+        self, message, *, code="driver_error", dispatched=False, not_dispatched=False
+    ):
+        super().__init__(
+            code, message, dispatched=dispatched, not_dispatched=not_dispatched
+        )
+
+
+def response_error(message, *outputs):
+    """Preserve structured refusals without treating text fragments as delivery evidence."""
+    for output in outputs:
+        try:
+            payload = json.loads(output)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        details = payload.get("error")
+        details = details if isinstance(details, dict) else payload
+        code = details.get("code") or payload.get("code") or "driver_refused"
+        # Cua's background_unavailable means no focus-free backend exists;
+        # the driver refuses BEFORE input. Other failures need explicit evidence.
+        refused = code == "background_unavailable" or any(
+            p.get("delivered") is False or p.get("dispatch_status") == "not_dispatched"
+            for p in (payload, details)
+        )
+        error = CuaDriverError(message, code=str(code), not_dispatched=refused)
+        return error
+    return CuaDriverError(message)
 
 
 def driver_executable() -> str:
@@ -93,9 +128,13 @@ def _read_process_environment(proc_root: Path = Path("/proc")) -> list[dict[str,
         try:
             if current_uid is not None and entry.stat().st_uid != current_uid:
                 continue
-            command_line = (entry / "cmdline").read_bytes().replace(b"\x00", b" ").decode(
-                "utf-8", errors="replace"
-            ).lower()
+            command_line = (
+                (entry / "cmdline")
+                .read_bytes()
+                .replace(b"\x00", b" ")
+                .decode("utf-8", errors="replace")
+                .lower()
+            )
             priority = next(
                 (
                     len(_SESSION_PROCESS_MARKERS) - index
@@ -134,7 +173,9 @@ def _compose_desktop_environment(
     x11_socket_dir: Path = Path("/tmp/.X11-unix"),
 ) -> dict[str, str]:
     """Recover display/session variables for a CLI started outside the GUI's shell."""
-    env = {str(key): str(value) for key, value in (base_environment or {}).items() if value}
+    env = {
+        str(key): str(value) for key, value in (base_environment or {}).items() if value
+    }
     for candidate in session_environments or []:
         for key in _SESSION_ENV_KEYS:
             if not env.get(key) and candidate.get(key):
@@ -165,17 +206,21 @@ def _compose_desktop_environment(
 
     if not env.get("DISPLAY") and x11_socket_dir.is_dir():
         x11_sockets = sorted(
-            path for path in x11_socket_dir.glob("X*")
-            if path.name[1:].isdigit()
+            path for path in x11_socket_dir.glob("X*") if path.name[1:].isdigit()
         )
         if x11_sockets:
             env["DISPLAY"] = f":{x11_sockets[0].name[1:]}"
 
     if not env.get("XDG_SESSION_TYPE"):
-        env["XDG_SESSION_TYPE"] = "wayland" if env.get("WAYLAND_DISPLAY") else (
-            "x11" if env.get("DISPLAY") else ""
+        env["XDG_SESSION_TYPE"] = (
+            "wayland"
+            if env.get("WAYLAND_DISPLAY")
+            else ("x11" if env.get("DISPLAY") else "")
         )
-    if env.get("WAYLAND_DISPLAY") and env.get("XDG_SESSION_TYPE", "").lower() == "wayland":
+    if (
+        env.get("WAYLAND_DISPLAY")
+        and env.get("XDG_SESSION_TYPE", "").lower() == "wayland"
+    ):
         # Native Wayland avoids rootless XWayland's unreadable root drawable
         # for desktop screenshots. This is an explicit Cua Driver opt-in.
         env["CUA_DRIVER_RS_ENABLE_WAYLAND"] = "1"
@@ -213,28 +258,55 @@ def _kill_process_group(process: subprocess.Popen) -> None:
 
 
 def _run_bounded(command: list[str], timeout: float) -> subprocess.CompletedProcess:
-    """Run a helper with a hard deadline, no inherited stdin, and cleanup on timeout."""
-    process = subprocess.Popen(
-        command,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
-    )
-    try:
-        stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        _kill_process_group(process)
+    """Drain into temporary files, cap replies, and terminate the helper on cancellation.
+
+    The daemon may already have accepted an input when the client is stopped. A
+    timeout is an unknown outcome, never a reason to replay the input.
+    """
+    checkpoint()
+    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=stdout,
+            stderr=stderr,
+            start_new_session=True,
+        )
+        deadline = time.monotonic() + timeout
         try:
-            process.communicate(timeout=2.0)
-        except Exception:
-            pass
-        raise subprocess.TimeoutExpired(command, timeout)
-    except BaseException:
-        _kill_process_group(process)
-        raise
-    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+            while process.poll() is None:
+                checkpoint()
+                if time.monotonic() >= deadline:
+                    raise subprocess.TimeoutExpired(
+                        [command[0], "<arguments omitted>"], timeout
+                    )
+                if (
+                    os.fstat(stdout.fileno()).st_size
+                    + os.fstat(stderr.fileno()).st_size
+                    > 16_000_000
+                ):
+                    raise CuaDriverError(
+                        "Driver response exceeded 16 MB.", code="response_too_large"
+                    )
+                time.sleep(0.025)
+            checkpoint()
+        except BaseException:
+            _kill_process_group(process)
+            process.wait(timeout=2)
+            raise
+        stdout.seek(0)
+        stderr.seek(0)
+        out, err = stdout.read(16_000_001), stderr.read(16_000_001)
+        if len(out) + len(err) > 16_000_000:
+            raise CuaDriverError(
+                "Driver response exceeded 16 MB.", code="response_too_large"
+            )
+        return subprocess.CompletedProcess(
+            command,
+            process.returncode,
+            out.decode("utf-8", "replace"),
+            err.decode("utf-8", "replace"),
+        )
 
 
 def _daemon_status(executable: str) -> tuple[bool, str]:
@@ -299,7 +371,7 @@ def _ensure_daemon_running(executable: str) -> None:
                     "See ~/.cache/cua-driver/daemon.log and run cua-driver doctor in the "
                     f"logged-in desktop session. Initial status: {status_text[:300]}"
                 )
-            time.sleep(0.2)
+            pause(0.2)
 
         raise CuaDriverError(
             "Cua Driver daemon did not become ready after automatic startup. "
@@ -358,7 +430,14 @@ def _driver_refusal_detail(output: str) -> str | None:
         or payload.get("success") is False
         or payload.get("delivered") is False
     )
-    if is_error or has_refusal or explicit_negative or status in {"refused", "error", "failed"} or effect == "refused" or code:
+    if (
+        is_error
+        or has_refusal
+        or explicit_negative
+        or status in {"refused", "error", "failed"}
+        or effect == "refused"
+        or code
+    ):
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     return None
 
@@ -400,8 +479,18 @@ def call_driver(
     combined = error + "\n" + output
     lowered = combined.casefold()
 
-    if completed.returncode != 0 and (
-        "daemon is not running" in lowered or "daemon not running" in lowered
+    if (
+        name
+        in {
+            "start_session",
+            "list_windows",
+            "list_apps",
+            "get_window_state",
+            "get_desktop_state",
+            "get_cursor_position",
+        }
+        and completed.returncode != 0
+        and ("daemon is not running" in lowered or "daemon not running" in lowered)
     ):
         _ensure_daemon_running(executable)
         completed = invoke()
@@ -411,8 +500,9 @@ def call_driver(
     if completed.returncode == 0:
         refusal = _driver_refusal_detail(output)
         if refusal:
-            raise CuaDriverError(
-                f"Cua Driver action '{name}' was refused by the driver: {refusal[:2500]}"
+            raise response_error(
+                f"Cua Driver action '{name}' was refused by the driver: {refusal[:2500]}",
+                output,
             )
 
     if completed.returncode != 0:
@@ -423,19 +513,26 @@ def call_driver(
                 "\nCua Driver is still unavailable. Start it from the logged-in desktop session "
                 "and run cua-driver doctor."
             )
-        raise CuaDriverError(
-            f"Cua Driver action '{name}' failed (exit {completed.returncode}): {detail[:2500]}"
+        raise response_error(
+            f"Cua Driver action '{name}' failed (exit {completed.returncode}): {detail[:2500]}",
+            error,
+            output,
         )
     # Accessibility snapshots can contain thousands of structured elements plus a
     # compatibility tree. Keep enough of the JSON intact for computer_inspect to
     # parse it; truncating mid-JSON silently turns a valid tree into a parse error.
-    return output[:12000000] if name == "get_window_state" else output[:12000]
+    return output
 
 
 def pointer_state_path(workspace_root: str | Path, session_label: str) -> Path:
     """Return the workspace-local state file for the agent's last pixel action."""
     session_key = hashlib.sha256(str(session_label).encode("utf-8")).hexdigest()[:16]
-    return Path(workspace_root).expanduser().resolve() / ".daena" / "computer_use" / f"pointer_{session_key}.json"
+    return (
+        Path(workspace_root).expanduser().resolve()
+        / ".daena"
+        / "computer_use"
+        / f"pointer_{session_key}.json"
+    )
 
 
 def png_dimensions(path: str | Path) -> tuple[int | None, int | None]:
@@ -443,8 +540,14 @@ def png_dimensions(path: str | Path) -> tuple[int | None, int | None]:
     try:
         with Path(path).open("rb") as image:
             header = image.read(24)
-        if len(header) < 24 or header[:8] != b"\x89PNG\r\n\x1a\n" or header[12:16] != b"IHDR":
+        if (
+            len(header) < 24
+            or header[:8] != b"\x89PNG\r\n\x1a\n"
+            or header[12:16] != b"IHDR"
+        ):
             return None, None
-        return int.from_bytes(header[16:20], "big"), int.from_bytes(header[20:24], "big")
+        return int.from_bytes(header[16:20], "big"), int.from_bytes(
+            header[20:24], "big"
+        )
     except (OSError, ValueError):
         return None, None

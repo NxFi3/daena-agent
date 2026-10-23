@@ -405,11 +405,8 @@ class MessageCard(QFrame):
 
     def set_status(self, text):
         working = str(text).startswith("●")
-<<<<<<< HEAD
-=======
         self._status_base = str(text).rstrip(".… ") if working else ""
         self._dots = 0
->>>>>>> 8904218 (checkpoint)
         self.status.setText(text if working else "")
         self.status.setVisible(working)
         if working:
@@ -479,7 +476,9 @@ class ConversationView(QScrollArea):
         title.setMinimumHeight(48)
         title.setAlignment(Qt.AlignCenter)
         panel.addWidget(title)
-        subtitle = QLabel("Ask Daena to explore, build or fix things in your workspace.")
+        subtitle = QLabel(
+            "Ask Daena to explore, build or fix things in your workspace."
+        )
         subtitle.setObjectName("welcomeSub")
         subtitle.setWordWrap(True)
         subtitle.setAlignment(Qt.AlignCenter)

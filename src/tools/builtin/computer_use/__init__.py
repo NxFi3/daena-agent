@@ -1,5 +1,4 @@
 from .computer_use import ComputerUseTool
 
-# One model-facing Computer Use tool, following the unified action surface used
-# by Hermes. Accessibility and action adapters stay internal implementation details.
+__version__ = ComputerUseTool.implementation_version
 __all__ = ["ComputerUseTool"]

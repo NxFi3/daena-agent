@@ -71,15 +71,9 @@ QLabel#modelHint {color:$dim;font-size:12px;padding:4px 9px;}
 QLabel#composerHint {color:$muted;font-size:12px;}
 QLabel#composerNote {color:$dim;font-size:11px;padding-top:6px;}
 QLabel#runtimeStatus {color:$muted;font-size:11px;}
-<<<<<<< HEAD
 QFrame#header {background:$bg;border:0;border-bottom:1px solid $border;}
 QFrame#sidebar {background:$sidebar;border:0;}
 QFrame#statusBar {background:$bg;border-top:1px solid $border;}
-=======
-QFrame#header {background:$bg;border:0;}
-QFrame#sidebar {background:$sidebar;border:0;border-right:1px solid $border;}
-QFrame#statusBar {background:$bg;border:0;border-top:1px solid $border;}
->>>>>>> 8904218 (checkpoint)
 QPushButton,QToolButton {background:$surface;border:1px solid $border;border-radius:10px;padding:8px 12px;font-weight:550;color:$text;}
 QPushButton:hover,QToolButton:hover {background:$hover;}
 QPushButton:pressed,QToolButton:pressed {background:$selected;}
@@ -144,33 +138,17 @@ QScrollArea#conversation,QWidget#conversationCanvas,QWidget#messageRow,QWidget#w
 QFrame#assistantMessage {background:transparent;border:0;border-radius:0;}
 QFrame#userMessage {background:$user;border:0;border-radius:20px;}
 QFrame#assistantMessage QTextBrowser,QFrame#userMessage QTextBrowser {background:transparent;border:0;padding:0;font-size:15px;selection-background-color:$selected;}
-<<<<<<< HEAD
 QLabel#messageStatus {color:$muted;font-size:12px;padding:2px 0 4px;}
 QToolButton#messageCopy {background:transparent;border:0;color:$dim;padding:4px 7px;font-size:11px;}
-=======
-QLabel#avatar {background:$accent;color:$accent_text;border-radius:14px;font-size:15px;font-weight:700;}
-QLabel#messageStatus {color:$muted;font-size:12px;padding:2px 0 4px;}
-QLabel#thinkingDots {color:$accent;font-size:13px;padding:2px 0 4px;}
-QToolButton#messageCopy {background:transparent;border:0;border-radius:8px;color:$dim;padding:4px 8px;font-size:11px;}
->>>>>>> 8904218 (checkpoint)
 QToolButton#messageCopy:hover {color:$text;background:$hover;}
 QFrame#toolActivity {background:transparent;border:0;margin:0;padding:2px 0 6px;}
 QLabel#toolPreview {color:$muted;font-size:11px;padding:3px 0 4px;}
 QLabel#activityLink {color:$muted;font-size:12px;}
-<<<<<<< HEAD
 QPlainTextEdit#toolReceipts {background:$code;color:$text;border:1px solid $border;border-radius:8px;font-family:monospace;font-size:11px;}
 QLabel#welcomeSymbol {font-size:38px;font-weight:600;color:$text;}
 QLabel#welcomeTitle {font-size:30px;font-weight:600;color:$text;padding:4px 0 10px;}
 QPushButton#suggestion {text-align:left;background:transparent;border:1px solid $border;border-radius:18px;padding:12px 16px;color:$muted;font-size:13px;font-weight:500;}
 QPushButton#suggestion:hover {background:$hover;color:$text;}
-=======
-QPlainTextEdit#toolReceipts {background:$code;color:$code_text;border:1px solid $border;border-radius:10px;font-family:'JetBrains Mono','Cascadia Mono',Consolas,monospace;font-size:11px;}
-QLabel#welcomeSymbol {font-size:34px;font-weight:600;color:$accent;}
-QLabel#welcomeTitle {font-size:30px;font-weight:600;color:$text;padding:2px 0 4px;}
-QLabel#welcomeSub {font-size:14px;color:$muted;padding-bottom:12px;}
-QPushButton#suggestion {text-align:left;background:$surface;border:1px solid $border;border-radius:16px;padding:14px 16px;color:$text;font-size:13px;font-weight:500;}
-QPushButton#suggestion:hover {background:$hover;border-color:$scroll;}
->>>>>>> 8904218 (checkpoint)
 QCheckBox {spacing:9px;padding:4px;background:transparent;}
 QCheckBox::indicator {width:17px;height:17px;border:1px solid $muted;border-radius:4px;background:$field;}
 QCheckBox::indicator:checked {background:$accent;border-color:$accent;}

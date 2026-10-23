@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 
 from src.tools.builtin.applypatch.applypatch import ApplyPatch
 
@@ -64,7 +65,6 @@ def test_patch_context_tolerates_trailing_whitespace_drift(tmp_path):
     assert path.read_text(encoding="utf-8") == "const value = 2;\nnext();\n"
 
 
-
 def test_add_file_tolerates_unprefixed_model_content(tmp_path):
     path = tmp_path / "public" / "style.css"
 
@@ -82,12 +82,7 @@ body {{
 
     assert result.success is True
     assert path.read_text(encoding="utf-8") == (
-        "body {\n"
-        "  margin: 0;\n"
-        "}\n"
-        ".form {\n"
-        "  display: block;\n"
-        "}\n"
+        "body {\n  margin: 0;\n}\n.form {\n  display: block;\n}\n"
     )
 
 
@@ -168,14 +163,14 @@ def test_multi_file_application_rolls_back_on_filesystem_failure(
     first.write_text("one\n", encoding="utf-8")
     second.write_text("two\n", encoding="utf-8")
 
-    original_write_text = Path.write_text
+    original_replace = os.replace
 
-    def flaky_write_text(path, data, *args, **kwargs):
-        if path == second:
+    def flaky_replace(source, destination, *args, **kwargs):
+        if Path(destination) == second:
             raise OSError("simulated disk failure")
-        return original_write_text(path, data, *args, **kwargs)
+        return original_replace(source, destination, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "write_text", flaky_write_text)
+    monkeypatch.setattr(os, "replace", flaky_replace)
 
     result = ApplyPatch().execute(
         f"""*** Begin Patch
@@ -194,3 +189,29 @@ def test_multi_file_application_rolls_back_on_filesystem_failure(
     assert result.content["error"]["type"] == "filesystem_error"
     assert first.read_text(encoding="utf-8") == "one\n"
     assert second.read_text(encoding="utf-8") == "two\n"
+
+
+def test_conflict_resolution_preserves_unique_header_shorthand(tmp_path):
+    target = tmp_path / "sample.py"
+    target.write_text("value = 1\n")
+    result = ApplyPatch().execute(
+        f"*** Begin Patch\n*** Update File: {target}\n@@ value = 1 @@\n+value = 2\n*** End Patch"
+    )
+    assert result.success and target.read_text() == "value = 2\n"
+
+
+def test_structured_edit_rejects_ambiguous_match_without_writes(tmp_path):
+    target = tmp_path / "sample.txt"
+    target.write_text("same\nsame\n")
+    result = ApplyPatch().execute(
+        edits=[
+            {
+                "operation": "replace",
+                "path": str(target),
+                "old": "same",
+                "new": "changed",
+            }
+        ]
+    )
+    assert not result.success
+    assert target.read_text() == "same\nsame\n"

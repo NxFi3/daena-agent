@@ -79,6 +79,7 @@ class ContextService:
         search_top_k: int | None = None,
         available_tool_names: set[str] | None = None,
         include_plan: bool = True,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         if self._session_key != str(session_id):
             self._session_key = str(session_id)
@@ -127,6 +128,7 @@ class ContextService:
             workspace=workspace_directory,
             available_tool_names=available_tool_names,
             include_plan=include_plan,
+            attachments=attachments,
         )
         builder = self.contextbuilder
         checkpoint_key = (builder._history_summary, frozenset(builder._covered_groups))

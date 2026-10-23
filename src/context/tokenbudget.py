@@ -133,6 +133,11 @@ class TokenBudget:
         if self.chars_per_token <= 0:
             self.chars_per_token = 4.0
         self.tools = []
+        # Provider-specific image accounting varies. Reserve an explicit,
+        # configurable allowance, not base64 characters or zero image tokens.
+        self.image_token_reserve = max(
+            1, int(self.config.get("image_token_reserve", 4096))
+        )
         self._initialize_calibration()
 
     def reserve_tools(self, tools):
@@ -191,7 +196,11 @@ class TokenBudget:
 
         content = message.get("content")
 
-        if content:
+        if isinstance(content, list):
+            total += sum(
+                len(str(p.get("text", ""))) for p in content if isinstance(p, dict)
+            )
+        elif content:
             total += len(str(content))
 
         tool_calls = message.get("tool_calls")
@@ -214,6 +223,20 @@ class TokenBudget:
 
         return total
 
+    def image_tokens(self, messages):
+        count = 0
+        for message in messages:
+            count += len(message.get("images") or [])
+            count += int(bool(message.get("computer_image")))
+            content = message.get("content")
+            if isinstance(content, list):
+                count += sum(
+                    isinstance(p, dict)
+                    and p.get("type") in {"image_url", "input_image"}
+                    for p in content
+                )
+        return count * self.image_token_reserve
+
     def estimate_messages_tokens(
         self,
         messages: list[dict[str, Any]],
@@ -226,12 +249,11 @@ class TokenBudget:
             self._message_character_count(message) for message in messages
         )
 
-        if total_chars <= 0:
-            return 0
-
         return max(
             1,
-            math.ceil(total_chars / self.chars_per_token) + 4 * len(messages),
+            math.ceil(total_chars / self.chars_per_token)
+            + 4 * len(messages)
+            + self.image_tokens(messages),
         )
 
     def fits(
@@ -255,6 +277,11 @@ class TokenBudget:
     ) -> None:
 
         if not messages:
+            return
+
+        if self.image_tokens(messages):
+            # Mixed prompt usage does not separate image tokens consistently.
+            # Do not distort text calibration with unknown visual-token costs.
             return
 
         if model_response is None:

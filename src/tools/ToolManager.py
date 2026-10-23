@@ -111,10 +111,6 @@ class ToolManager:
                 process_setter(self.process_manager)
             elif hasattr(tool, "process_manager"):
                 tool.process_manager = self.process_manager
-        # DAENA_COMPUTER_BIND_V1
-        from src.tools.builtin.computer_use.integration import bind_manager
-        bind_manager(self)
-
             workspace_setter = getattr(tool, "set_workspace", None)
             if callable(workspace_setter) and self._workspace_root is not None:
                 workspace_setter(self._workspace_root)
@@ -146,7 +142,9 @@ class ToolManager:
 
         visible: list[dict] = []
         for definition in self._definitions:
-            function = definition.get("function", {}) if isinstance(definition, dict) else {}
+            function = (
+                definition.get("function", {}) if isinstance(definition, dict) else {}
+            )
             name = str(function.get("name", "")).strip().lower()
             if not name or name not in allowed:
                 continue
@@ -154,7 +152,13 @@ class ToolManager:
                 continue
             if name in {"skill_list", "skill_read"} and not self.skills.enabled:
                 continue
-            if name == "task_finish" and (self.config.get("runtime") or {}).get("completion_protocol", "implicit") != "explicit":
+            if (
+                name == "task_finish"
+                and (self.config.get("runtime") or {}).get(
+                    "completion_protocol", "implicit"
+                )
+                != "explicit"
+            ):
                 continue
             if name == "subagent" and not self.subagents.enabled:
                 continue
@@ -162,20 +166,22 @@ class ToolManager:
 
         return visible
 
-    CORE_MODEL_TOOLS = frozenset({
-        "tool_search",
-        "read_file",
-        "apply_patch",
-        "command_exec",
-        "process_poll",
-        "process_write",
-        "process_stop",
-        "make_directory",
-        "skill_list",
-        "skill_read",
-        "subagent",
-        "task_finish",
-    })
+    CORE_MODEL_TOOLS = frozenset(
+        {
+            "tool_search",
+            "read_file",
+            "apply_patch",
+            "command_exec",
+            "process_poll",
+            "process_write",
+            "process_stop",
+            "make_directory",
+            "skill_list",
+            "skill_read",
+            "subagent",
+            "task_finish",
+        }
+    )
 
     @staticmethod
     def _search_tokens(value: str) -> list[str]:
@@ -212,9 +218,30 @@ class ToolManager:
 
         query_tokens = set(self._search_tokens(query))
         stop = {
-            "a", "an", "and", "for", "from", "i", "in", "is", "it",
-            "of", "on", "or", "please", "the", "this", "to", "tool",
-            "tools", "use", "want", "with", "you", "your", "need",
+            "a",
+            "an",
+            "and",
+            "for",
+            "from",
+            "i",
+            "in",
+            "is",
+            "it",
+            "of",
+            "on",
+            "or",
+            "please",
+            "the",
+            "this",
+            "to",
+            "tool",
+            "tools",
+            "use",
+            "want",
+            "with",
+            "you",
+            "your",
+            "need",
         }
         query_tokens.difference_update(stop)
         if not query_tokens:
@@ -247,9 +274,7 @@ class ToolManager:
         scored: list[tuple[float, dict[str, Any]]] = []
         for definition in definitions:
             function = (
-                definition.get("function", {})
-                if isinstance(definition, dict)
-                else {}
+                definition.get("function", {}) if isinstance(definition, dict) else {}
             )
             name = str(function.get("name", "")).strip().lower()
             if not name or name == "tool_search":
@@ -294,8 +319,7 @@ class ToolManager:
         max_active = max(1, min(12, max_active))
 
         previous = [
-            name for name in self._active_tool_names
-            if name not in matched_names
+            name for name in self._active_tool_names if name not in matched_names
         ]
         self._active_tool_names = (matched_names + previous)[:max_active]
         self._last_tool_search_query = str(query)
@@ -323,8 +347,9 @@ class ToolManager:
         """Expose core tools plus capabilities selected through tool_search."""
         visible = self.get_tools()
         by_name = {
-            str((definition.get("function") or {}).get("name", "")).strip().lower():
-                definition
+            str((definition.get("function") or {}).get("name", ""))
+            .strip()
+            .lower(): definition
             for definition in visible
             if isinstance(definition, dict)
             and isinstance(definition.get("function"), dict)
@@ -354,7 +379,9 @@ class ToolManager:
 
         add("tool_search")
         for definition in visible:
-            name = str((definition.get("function") or {}).get("name", "")).strip().lower()
+            name = (
+                str((definition.get("function") or {}).get("name", "")).strip().lower()
+            )
             if name in always_names and name != "tool_search":
                 add(name)
         for name in self._active_tool_names:
@@ -394,12 +421,12 @@ class ToolManager:
         name = toolcall.name
 
         if name == "make_directory":
-            args["paths"] = [str(self._resolve_execution_path(p)) for p in args["paths"]]
+            args["paths"] = [
+                str(self._resolve_execution_path(p)) for p in args["paths"]
+            ]
 
         elif name in {"read_file", "write_file", "edit_file"}:
-            args["file_path"] = str(
-                self._resolve_execution_path(args["file_path"])
-            )
+            args["file_path"] = str(self._resolve_execution_path(args["file_path"]))
 
         elif name == "command_exec":
             args["workdir"] = str(
@@ -418,9 +445,7 @@ class ToolManager:
                 )
                 if match:
                     path = match.group(2).strip()
-                    line = match.group(1) + str(
-                        self._resolve_execution_path(path)
-                    )
+                    line = match.group(1) + str(self._resolve_execution_path(path))
                 normalized.append(line)
 
             args["patch"] = "\n".join(normalized)
@@ -520,10 +545,7 @@ class ToolManager:
             toolcall = incoming_call
 
             if not toolcall.valid:
-                message = (
-                    str(toolcall.validation_error).strip()
-                    or "Invalid tool call."
-                )
+                message = str(toolcall.validation_error).strip() or "Invalid tool call."
                 calls.append(toolcall)
                 results.append(
                     ToolResult(
@@ -573,18 +595,22 @@ class ToolManager:
             try:
                 toolcall = self.security.check(toolcall)
                 if (
-                    (toolcall.name in {"skill_list", "skill_read"} and not self.skills.enabled)
-                    or (toolcall.name == "subagent" and not self.subagents.enabled)
-                ):
+                    toolcall.name in {"skill_list", "skill_read"}
+                    and not self.skills.enabled
+                ) or (toolcall.name == "subagent" and not self.subagents.enabled):
                     toolcall.approved = False
-                    toolcall.security_reason = "This feature is disabled by host configuration."
+                    toolcall.security_reason = (
+                        "This feature is disabled by host configuration."
+                    )
                     toolcall.security_rule = "feature_disabled"
                 if self.stop_event is not None and self.stop_event.is_set():
                     toolcall.approved = False
                     toolcall.security_reason = "The current task has been cancelled."
                     toolcall.security_rule = "task_cancelled"
             except Exception as exc:
-                self.logger.error("Security check failed for '%s': %s", toolcall.name, exc)
+                self.logger.error(
+                    "Security check failed for '%s': %s", toolcall.name, exc
+                )
                 toolcall.approved = False
                 toolcall.security_reason = f"Security check failed: {exc}"
                 toolcall.security_rule = "security_failure"
@@ -600,7 +626,8 @@ class ToolManager:
                             "success": False,
                             "error": {
                                 "type": "security_denied",
-                                "message": toolcall.security_reason or "Tool execution denied by security policy.",
+                                "message": toolcall.security_reason
+                                or "Tool execution denied by security policy.",
                             },
                         },
                         metadata={

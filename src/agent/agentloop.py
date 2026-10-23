@@ -218,8 +218,8 @@ class Loop:
         )
 
     def _apply_result(self, call, result, iteration):
-        # DAENA_COMPUTER_RECEIPT_V1
         from src.tools.builtin.computer_use.integration import remember_result
+
         remember_result(self, call, result)
         self.agent_state.update_from_result(result)
         content = result.content
@@ -264,7 +264,9 @@ class Loop:
                     else None
                 ),
             )
-            serialized = json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)
+            serialized = json.dumps(
+                args, ensure_ascii=False, sort_keys=True, default=str
+            )
         except Exception:
             serialized = json.dumps(
                 dict(call.args or {}), ensure_ascii=False, sort_keys=True, default=str
@@ -314,14 +316,11 @@ class Loop:
     def _execute_tool_calls(self, calls, iteration):
         # Only tools that explicitly opt in as side-effect-free may run in
         # parallel; the model chooses what to inspect and which calls to group.
-        concurrent = (
-            len(calls) > 1
-            and all(
-                call.valid
-                and call.name != "task_finish"
-                and getattr(self.tool.get_tool(call.name), "parallel_safe", False)
-                for call in calls
-            )
+        concurrent = len(calls) > 1 and all(
+            call.valid
+            and call.name != "task_finish"
+            and getattr(self.tool.get_tool(call.name), "parallel_safe", False)
+            for call in calls
         )
         if concurrent:
             executable = []
@@ -349,8 +348,7 @@ class Loop:
                         )
                     )
                 executed_results = {
-                    index: result
-                    for (index, _call), result in zip(executable, values)
+                    index: result for (index, _call), result in zip(executable, values)
                 }
             for index, call in enumerate(calls):
                 result = blocked.get(index) or executed_results[index]
@@ -417,6 +415,9 @@ class Loop:
         state["active_process_ids"] = sorted(self._active_process_ids)
         builder = self.context.contextbuilder
         builder.stop_event = self._stop_event
+        from src.tools.builtin.computer_use.integration import desktop_messages
+
+        attachments = desktop_messages(self, names)
         messages = self.context.get_context(
             session_id=self.session_id,
             user_task=user_task,
@@ -429,11 +430,13 @@ class Loop:
             search_top_k=self.search_context_top_k,
             available_tool_names=names,
             include_plan=True,
+            attachments=attachments,
         )
         estimated = builder.tokenbudget.estimate_request_tokens(messages)
         self.metrics.update(
             context_estimated_tokens=estimated,
             context_messages=len(messages),
+            context_image_tokens=builder.tokenbudget.image_tokens(messages),
             context_tool_results=sum(m.get("role") == "tool" for m in messages),
             context_read_results=sum(
                 m.get("tool_name") == "read_file" for m in messages
@@ -446,11 +449,9 @@ class Loop:
             messages=len(messages),
             tool_results=self.metrics["context_tool_results"],
             tool_schema_tokens=builder.tokenbudget.tool_tokens,
+            image_tokens=builder.tokenbudget.image_tokens(messages),
         )
         self.metrics["llm_calls"] += 1
-        # DAENA_COMPUTER_VISION_V1
-        from src.tools.builtin.computer_use.integration import append_pending_visual
-        messages = append_pending_visual(self, messages)
         result = invoke(
             self.llm,
             messages,
@@ -545,7 +546,10 @@ class Loop:
                     if self._stop_event.is_set():
                         raise InterruptedError("Interrupted by user") from exc
                     self.metrics["generation_failures"] += 1
-                    if self.metrics["generation_retries"] >= self.max_generation_retries:
+                    if (
+                        self.metrics["generation_retries"]
+                        >= self.max_generation_retries
+                    ):
                         raise RecoverableGenerationError(
                             f"{exc} Recovery limit ({self.max_generation_retries}) exhausted.",
                             recovery_hint=exc.recovery_hint,

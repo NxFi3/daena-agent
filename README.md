@@ -26,6 +26,9 @@ Use `python -m cli --version` to check which source version is running.
 
 ## Desktop app
 
+For desktop control, image/context handling, native backend setup and update
+instructions, see [Computer Use](docs/computer-use.md).
+
 ```bash
 python -m pip install -e '.[desktop,ollama,openrouter,gemini,web]'
 daena-studio --cwd /path/to/project

@@ -330,11 +330,7 @@ class StudioWindow(QMainWindow):
     def _build_chat(self):
         page = QWidget()
         root = QVBoxLayout(page)
-<<<<<<< HEAD
         root.setContentsMargins(14, 4, 14, 16)
-=======
-        root.setContentsMargins(14, 0, 14, 14)
->>>>>>> 8904218 (checkpoint)
         root.setSpacing(0)
         self.diagnostics = QDialog(self)
         self.diagnostics.setWindowTitle("Daena · Advanced controls and diagnostics")
@@ -354,11 +350,7 @@ class StudioWindow(QMainWindow):
         centered.addStretch(1)
         column = QWidget()
         column.setObjectName("chatColumn")
-<<<<<<< HEAD
         column.setMaximumWidth(960)
-=======
-        column.setMaximumWidth(860)
->>>>>>> 8904218 (checkpoint)
         content = QVBoxLayout(column)
         content.setContentsMargins(0, 0, 0, 0)
         content.setSpacing(10)
@@ -442,7 +434,7 @@ class StudioWindow(QMainWindow):
         self.send_button.setObjectName("sendMessage")
         self.send_button.setToolTip("Send message (Enter)")
         self.send_button.setFixedSize(36, 36)
-        self.send_button.clicked.connect(self.send)
+        self.send_button.clicked.connect(self._composer_action)
         row.addWidget(self.send_button)
         composer_layout.addLayout(row)
         content.addWidget(panel)
@@ -690,6 +682,12 @@ class StudioWindow(QMainWindow):
     def add_message(self, speaker, text):
         return self.transcript.add_message(speaker, text)
 
+    def _composer_action(self):
+        if self.busy and not self._automation_run:
+            self.stop()
+        else:
+            self.send()
+
     def send(self):
         text = self.input.toPlainText().strip()
         if not text:
@@ -761,14 +759,6 @@ class StudioWindow(QMainWindow):
         self.send_button.setToolTip(
             "Stop current task" if not self._automation_run else "Send message"
         )
-        try:
-            self.send_button.clicked.disconnect(self.send)
-        except (RuntimeError, TypeError):
-            pass
-        if not self._automation_run:
-            self.send_button.clicked.connect(self.stop)
-        else:
-            self.send_button.clicked.connect(self.send)
         self.stop_button.setEnabled(True)
         if not self._automation_run:
             self.busy_mode.show()
@@ -1066,15 +1056,6 @@ class StudioWindow(QMainWindow):
         self.send_button.setText("↑")
         self.send_button.setEnabled(True)
         self.send_button.setToolTip("Send message (Enter)")
-        try:
-            self.send_button.clicked.disconnect(self.stop)
-        except (RuntimeError, TypeError):
-            pass
-        try:
-            self.send_button.clicked.disconnect(self.send)
-        except (RuntimeError, TypeError):
-            pass
-        self.send_button.clicked.connect(self.send)
         self.busy_mode.hide()
         self.execution.setEnabled(True)
         self.reasoning_slider.setEnabled(True)
