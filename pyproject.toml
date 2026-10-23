@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "daena-computer-use"
-version = "1.0.0"
+version = "1.0.1"
 description = "Snapshot-bound desktop control with explicit verification, cancellation and durable receipts"
 readme = "README.md"
 requires-python = ">=3.11"

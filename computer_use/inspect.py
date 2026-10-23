@@ -63,7 +63,11 @@ def normalize_elements(capture, snapshot_id):
                 value=str(value) if value is not None else None,
                 checked=checked,
                 selected=row.get("selected") if isinstance(row.get("selected"), bool) else None,
-                focused=row.get("focused") if isinstance(row.get("focused"), bool) else None,
+                focused=row.get("focused")
+                if isinstance(row.get("focused"), bool)
+                else True
+                if "focused" in states
+                else None,
                 actions=[str(a) for a in row.get("actions", [])]
                 if isinstance(row.get("actions"), list)
                 else [],
@@ -101,10 +105,13 @@ def resolve(elements, *, element=None, target=None):
             "Target is absent from this snapshot. Capture again or choose a visible point.",
         )
     if len(rows) != 1:
-        raise ComputerError(
+        error = ComputerError(
             "target_ambiguous",
-            f"Target matches {len(rows)} controls; use a specific element ID or label+role.",
+            f"Target matches {len(rows)} controls. Choose an element ID from candidates; the snapshot is still usable. Use inspect to page through matches.",
         )
+        error.candidates = [e.public() for e in rows[:20]]
+        error.candidate_count = len(rows)
+        raise error
     if not rows[0].enabled:
         raise ComputerError("target_disabled", "The target is disabled in the current snapshot.")
     return rows[0]

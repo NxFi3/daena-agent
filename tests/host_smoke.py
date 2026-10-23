@@ -7,6 +7,7 @@ from copy import deepcopy
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import sys
+import json
 
 sys.path.insert(0, str(Path(__file__).parent))
 from conftest import FakeBackend
@@ -60,6 +61,10 @@ with TemporaryDirectory() as directory:
     agent = Agent(config, llm=model)
     tool = agent.loop.tool.get_tool("computer_use")
     tool.backend = FakeBackend()
+    tool.backend.rows.extend(
+        {"element_token": f"extra-{i}", "label": "Long accessible label " * 30, "role": "entry"}
+        for i in range(1013)
+    )
     assert tool.workspace_root == root
     agent.act(
         ContextEvent(
@@ -71,6 +76,9 @@ with TemporaryDirectory() as directory:
     assert len(model.calls) == 2 and agent.last_run_metrics["completed"]
     images = [m for m in model.calls[1] if m.get("images")]
     assert len(images) == 1
+    receipts = [json.loads(m["content"]) for m in model.calls[1] if m.get("role") == "tool"]
+    assert receipts and receipts[-1]["evidence"]["snapshot_id"]
+    assert receipts[-1]["evidence"]["next_offset"] is not None
     assert OllamaProvider._prepare_messages(images)[0]["images"] == images[0]["images"]
     result = tool.execute("capture")
     msg = visual_message(result, "openrouter", root)

@@ -20,7 +20,9 @@ def build_action(request, snapshot, elements):
     action = request["action"]
     if action not in INPUT_ACTIONS:
         raise ComputerError("invalid_action", f"Not an input action: {action}")
-    args = {"delivery_mode": request.get("delivery_mode", "background")}
+    args = {
+        "delivery_mode": request.get("delivery_mode", snapshot.get("delivery_mode", "background"))
+    }
     window = snapshot.get("window")
     if window:
         args.update(pid=window["pid"], window_id=window["window_id"])

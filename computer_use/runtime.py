@@ -13,10 +13,12 @@ import time
 
 
 class ComputerError(RuntimeError):
-    def __init__(self, code, message, *, dispatched=False):
+    def __init__(self, code, message, *, dispatched=False, not_dispatched=False):
         super().__init__(message)
         self.code = code
         self.dispatched = dispatched
+        # Explicit transport evidence of zero delivery, not inferred from a timeout.
+        self.not_dispatched = not_dispatched
 
 
 @dataclass

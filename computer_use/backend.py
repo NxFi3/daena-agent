@@ -45,8 +45,7 @@ def decode(raw):
         or result.get("error")
     ):
         error = result.get("error")
-        code = error.get("code") if isinstance(error, dict) else result.get("code")
-        raise ComputerError(str(code or "driver_refused"), str(error or result)[:1000])
+        raise driver.response_error(str(error or result)[:1000], raw)
     return result
 
 

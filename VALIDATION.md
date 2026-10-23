@@ -4,12 +4,18 @@ Performed on 2026-10-23 in a Linux cloud workspace, Python 3.12.
 
 ## Executed checks
 
-- **66 package tests passed**, with PySide6 and the real X11 desktop test enabled.
+- **77 package tests passed** for 1.0.1, with PySide6 and the real X11 desktop test enabled.
 - **230 existing Daena 0.6 tests passed** after installing the package and optional
   runtime hooks. No baseline tests were weakened or edited.
 - Host smoke passed through an actual Daena Agent loop with a scripted model:
   registry discovery, workspace binding, one-shot screenshot forwarding, and
   Ollama/OpenRouter/Gemini serialization were exercised.
+- The host smoke now includes over 1000 accessibility controls and parses the
+  actual model-facing tool message as JSON, checking that IDs/pagination survive
+  the host's 8000-character message budget.
+- Recovery tests reproduce both exit-zero and exit-one structured Cua refusals,
+  explicit foreground inheritance, ambiguous controls outside the initial page,
+  pagination without recapture, partial typing, and three-input URL navigation.
 - Ruff checks, formatting and Python compilation passed.
 - Source/wheel build and an isolated installed-wheel smoke are included in the
   release packaging checks; the ZIP contains the complete source and wheel.
@@ -18,7 +24,8 @@ Performed on 2026-10-23 in a Linux cloud workspace, Python 3.12.
 
 The X11 test runs a real PySide6 application on Xvfb and sends native input through
 xdotool. The application records received events independently of tool receipts.
-Assertions cover `Daena سلام` text entry, checkbox state, one Save click, a visible
+Assertions cover a foreground focus click followed by `Daena سلام` text entry
+without repeating the mode, checkbox state, one Save click, a visible
 drag stroke, button release, and scroll events. No model or website is involved.
 Screenshots in `docs/screenshots/` show this actual fixture and its trace viewer.
 
@@ -45,7 +52,7 @@ hooks was changed to accommodate that timing result.
   reasoning quality or establish parity with Astra.
 - X11 fallback is foreground-only, has no AX tree, and may be occlusion-sensitive.
 - The provided CI workflow targets Python 3.11/3.12/3.13, but only Python 3.12 was
-  executed in this session. The workflow has not been published/run remotely here.
+  executed locally in this session. Remote workflow status is separate from these results.
 - Snapshot guards serialize participating agents and detect window geometry/
   revision changes; they do not observe every external human/OS interaction.
 

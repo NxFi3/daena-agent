@@ -63,8 +63,31 @@ _DAEMON_START_TIMEOUT_SECONDS = 8.0
 class CuaDriverError(ComputerError):
     """A bounded Cua Driver invocation failed."""
 
-    def __init__(self, message, *, code="driver_error", dispatched=False):
-        super().__init__(code, message, dispatched=dispatched)
+    def __init__(self, message, *, code="driver_error", dispatched=False, not_dispatched=False):
+        super().__init__(code, message, dispatched=dispatched, not_dispatched=not_dispatched)
+
+
+def response_error(message, *outputs):
+    """Preserve structured refusals without treating text fragments as delivery evidence."""
+    for output in outputs:
+        try:
+            payload = json.loads(output)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        details = payload.get("error")
+        details = details if isinstance(details, dict) else payload
+        code = details.get("code") or payload.get("code") or "driver_refused"
+        # Cua's background_unavailable means no focus-free backend exists;
+        # the driver refuses BEFORE input. Other failures need explicit evidence.
+        refused = code == "background_unavailable" or any(
+            p.get("delivered") is False or p.get("dispatch_status") == "not_dispatched"
+            for p in (payload, details)
+        )
+        error = CuaDriverError(message, code=str(code), not_dispatched=refused)
+        return error
+    return CuaDriverError(message)
 
 
 def driver_executable() -> str:
@@ -459,8 +482,8 @@ def call_driver(
     if completed.returncode == 0:
         refusal = _driver_refusal_detail(output)
         if refusal:
-            raise CuaDriverError(
-                f"Cua Driver action '{name}' was refused by the driver: {refusal[:2500]}"
+            raise response_error(
+                f"Cua Driver action '{name}' was refused by the driver: {refusal[:2500]}", output
             )
 
     if completed.returncode != 0:
@@ -471,8 +494,10 @@ def call_driver(
                 "\nCua Driver is still unavailable. Start it from the logged-in desktop session "
                 "and run cua-driver doctor."
             )
-        raise CuaDriverError(
-            f"Cua Driver action '{name}' failed (exit {completed.returncode}): {detail[:2500]}"
+        raise response_error(
+            f"Cua Driver action '{name}' failed (exit {completed.returncode}): {detail[:2500]}",
+            error,
+            output,
         )
     # Accessibility snapshots can contain thousands of structured elements plus a
     # compatibility tree. Keep enough of the JSON intact for computer_inspect to

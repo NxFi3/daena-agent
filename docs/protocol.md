@@ -11,15 +11,28 @@ Responses include `snapshot_id`, `window`, `coordinate_frame`, native dimensions
 `elements`, `image_ref`, `raw_image_ref`, `pixel_hash`, counts, truncation and warnings.
 Opaque element IDs are preferred; numeric IDs require the matching snapshot too.
 Exact label/role matching never guesses among multiple controls. Use `query` and
-`max_results` for compact observations. Unknown coordinate provenance/scale means
+`max_results` for compact observations. `inspect(snapshot_id, query, offset)` reads
+the same snapshot without capturing again; `next_offset` advances through matches.
+Ambiguity errors include candidate IDs and counts. Focused controls and their
+available values are returned separately from the first page. Model-facing JSON
+evidence is bounded to 6000 characters; omitted controls remain available through
+inspect. Unknown coordinate provenance/scale means
 AX bounds are omitted; native tokens remain usable. SELECTED never implies CHECKED.
 
-Every input consumes its snapshot. The default freshness limit is 180 seconds
+Dispatched or uncertain input consumes its snapshot. A structured driver refusal
+that attests zero delivery (including Cua's `background_unavailable`) leaves it
+usable for a deliberate corrected call. There is no automatic retry or escalation.
+The default freshness limit is 180 seconds
 (`max_snapshot_age` constructor setting). Capturing again replaces the snapshot.
 Another participating agent's input invalidates an earlier desktop revision.
 Human/OS changes are not fully tracked by this counter; review fresh observations.
 
 ## Inputs
+
+An explicit `delivery_mode` on capture or a validated input is retained for the
+same session and target window. Subsequent calls inherit it unless overridden.
+Selecting another window/session resets the default to background. This avoids
+switching from a successful foreground click to unsupported background typing.
 
 `click`, `double_click`, `right_click`, `middle_click`, `move` and `scroll` require
 one `element`, `target` or native `coordinate`. Scroll requires direction and an
@@ -65,6 +78,13 @@ It stops on failure or an unmet explicit condition. Use per-step `expect` for
 dependencies: the tool does not infer which semantic outcomes later steps need.
 
 `navigate` operates on an already-selected browser using Ctrl+L, text and Return.
+Prefer it when the caller intends to open an exact URL. For example, after capture:
+
+```json
+{"action":"navigate","snapshot_id":"<latest snapshot>","url":"https://example.org","delivery_mode":"foreground"}
+```
+
+`url` is a literal http(s) address, not Markdown link syntax.
 It does not guess a browser or infer navigation from a short user message. Delivery
 is not a page-load guarantee; inspect the result or use `expect`. `launch` takes
 one executable, never shell syntax. List/capture its actual window afterwards.

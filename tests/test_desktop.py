@@ -45,12 +45,20 @@ def test_real_pointer_keyboard_unicode_scroll_and_drag(tmp_path):
         r = tool.execute("capture", window_title="Test Workbench", mode="vision")
         assert r.success, r.content
         sid = r.content["snapshot_id"]
+        focused = tool.execute(
+            "click",
+            snapshot_id=sid,
+            delivery_mode="foreground",
+            coordinate=state()["points"]["name"],
+        )
+        assert focused.success, focused.content
+        sid = focused.content["observation"]["snapshot_id"]
         for action, args in [
-            ("type", {"coordinate": state()["points"]["name"], "text": "Daena سلام"}),
+            ("type", {"text": "Daena سلام"}),
             ("click", {"coordinate": state()["points"]["check"]}),
             ("click", {"coordinate": state()["points"]["save"]}),
         ]:
-            r = tool.execute(action, snapshot_id=sid, delivery_mode="foreground", **args)
+            r = tool.execute(action, snapshot_id=sid, **args)
             assert r.success, r.content
             sid = r.content["observation"]["snapshot_id"]
         time.sleep(0.15)

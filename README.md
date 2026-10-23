@@ -1,4 +1,4 @@
-# Daena Computer Use 1.0
+# Daena Computer Use 1.0.1
 
 A replacement for the `computer_use` package supplied in `comp.zip`. The public
 `ComputerUseTool` name stays; the observation/action contract is redesigned.
@@ -8,6 +8,15 @@ This is a desktop-control engine, **not a trained vision model**.
 [Integration](docs/integration.md) · [Validation](VALIDATION.md)
 
 ## Changes
+
+- Explicit delivery mode persists per session and target window, including after
+  capture and tool reinstantiation. Foreground clicks no longer fall back to
+  background typing when the next call omits the mode.
+- Ambiguous targets return candidate IDs. `inspect` searches/pages the existing
+  snapshot without another screenshot. Focused control state/value is exposed.
+- Model evidence stays valid JSON under Daena's 8 KB tool-message limit.
+- Structured zero-delivery refusals retain their error code and keep the snapshot
+  usable for a deliberate corrected call. Timeout/partial input remains uncertain.
 
 - Unique snapshot-bound element IDs; explicit `snapshot_id` on input.
 - A desktop lease across threads, processes, sessions and workspaces. Another
@@ -38,7 +47,7 @@ The primary backend requires the **external `cua-driver` executable** used by th
 original package. It is not bundled. Run `cua-driver doctor` in the logged-in
 desktop session. For the optional X11 backend, install `.[x11,viewer]` and the
 system package `xdotool`, then use `--backend x11`. X11 requires DISPLAY and explicit
-`delivery_mode="foreground"`; it has no accessibility tree and cannot control
+`delivery_mode="foreground"` once for the selected target; it has no accessibility tree and cannot control
 native Wayland-only windows. Window pixels can be affected by occlusion.
 
 ## Install into Daena

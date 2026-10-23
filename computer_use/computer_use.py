@@ -14,6 +14,7 @@ from .backend import create_backend, parse_window
 from .compat import Tool, ToolResult
 from .contracts import Element, INPUT_ACTIONS, Rect, SCHEMA, normalized, validate_request
 from .inspect import evaluate, normalize_elements
+from .evidence import compact_evidence, element_page
 from .observe import annotate, crop, image_info, visual_delta
 from .runtime import (
     ComputerError,
@@ -41,6 +42,10 @@ class ComputerUseTool(Tool):
         "label (optionally label+role); use screenshot coordinates when the target is visually clear. Coordinates are native "
         "pixels in the returned frame, never scaled preview pixels. Zoom returns a crop with an explicit mapping to native pixels. "
         "Every input consumes its snapshot and normally returns a new one. Review that observation before the next action. "
+        "For opening a URL in the selected browser, use navigate(url=..., delivery_mode='foreground') instead of finding/clicking its address bar. "
+        "type sends literal text to the focused field. A successful focus click can be followed by type or key using the returned snapshot; another focus click is unnecessary. "
+        "An explicit delivery_mode persists for the same session/window. inspect searches/pages an existing snapshot without another screenshot. "
+        "Ambiguous targets return candidate IDs; choose among those without repeating the same label. "
         "success means the operation was delivered/observed; only an explicit expect condition can report verified. Pixel changes "
         "do not prove task success. A timeout means outcome unknown: observe, never blindly repeat the action. request_id provides "
         "idempotent reconnects. sequence runs up to six predictable steps using freshly resolved labels; use expect between "
@@ -109,6 +114,8 @@ class ComputerUseTool(Tool):
         )
 
     def _result(self, success, content, summary, *, effects=None):
+        if len(summary) > 600:
+            summary = summary[:580] + "… (see error details)"
         if content.get("error") is not None and not isinstance(content["error"], dict):
             content = dict(
                 content, error={"code": "backend_error", "message": str(content["error"])}
@@ -124,7 +131,7 @@ class ComputerUseTool(Tool):
             metadata.update(image_ref=image, image_mime_type="image/png")
         # This is what Daena's generic context builder retains. Keep the controls
         # and image reference here, not only in a truncated summary.
-        evidence = dict(content)
+        evidence = compact_evidence(content)
         return ToolResult(
             success=success,
             name=self.name,
@@ -219,17 +226,21 @@ class ComputerUseTool(Tool):
             )
         query = normalized(request.get("query", ""))
         visible = [e for e in elements if not query or query in normalized(e.label + " " + e.role)]
-        shown = visible[: request.get("max_results", 40)]
-        # Bound model-facing text independently of the native tree. Internal exact
-        # labels/values stay intact for targeting and condition evaluation.
-        bounded, used = [], 0
-        for element in shown:
-            size = len(json.dumps(element.public(), ensure_ascii=False))
-            if bounded and used + size > 12000:
-                break
-            bounded.append(element)
-            used += size
-        shown = bounded
+        page = element_page(
+            visible, offset=request.get("offset", 0), limit=request.get("max_results", 40)
+        )
+        shown_ids = {e["id"] for e in page["elements"]}
+        shown = [e for e in elements if e.id in shown_ids]
+        state = self._state()
+        previous = state.get("snapshot", {})
+        old_window = previous.get("window")
+        same_target = (window is None and old_window is None) or (
+            window is not None and old_window is not None and window.same(parse_window(old_window))
+        )
+        delivery = request.get(
+            "delivery_mode",
+            previous.get("delivery_mode", "background") if same_target else "background",
+        )
         image = cap.image_path
         if image and mode == "som":
             image = annotate(image, shown, self.root / f"{sid}.som.png")
@@ -243,12 +254,12 @@ class ComputerUseTool(Tool):
             "image_ref": image,
             "elements": [asdict(e) for e in elements],
             "mode": mode,
+            "delivery_mode": delivery,
             "complete": mode != "vision" and not cap.truncated and not cap.warnings,
             "consumed": False,
             **info,
             "desktop_revision": self._revision(),
         }
-        state = self._state()
         state["snapshot"] = snapshot
         self._save(state)
         content = {
@@ -259,10 +270,11 @@ class ComputerUseTool(Tool):
             "image_ref": image,
             "raw_image_ref": cap.image_path,
             "image_mime_type": "image/png" if image else None,
-            "elements": [e.public() for e in shown],
+            **page,
             "element_count": len(elements),
-            "shown_count": len(shown),
-            "truncated": cap.truncated or len(visible) > len(shown),
+            "truncated": cap.truncated or page["truncated"],
+            "delivery_mode": delivery,
+            "focused_elements": [e.public() for e in elements if e.focused is True][:4],
             "warnings": cap.warnings,
             "mode": mode,
             **info,
@@ -275,6 +287,22 @@ class ComputerUseTool(Tool):
         for path in files[150:]:
             path.unlink(missing_ok=True)
         return content
+
+    def _inspect(self, request):
+        snapshot = self._snapshot(request.get("snapshot_id"))
+        elements = self._elements(snapshot)
+        query = normalized(request.get("query", ""))
+        filtered = [e for e in elements if not query or query in normalized(e.label + " " + e.role)]
+        return {
+            "action": "inspect",
+            "snapshot_id": snapshot["snapshot_id"],
+            "delivery_mode": snapshot.get("delivery_mode", "background"),
+            "query": request.get("query", ""),
+            "element_count": len(elements),
+            **element_page(
+                filtered, offset=request.get("offset", 0), limit=request.get("max_results", 40)
+            ),
+        }
 
     @staticmethod
     def _elements(snapshot):
@@ -352,6 +380,7 @@ class ComputerUseTool(Tool):
         # Durable invalidation BEFORE sending: a crash cannot reuse a stale target.
         state = self._state()
         state["snapshot"]["consumed"] = True
+        state["snapshot"]["delivery_mode"] = args["delivery_mode"]
         self._save(state)
         prepare = getattr(self.backend, "prepare_action", None)
         if prepare:
@@ -362,8 +391,14 @@ class ComputerUseTool(Tool):
             receipt = dispatch(self.backend, self.session, action, args)
             dispatched = True
         except ComputerError as exc:
-            # Client timeout/refusal may be after delivery. No implicit mode escalation.
-            exc.dispatched = True
+            if exc.not_dispatched and not exc.dispatched:
+                # A structured zero-delivery refusal permits a deliberate corrected call.
+                # Never infer this from timeout text, and never replay automatically.
+                state = self._state()
+                state["snapshot"].update(consumed=False, desktop_revision=self._revision())
+                self._save(state)
+            else:
+                exc.dispatched = True
             raise
         except Exception as exc:
             raise ComputerError(
@@ -375,6 +410,7 @@ class ComputerUseTool(Tool):
             "action": request["action"],
             "dispatch_status": "dispatched",
             "backend_receipt": receipt,
+            "delivery_mode": args["delivery_mode"],
             "verification": {"status": "not_requested"},
         }
         if request.get("capture_after", True) or request.get("expect"):
@@ -397,10 +433,18 @@ class ComputerUseTool(Tool):
                 error.dispatch_status = "dispatched"
                 raise error from exc
         ok = content["verification"]["status"] in {"not_requested", "verified"}
+        next_id = content.get("observation", {}).get("snapshot_id")
+        change = content.get("visual_delta", {}).get("status")
         return self._result(
             ok,
             content,
-            f"{request['action']} dispatched. Verification: {content['verification']['status']}.",
+            f"{request['action']} sent ({args['delivery_mode']}); verification={content['verification']['status']}."
+            + (f" Next snapshot: {next_id}." if next_id else " Capture before the next input.")
+            + (
+                " Pixels unchanged; inspect focused_elements/value before choosing the next action."
+                if change == "unchanged"
+                else ""
+            ),
             effects=[{"action": "interact", "target": f"desktop:{request['action']}"}],
         )
 
@@ -463,7 +507,9 @@ class ComputerUseTool(Tool):
             step = dict(
                 step,
                 snapshot_id=self._state()["snapshot"]["snapshot_id"],
-                delivery_mode=request.get("delivery_mode", "background"),
+                delivery_mode=request.get(
+                    "delivery_mode", self._state()["snapshot"].get("delivery_mode", "background")
+                ),
             )
             result = self._run(step)
             receipts.append(
@@ -532,6 +578,13 @@ class ComputerUseTool(Tool):
                     True,
                     data,
                     f"Captured {data['snapshot_id']}: {data['shown_count']}/{data['element_count']} controls.",
+                )
+            if action == "inspect":
+                data = self._inspect(request)
+                return self._result(
+                    True,
+                    data,
+                    f"Inspected {data['shown_count']}/{data['matched_count']} matching controls in {data['snapshot_id']}; snapshot unchanged.",
                 )
             if action in {"list_windows", "list_apps"}:
                 windows = self.backend.windows(self.session)
@@ -611,6 +664,22 @@ class ComputerUseTool(Tool):
             }
             if hasattr(exc, "windows"):
                 content["windows"] = exc.windows
+            if hasattr(exc, "candidates"):
+                content.update(candidates=exc.candidates, candidate_count=exc.candidate_count)
+                content["recovery"] = (
+                    "Choose a candidate element ID from this snapshot. Use inspect with query/offset for more controls; recapture only if the UI changed."
+                )
+            if exc.code == "background_unavailable" and exc.not_dispatched:
+                content["recovery"] = (
+                    "No input was delivered. Explicitly select delivery_mode='foreground' if desired. The current snapshot remains usable; no automatic retry was made."
+                )
+            snapshot = self._state().get("snapshot", {})
+            if snapshot:
+                content.update(
+                    snapshot_id=snapshot["snapshot_id"],
+                    snapshot_consumed=snapshot.get("consumed", False),
+                    delivery_mode=snapshot.get("delivery_mode", "background"),
+                )
             return self._result(False, content, f"{action}: {exc.code}: {exc}")
 
     def _navigate_focused(self, request, url):
@@ -624,7 +693,9 @@ class ComputerUseTool(Tool):
         ):
             step.update(
                 snapshot_id=self._state()["snapshot"]["snapshot_id"],
-                delivery_mode=request.get("delivery_mode", "background"),
+                delivery_mode=request.get(
+                    "delivery_mode", self._state()["snapshot"].get("delivery_mode", "background")
+                ),
             )
             if index == 1 and request.get("target"):
                 step["target"] = request["target"]

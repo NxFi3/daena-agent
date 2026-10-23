@@ -134,8 +134,10 @@ INPUT_ACTIONS = {
 }
 PROPERTIES = {
     "action": {
+        "description": "capture observes a window. inspect searches/pages controls in the same snapshot. navigate opens an exact URL in the selected browser using Ctrl+L, literal URL, Return; prefer this for browser navigation. type sends literal text to the focused field or explicit target. key sends a shortcut without a click. Input returns the next observation; use its snapshot_id.",
         "enum": [
             "capture",
+            "inspect",
             "click",
             "double_click",
             "right_click",
@@ -153,7 +155,7 @@ PROPERTIES = {
             "list_apps",
             "doctor",
             "zoom",
-        ]
+        ],
     },
     "snapshot_id": {
         "type": "string",
@@ -167,7 +169,11 @@ PROPERTIES = {
     "coordinate": POINT,
     "from_coordinate": POINT,
     "to_coordinate": POINT,
-    "text": {"type": "string", "maxLength": 100000},
+    "text": {
+        "type": "string",
+        "maxLength": 100000,
+        "description": "Literal text, exactly as it should be typed. For a URL use navigate with url; never wrap it in Markdown link syntax.",
+    },
     "key": {"type": "string", "minLength": 1},
     "keys": {"type": ["array", "string"], "items": {"type": "string"}},
     "button": {"enum": ["left", "right", "middle"]},
@@ -185,8 +191,16 @@ PROPERTIES = {
     "window_id": {"type": ["integer", "string"]},
     "query": {"type": "string", "maxLength": 200},
     "max_results": {"type": "integer", "minimum": 1, "maximum": 100},
+    "offset": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "Zero-based offset into filtered controls. Use inspect with query and next_offset without recapturing.",
+    },
     "capture_after": {"type": "boolean"},
-    "delivery_mode": {"enum": ["background", "foreground"]},
+    "delivery_mode": {
+        "enum": ["background", "foreground"],
+        "description": "Explicit foreground uses the real focused desktop. This choice persists for the same session and window; omitted calls inherit it. A new target defaults to background. Background refusal never automatically escalates.",
+    },
     "include_windows": {"type": "boolean"},
     "expect": EXPECT,
     "timeout": {"type": "number", "minimum": 0.1, "maximum": 120},
@@ -260,7 +274,7 @@ def validate_request(request, *, sequence_step=False):
     finite(request)
     action = request["action"]
     if (
-        action in INPUT_ACTIONS | {"sequence", "navigate", "zoom"}
+        action in INPUT_ACTIONS | {"sequence", "navigate", "zoom", "inspect"}
         and not sequence_step
         and not request.get("snapshot_id")
     ):
