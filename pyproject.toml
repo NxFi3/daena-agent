@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "daena-computer-use"
+version = "1.0.0"
+description = "Snapshot-bound desktop control with explicit verification, cancellation and durable receipts"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["Pillow>=10,<13", "jsonschema>=4.21,<5"]
+
+[project.optional-dependencies]
+x11 = ["python-xlib>=0.33,<1"]
+viewer = ["PySide6>=6.8,<7"]
+dev = ["pytest>=8,<10", "ruff>=0.9,<1", "build>=1,<2"]
+
+[project.scripts]
+daena-computer = "computer_use.__main__:main"
+daena-computer-viewer = "computer_use.viewer:main"
+
+[tool.setuptools.packages.find]
+include = ["computer_use*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["desktop: real X11 desktop integration (requires Xvfb, xdotool, PySide6)"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]

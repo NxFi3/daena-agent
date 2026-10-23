@@ -1,0 +1,21 @@
+name: Computer use checks
+on: [push, pull_request]
+jobs:
+  desktop:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: sudo apt-get update && sudo apt-get install -y xvfb xdotool xauth libegl1 libopengl0 libxcb-cursor0
+      - run: python -m pip install -e '.[dev,x11,viewer]' 'google-genai>=2,<3'
+      - run: python -m ruff check computer_use tests examples install_into_daena.py
+      - run: python -m ruff format --check computer_use tests examples install_into_daena.py
+      - run: xvfb-run -a python -m pytest -q
+        env:
+          DAENA_TEST_DESKTOP: '1'
+      - run: python -m build
