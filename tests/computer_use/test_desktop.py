@@ -38,7 +38,14 @@ def test_real_pointer_keyboard_unicode_scroll_and_drag(tmp_path):
             and process.poll() is None
         ):
             time.sleep(0.05)
-        assert state_path.exists(), process.communicate(timeout=2)
+        if not state_path.exists():
+            stdout, stderr = process.communicate(timeout=2)
+            pytest.fail(
+                "Qt desktop fixture failed to start:\n"
+                + stderr.decode(errors="replace")
+                + stdout.decode(errors="replace"),
+                pytrace=False,
+            )
 
         def state():
             return json.loads(state_path.read_text())
