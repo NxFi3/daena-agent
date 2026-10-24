@@ -44,7 +44,15 @@ def build_action(request, snapshot, elements):
             "Use one target mechanism: element, label, or coordinate.",
         )
     coordinate = request.get("coordinate")
-    if target:
+    position = request.get("position")
+    if position is not None:
+        coordinate = [position["x"], position["y"]]
+        if target:
+            if not target.bounds:
+                raise ComputerError("target_not_actionable", "Relative position requires observed bounds. Use an absolute screenshot coordinate instead.")
+            x, y = point(coordinate, target.bounds.width, target.bounds.height)
+            coordinate = [target.bounds.x + x, target.bounds.y + y]
+    if target and position is None:
         if target.token and action in {"click", "double_click", "right_click", "type"}:
             args["element_token"] = target.token
         elif target.bounds:

@@ -60,7 +60,7 @@ def test_real_pointer_keyboard_unicode_scroll_and_drag(tmp_path):
             "click",
             snapshot_id=sid,
             delivery_mode="foreground",
-            coordinate=state()["points"]["name"],
+            position=dict(zip(("x", "y"), state()["points"]["name"])),
         )
         assert focused.success, focused.content
         sid = focused.content["observation"]["snapshot_id"]
@@ -99,6 +99,28 @@ def test_real_pointer_keyboard_unicode_scroll_and_drag(tmp_path):
         time.sleep(0.1)
         assert state()["stroke_count"] == 1 and state()["point_count"] >= 3
         assert not state()["mouse_down"] and state()["scroll_total"] < 0
+        # Draw a house outline on the unlabelled real Qt canvas using only
+        # observed image coordinates; no accessibility token represents it.
+        points = [(x+80,y+100),(x+80,y+190),(x+260,y+190),
+                  (x+260,y+100),(x+170,y+35),(x+80,y+100),(x+260,y+100)]
+        drawing_started = time.monotonic()
+        for start, end in zip(points, points[1:]):
+            r = tool.execute(
+                "drag", snapshot_id=r.content["observation"]["snapshot_id"],
+                from_coordinate=list(start), to_coordinate=list(end),
+                delivery_mode="foreground", duration_ms=160,
+            )
+            assert r.success, r.content
+            assert r.content["visual_delta"]["status"] == "changed"
+        assert time.monotonic() - drawing_started < 20, "Consecutive strokes stalled at an unchanged pointer position"
+        deadline = time.monotonic() + 2
+        while state()["stroke_count"] < 7 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert state()["stroke_count"] == 7 and not state()["mouse_down"]
+        artifact = os.environ.get("DAENA_TEST_ARTIFACTS")
+        if artifact:
+            Path(artifact).mkdir(parents=True, exist_ok=True)
+            shutil.copy2(r.content["observation"]["image_ref"], Path(artifact)/"house.png")
         # A browser-style address field uses real Ctrl+L, typing, Return events.
         r = tool.execute(
             "navigate",

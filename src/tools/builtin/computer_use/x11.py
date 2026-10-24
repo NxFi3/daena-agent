@@ -228,7 +228,15 @@ class X11Backend:
                         "invalid_target", "Window-local input needs a native window."
                     )
                 x, y = x + window.bounds.x, y + window.bounds.y
-            self._run(["mousemove", "--sync", round(x), round(y)])
+            # xdotool --sync waits for a movement event even when the pointer
+            # is already at this point (common for consecutive drawing strokes).
+            # A server acknowledgement also handles no-op moves without that wait.
+            from Xlib import X
+            from Xlib.display import Display
+            from Xlib.ext import xtest
+            with closing(Display()) as display:
+                xtest.fake_input(display, X.MotionNotify, x=round(x), y=round(y))
+                display.sync()
 
         button = {"left": 1, "middle": 2, "right": 3}[args.get("button", "left")]
         if "x" in args:

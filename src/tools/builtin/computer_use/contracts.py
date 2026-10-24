@@ -112,9 +112,13 @@ class Capture:
 POINT = {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}
 SELECTOR = {
     "type": ["string", "object"],
-    "description": "Exact visible label, or exact label+role to disambiguate. No fuzzy click selection.",
-    "properties": {"label": {"type": "string"}, "role": {"type": "string"}},
-    "required": ["label"],
+    "description": "Exact visible label, exact label+role, or {id: observed element ID}. Unlabelled surfaces can be addressed using screenshot coordinates.",
+    "properties": {"label": {"type": "string"}, "role": {"type": "string"}, "id": {"type": "string"}},
+    "oneOf": [
+        {"type": "string"},
+        {"type": "object", "required": ["label"], "not": {"required": ["id"]}},
+        {"type": "object", "required": ["id"], "not": {"anyOf": [{"required": ["label"]}, {"required": ["role"]}]}},
+    ],
     "additionalProperties": False,
 }
 EXPECT = {
@@ -183,7 +187,13 @@ PROPERTIES = {
         "description": "Opaque element ID from that snapshot; legacy numbered IDs require snapshot_id too.",
     },
     "target": SELECTOR,
-    "coordinate": POINT,
+    "coordinate": {**POINT, "description": "Native screenshot pixels [x,y], origin at image top-left. Window captures use window-relative pixels, not desktop positions."},
+    "position": {
+        "type": "object",
+        "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
+        "required": ["x", "y"], "additionalProperties": False,
+        "description": "Pointer point. Without target/element: native screenshot pixels. With target/element: offset inside that control's observed bounds. Never combine with coordinate."
+    },
     "from_coordinate": POINT,
     "to_coordinate": POINT,
     "text": {
@@ -313,6 +323,9 @@ def validate_request(request, *, sequence_step=False):
         raise ComputerError(
             "stale_snapshot", "snapshot_id from the latest observation is required."
         )
+    if "position" in request:
+        if "coordinate" in request or action not in {"click", "double_click", "right_click", "middle_click", "move", "scroll"}:
+            raise ComputerError("invalid_arguments", "position is for pointer actions and cannot be combined with coordinate.")
     if action in {
         "click",
         "double_click",
@@ -322,7 +335,7 @@ def validate_request(request, *, sequence_step=False):
         "scroll",
     }:
         if (
-            sum(request.get(k) is not None for k in ("target", "element", "coordinate"))
+            sum(request.get(k) is not None for k in ("target", "element", "coordinate")) + int("position" in request and request.get("target") is None and request.get("element") is None)
             != 1
         ):
             raise ComputerError(

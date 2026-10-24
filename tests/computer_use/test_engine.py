@@ -446,3 +446,44 @@ def test_capture_explains_window_and_snapshot_identity_without_guessing(engine):
     assert not result.success
     assert 'window_id' in str(result.content)
     assert 'not snapshot_id' in str(result.content)
+
+
+def test_exact_id_selector_and_relative_position(engine):
+    tool, backend = engine
+    result = tool.execute('capture')
+    sid = result.content['snapshot_id']
+    ident = result.content['elements'][0]['id']
+    result = tool.execute('click',snapshot_id=sid,target={'id':ident},position={'x':10,'y':12},seconds=0)
+    assert result.success, result.content
+    action, args = backend.calls[-1]
+    assert args['x']==30 and args['y']==42
+    assert 'element_token' not in args
+    assert 'elements' not in result.evidence['observation']
+    assert tool.current_observation()['elements']
+
+
+def test_absolute_position_and_ambiguous_pointer_requests(engine):
+    tool, backend = engine
+    sid = tool.execute('capture').content['snapshot_id']
+    result = tool.execute('click',snapshot_id=sid,position={'x':300,'y':200},seconds=0)
+    assert result.success, result.content
+    assert backend.calls[-1][1]['x']==300
+    sid=result.content['observation']['snapshot_id']
+    count=len(backend.calls)
+    for args in [
+        {'position':{'x':1,'y':2},'coordinate':[1,2]},
+        {'target':{'id':'old:1','label':'Name'}},
+        {'target':{'label':'Name'},'position':{'x':9999,'y':2}},
+        {'target':{'label':'Imaginary canvas'},'position':{'x':10,'y':10}},
+    ]:
+        assert not tool.execute('click',snapshot_id=sid,**args).success
+    assert len(backend.calls)==count
+
+
+def test_pointer_followup_preserves_vision_capture_mode(engine):
+    tool, backend = engine
+    result=tool.execute('capture',mode='vision')
+    result=tool.execute('click',snapshot_id=result.content['snapshot_id'],coordinate=[300,200],seconds=0)
+    assert result.success, result.content
+    assert result.content['observation']['mode']=='vision'
+    assert result.content['observation']['elements']==[]

@@ -121,3 +121,30 @@ python -m ruff check src cli harness tests
 python -m compileall -q src cli harness tests examples
 python -m build
 ```
+
+### Pointer input on surfaces without accessibility labels
+
+A canvas or other custom widget may have no accessible name. Use points from the
+current screenshot; a missing label is not evidence that pointer input is
+unsupported. Window screenshots use coordinates relative to their top-left,
+without adding the window's desktop position. `drag` takes `from_coordinate` and
+`to_coordinate` in those native pixels and holds the mouse button between them.
+Choose `delivery_mode="foreground"` for native pointer input when the backend
+cannot deliver it in the background. Delivery never changes automatically.
+
+`position={"x": 100, "y": 120}` is an alternative to `coordinate=[100,120]` for
+pointer actions. Without a selector it is an absolute screenshot point. With an
+explicit target or element, it is an offset inside that control's observed
+bounds. Missing targets, unavailable bounds, out-of-range offsets, and combining
+`position` with `coordinate` are rejected before dispatch. Exact opaque IDs can
+also be supplied as `target={"id": "<observed ID>"}`; stale IDs remain invalid.
+
+The current screenshot and control list remain attached to model requests.
+Historical input receipts preserve the action outcome and resulting observation
+identity without repeating old control lists. This does not infer successful
+completion of a drawing or any application workflow.
+
+X11 pointer movement uses XTest with a server acknowledgement, including when
+moving to the cursor's existing position. Consecutive strokes no longer wait for
+a movement event that cannot occur. Post-input observations preserve `vision`
+mode unless another mode or an accessibility postcondition is requested.

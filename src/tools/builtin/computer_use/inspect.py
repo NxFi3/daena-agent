@@ -93,6 +93,8 @@ def normalize_elements(capture, snapshot_id):
 
 
 def matches(elements, selector):
+    if isinstance(selector, dict) and "id" in selector:
+        return [e for e in elements if e.id == selector["id"]]
     if isinstance(selector, str):
         label, role = selector, None
     else:
@@ -120,7 +122,7 @@ def resolve(elements, *, element=None, target=None):
     if not rows:
         raise ComputerError(
             "target_missing",
-            "Target is absent from this snapshot. Capture again or choose a visible point.",
+            "Target is absent from this snapshot. An unlabelled surface does not require an accessibility element: use coordinate=[x,y] from the current screenshot, or drag with from_coordinate/to_coordinate. Do not substitute a different named control.",
         )
     if len(rows) != 1:
         error = ComputerError(
