@@ -181,3 +181,41 @@ def test_real_pointer_keyboard_unicode_scroll_and_drag(tmp_path):
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait()
+
+
+@pytest.mark.desktop
+@pytest.mark.skipif(not os.environ.get('DAENA_TEST_DESKTOP'), reason='Requires isolated X11 display')
+def test_reparented_client_without_ewmh_pid_is_discovered(tmp_path, monkeypatch):
+    from contextlib import closing
+    from Xlib import X
+    from Xlib.display import Display
+    with closing(Display()) as display:
+        assert display.has_extension('X-Resource'), 'Native test server must expose XRes'
+        root=display.screen().root
+        outer=root.create_window(40,50,400,300,0,X.CopyFromParent,X.InputOutput,X.CopyFromParent)
+        child=outer.create_window(10,20,200,150,0,X.CopyFromParent,X.InputOutput,X.CopyFromParent)
+        child.set_wm_name('Unadvertised native client')
+        child.set_wm_class('native-test','NativeTest')
+        outer.map();child.map();display.sync()
+        try:
+            backend=X11Backend()
+            found=[w for w in backend.windows('test') if w.window_id==child.id]
+            assert len(found)==1 and found[0].pid==os.getpid()
+            assert found[0].bounds.x==50 and found[0].bounds.y==70
+            tool=ComputerUseTool(backend,workspace=tmp_path,lock_path=tmp_path/'lock')
+            result=tool.execute('capture',window_id=child.id,mode='vision')
+            assert result.success, result.content
+            assert result.content['width']==200 and result.content['height']==150
+            with monkeypatch.context() as patch:
+                patch.setattr('shutil.which', lambda name: None)
+                observation=tool.execute('capture',window_id=child.id,mode='vision')
+                assert observation.success, observation.content
+                blocked=tool.execute('click', snapshot_id=observation.content['snapshot_id'], coordinate=[10,10], delivery_mode='foreground')
+                assert not blocked.success and blocked.content['dispatch_status']=='not_dispatched'
+                assert 'xdotool' in str(blocked.content)
+                assert tool.current_observation()['input_allowed']
+            monkeypatch.setattr(backend,'_local_client_pid',lambda *args:None)
+            assert child.id not in [w.window_id for w in backend.windows('test')]
+            assert backend.window_diagnostics['missing_identity']>=1
+        finally:
+            outer.destroy();display.sync()

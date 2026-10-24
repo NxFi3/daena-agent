@@ -148,3 +148,19 @@ X11 pointer movement uses XTest with a server acknowledgement, including when
 moving to the cursor's existing position. Consecutive strokes no longer wait for
 a movement event that cannot occur. Post-input observations preserve `vision`
 mode unless another mode or an accessibility postcondition is requested.
+
+### X11 discovery diagnostics
+
+Window discovery falls back to walking reparented client windows when the window
+manager does not publish a usable EWMH client list. If a client omits
+`_NET_WM_PID`, XRes can supply its actual local process identity. Clients without
+verifiable identity remain excluded, with a count in `window_diagnostics`.
+Discovery and screenshots need python-xlib and a connected display; missing
+xdotool blocks input before dispatch, without blocking these observations.
+
+An empty X11 list means no eligible X11 clients were found, not that an app is
+uninstalled. Native Wayland windows can be invisible to an X11 connection;
+`doctor` reports the session type and Wayland-display presence. In that case use
+a supported native backend or an X11 desktop session. The `desktop-control`
+builtin skill describes discovery, identity selection, input and verification
+without assuming an application's executable name or installation path.

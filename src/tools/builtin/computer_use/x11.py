@@ -20,6 +20,8 @@ class X11Backend:
     name = "x11"
 
     def preflight(self, action, arguments):
+        if not shutil.which("xdotool"):
+            raise ComputerError("dependency_missing", "Install xdotool for X11 input. Window discovery and screenshots remain available.")
         if arguments.get("delivery_mode") != "foreground":
             raise ComputerError(
                 "background_unavailable",
@@ -32,8 +34,6 @@ class X11Backend:
                 "display_missing",
                 "X11 requires DISPLAY. Use Cua Driver for native Wayland.",
             )
-        if not shutil.which("xdotool"):
-            raise ComputerError("dependency_missing", "Install xdotool for X11 input.")
         try:
             from Xlib.display import Display
 
@@ -48,6 +48,25 @@ class X11Backend:
                 "display_unavailable", f"Cannot connect to X11: {exc}"
             ) from exc
 
+    @staticmethod
+    def _local_client_pid(display, handle):
+        """Ask XRes for identity when a client omits optional EWMH PID metadata."""
+        try:
+            from Xlib.ext import res
+            if not display.has_extension("X-Resource"):
+                return None
+            reply = display.res_query_client_ids([
+                {"client": handle.id, "mask": res.LocalClientPIDMask}
+            ])
+            for value in reply.ids:
+                if value.spec.mask & res.LocalClientPIDMask and value.value:
+                    pid = int(value.value[0])
+                    if 0 < pid < 2**31:
+                        return pid
+        except Exception:
+            pass
+        return None
+
     def windows(self, session):
         from Xlib import X
         from Xlib.display import Display
@@ -58,14 +77,35 @@ class X11Backend:
             listing = root.get_full_property(
                 display.intern_atom("_NET_CLIENT_LIST"), X.AnyPropertyType
             )
-            handles = (
-                [
-                    display.create_resource_object("window", int(i))
-                    for i in listing.value
-                ]
-                if listing
-                else root.query_tree().children
-            )
+            handles = [display.create_resource_object("window", int(i))
+                       for i in listing.value] if listing is not None else []
+            self.window_diagnostics = {
+                "scope": "X11-visible clients only; native Wayland windows are not visible here",
+                "session_type": os.environ.get("XDG_SESSION_TYPE", "unknown"),
+                "wayland_display_configured": bool(os.environ.get("WAYLAND_DISPLAY")),
+                "missing_identity": 0,
+                "source": "ewmh" if handles else "window_tree",
+            }
+            if not handles:
+                # Window managers can reparent clients beneath decoration windows;
+                # looking at root children alone silently loses those applications.
+                pending = list(root.query_tree().children)
+                seen = set()
+                while pending and len(seen) < 4096:
+                    handle = pending.pop(0)
+                    if handle.id in seen:
+                        continue
+                    seen.add(handle.id)
+                    try:
+                        attrs = handle.get_attributes()
+                        if attrs.map_state != X.IsViewable or attrs.override_redirect:
+                            continue
+                        if handle.get_wm_class() or handle.get_wm_name() or handle.get_full_property(display.intern_atom("WM_STATE"), X.AnyPropertyType):
+                            handles.append(handle)
+                        pending.extend(handle.query_tree().children)
+                    except Exception:
+                        continue
+                self.window_diagnostics["tree_truncated"] = bool(pending)
             active_prop = root.get_full_property(
                 display.intern_atom("_NET_ACTIVE_WINDOW"), X.AnyPropertyType
             )
@@ -81,7 +121,9 @@ class X11Backend:
                     pid = handle.get_full_property(
                         display.intern_atom("_NET_WM_PID"), X.AnyPropertyType
                     )
-                    if pid is None or not len(pid.value):
+                    process_id = int(pid.value[0]) if pid is not None and len(pid.value) else self._local_client_pid(display, handle)
+                    if process_id is None or process_id <= 0:
+                        self.window_diagnostics["missing_identity"] += 1
                         continue
                     title = handle.get_wm_name() or ""
                     name = handle.get_full_property(
@@ -95,7 +137,7 @@ class X11Backend:
                     origin = root.translate_coords(handle, 0, 0)
                     rows.append(
                         Window(
-                            int(pid.value[0]),
+                            process_id,
                             handle.id,
                             str(title),
                             str(cls[-1]),
@@ -332,7 +374,10 @@ class X11Backend:
             "accessibility": False,
             "background_input": False,
             "pointer_move": True,
-            "next_step": "Select foreground delivery explicitly. Native Wayland needs the cua backend.",
+            "session_type": os.environ.get("XDG_SESSION_TYPE", "unknown"),
+            "wayland_display_configured": bool(os.environ.get("WAYLAND_DISPLAY")),
+            "window_diagnostics": getattr(self, "window_diagnostics", {}),
+            "next_step": "Select foreground delivery explicitly. An empty X11 window list does not prove no applications are open or installed. Native Wayland windows require a supported native backend or an X11 desktop session.",
         }
 
     launch = CuaBackend.launch

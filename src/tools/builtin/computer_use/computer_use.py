@@ -220,7 +220,7 @@ class ComputerUseTool(Tool):
         if len(selected) != 1:
             error = ComputerError(
                 "window_ambiguous" if selected else "window_missing",
-                "Choose an exact PID/window_id from list_windows; no window was guessed.",
+                "Choose an exact PID/window_id from list_windows; no window was guessed. If that list is empty, use doctor to check display/backend support; this does not establish that the requested app is uninstalled.",
             )
             error.windows = [w.public() for w in windows]
             raise error
@@ -716,7 +716,9 @@ class ComputerUseTool(Tool):
                         "action": action,
                         "windows": [w.public() for w in windows],
                         "scope": "currently_open_windows",
-                        "next_step": "Capture the intended window_id. If the needed app is absent, launch(app=executable); for websites use browser_use.open(url). list_apps is an alias for open windows, not installed applications.",
+                        "backend": self.backend.name,
+                        "window_diagnostics": getattr(self.backend, "window_diagnostics", {}),
+                        "next_step": "Capture an observed window_id. An empty list means no eligible windows were found by this backend; it does not establish that an application is absent or uninstalled. Use doctor to check display/session support. Native Wayland windows may be invisible to X11. list_apps is an alias for open windows, not installed applications. Only launch a known executable; do not guess app names or installation paths.",
                     },
                     "Listed visible native windows.",
                 )
