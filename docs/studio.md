@@ -26,11 +26,15 @@ and light appearances. Appearance changes do not reset an active agent session.
 Right-click a saved chat to open or rename it; renaming updates the saved run
 titles without changing the underlying conversation ID.
 
-The interface uses a warm neutral palette with one accent colour in both dark and light appearances; the active theme also restyles rendered Markdown and code blocks. Daena's replies carry a small avatar, a hover-friendly **Copy** action and an animated *Working* indicator while a turn runs.
+The interface uses a neutral palette with one accent colour in both dark and light appearances; the active theme also restyles rendered Markdown and code blocks. Daena's replies carry a small avatar, a hover-friendly **Copy** action and an animated *Working* indicator while a turn runs.
 
 User messages use compact right-aligned bubbles; Daena's replies are shown in a
-readable centered column. Debug receipts and model reasoning are stored but hidden
-from the chat surface. Click the **Daena** model selector in the top bar, then
+readable centered column. Progress narration and consecutive tool calls form an
+ordered timeline. When a turn finishes, **View activity** collapses that timeline
+and leaves the final answer visible. Expand it to read intermediate updates, then
+expand each tool group for arguments, results, and failures. Reasoning is a separate
+disclosure when the provider supplies it. Restored conversations replay the same
+event order, including interrupted drafts and unfinished calls. Click the **Daena** model selector in the top bar, then
 **Advanced controls & diagnostics…** to inspect tool activity, context, raw
 output, reasoning and provider/tool controls. The same menu offers recent models,
 provider switching and manual model entry. The **Reasoning** slider in the composer
@@ -128,3 +132,19 @@ Google SDK against local HTTP fixtures. Live model access and output quality mus
 be checked with the user's configured provider.
 
 See [the 0.6 desktop guide](upgrade-0.6.md) for the keyboard, reasoning and tool controls.
+
+## Incomplete checkout
+
+`No module named 'src.studio.window'` means the launcher's source tree is missing
+`src/studio/window.py`; installing PySide6 does not restore that file. The current
+branch and built wheel include it. In a Git checkout, run `git status --short`
+and preserve any local edits before restoring the missing tracked file:
+
+```bash
+git pull --ff-only origin feat/studio-conversation-redesign
+git restore --source=HEAD -- src/studio/window.py
+python -m src.studio
+```
+
+The startup diagnostic prints the loaded source directory to help distinguish
+an incomplete checkout from a different installed copy.

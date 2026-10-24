@@ -1445,38 +1445,7 @@ class StudioWindow(QMainWindow):
                 y=170,
             )
             for turn in turns:
-                receipts = []
-                reasoning = []
-                phases = []
-                draft = ""
-                for event in turn["events"]:
-                    kind = event.get("type")
-                    if kind == "generation_start":
-                        if draft.strip():
-                            phases.append(draft)
-                        draft = ""
-                    elif kind == "generation_retry":
-                        draft = ""
-                    elif kind == "content_delta":
-                        draft += event.get("text", "")
-                    elif kind == "assistant_message":
-                        draft = event.get("text", "")
-                    elif kind == "user_message":
-                        self.add_message("You", event["text"])
-                    elif kind == "tool_call":
-                        receipts.append(("call", event))
-                    elif kind == "tool_result":
-                        receipts.append(("result", event))
-                    elif kind == "thinking_delta":
-                        reasoning.append(event.get("text", ""))
-                    elif kind == "final_response":
-                        card = self.add_message("Daena", event["text"])
-                        self._restore_receipts(card, receipts, reasoning, phases)
-                    elif kind == "studio_result" and not any(
-                        e.get("type") == "final_response" for e in turn["events"]
-                    ):
-                        card = self.add_message("Daena", event["text"])
-                        self._restore_receipts(card, receipts, reasoning, phases)
+                self.transcript.restore_turn(turn["events"])
             for event in run["events"]:
                 kind = event.get("type")
                 if kind == "subagent_event":
@@ -1495,25 +1464,6 @@ class StudioWindow(QMainWindow):
             )
         except Exception as exc:
             self.error(str(exc))
-
-    @staticmethod
-    def _restore_receipts(card, receipts, reasoning, phases=()):
-        final = card.text
-        for text in phases:
-            card.set_text(text)
-            card.archive_phase()
-        card.set_text(final)
-        for action, event in receipts:
-            if action == "call":
-                card.add_tool_call(event.get("name", "tool"), event.get("arguments"))
-            else:
-                card.add_tool_result(
-                    event.get("name", ""),
-                    bool(event.get("success")),
-                    event.get("summary", ""),
-                )
-        if reasoning:
-            card.append_reasoning("".join(reasoning))
 
     def export_run(self):
         path, _ = QFileDialog.getSaveFileName(

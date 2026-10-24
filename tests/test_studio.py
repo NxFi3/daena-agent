@@ -359,7 +359,8 @@ def test_streamed_phases_remain_ordered_and_restore_from_history(window):
     card = window.transcript.live
     assert [text for text, _ in card.phases] == ["Opening the browser."]
     assert card.text == "The form is ready."
-    assert card.layout().indexOf(card.phases[0][1]) < card.layout().indexOf(card.body)
+    assert card.work_layout.indexOf(card.phases[0][1]) >= 0
+    assert card.layout().indexOf(card.work) < card.layout().indexOf(card.body)
     window.store.save_run(
         window.session_id, "Browser task", events, {"completed": True}
     )

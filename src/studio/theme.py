@@ -11,9 +11,9 @@ from string import Template
 
 _PALETTES = {
     "dark": {
-        "bg": "#262624",
-        "sidebar": "#1f1e1d",
-        "text": "#ece9e2",
+        "bg": "#212121",
+        "sidebar": "#181818",
+        "text": "#ececec",
         "muted": "#a8a49b",
         "dim": "#7d7a72",
         "border": "#3a3936",
@@ -21,7 +21,7 @@ _PALETTES = {
         "surface": "#30302e",
         "field": "#2b2a28",
         "selected": "#383734",
-        "user": "#34332f",
+        "user": "#303030",
         "accent": "#d97757",
         "accent_hover": "#e58a6b",
         "accent_text": "#ffffff",
@@ -141,6 +141,8 @@ QFrame#assistantMessage QTextBrowser,QFrame#userMessage QTextBrowser {background
 QLabel#messageStatus {color:$muted;font-size:12px;padding:2px 0 4px;}
 QToolButton#messageCopy {background:transparent;border:0;color:$dim;padding:4px 7px;font-size:11px;}
 QToolButton#messageCopy:hover {color:$text;background:$hover;}
+QFrame#workTimeline {background:transparent;border:0;border-left:1px solid $border;}
+QLabel#thinkingDots {color:$muted;font-size:12px;padding:3px 0;}
 QFrame#toolActivity {background:transparent;border:0;margin:0;padding:2px 0 6px;}
 QLabel#toolPreview {color:$muted;font-size:11px;padding:3px 0 4px;}
 QLabel#activityLink {color:$muted;font-size:12px;}

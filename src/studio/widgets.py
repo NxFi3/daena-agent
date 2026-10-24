@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from html import escape
 
 from PySide6.QtCore import Qt, Signal, QTimer
-from PySide6.QtGui import QTextCursor, QDesktopServices
+from PySide6.QtGui import QTextCursor, QTextBlockFormat, QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -21,7 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from src.studio.theme import markdown_css
+from src.studio.theme import markdown_css, palette_for_theme
 
 
 class Composer(QPlainTextEdit):
@@ -65,6 +66,7 @@ class MarkdownBody(QTextBrowser):
 
     def __init__(self, theme="dark"):
         super().__init__()
+        self._theme = theme
         self.setFrameShape(QFrame.NoFrame)
         self.setOpenLinks(False)
         self.anchorClicked.connect(self._open_link)
@@ -77,8 +79,36 @@ class MarkdownBody(QTextBrowser):
         self.document().documentLayout().documentSizeChanged.connect(self.reflow)
         self.setMinimumHeight(36)
 
+    def setMarkdown(self, text):
+        self._markdown_text = text
+        super().setMarkdown(text)
+        # Qt's Markdown importer does not apply paragraph CSS consistently.
+        # Set document metrics explicitly for live and restored messages alike.
+        block = self.document().begin()
+        cursor = QTextCursor(self.document())
+        cursor.beginEditBlock()
+        while block.isValid():
+            cursor.setPosition(block.position())
+            fmt = block.blockFormat()
+            fmt.setLineHeight(140, QTextBlockFormat.ProportionalHeight.value)
+            fmt.setTopMargin(12 if fmt.headingLevel() else 3)
+            fmt.setBottomMargin(9)
+            if fmt.nonBreakableLines():
+                fmt.setBackground(QColor(palette_for_theme(self._theme)["code"]))
+                fmt.setLeftMargin(12)
+                fmt.setRightMargin(12)
+                fmt.setTopMargin(5)
+                fmt.setBottomMargin(5)
+            cursor.setBlockFormat(fmt)
+            block = block.next()
+        cursor.endEditBlock()
+        self.reflow()
+
     def set_theme(self, theme):
+        self._theme = theme
         self.document().setDefaultStyleSheet(markdown_css(theme))
+        if hasattr(self, "_markdown_text"):
+            self.setMarkdown(self._markdown_text)
 
     def _open_link(self, url):
         if url.scheme() in {"https", "http"}:
@@ -139,7 +169,7 @@ class ToolActivity(QFrame):
         self.preview.setObjectName("toolPreview")
         self.preview.setTextFormat(Qt.PlainText)
         self.preview.setWordWrap(True)
-        outer.addWidget(self.preview)
+        self.preview.hide()
         self.hide()
 
     def _toggle(self, *args):
@@ -147,7 +177,7 @@ class ToolActivity(QFrame):
         self.details.setVisible(self._expanded)
         arrow = "⌄" if self._expanded else "›"
         self.toggle.setText(
-            f'<a href="toggle" style="color: #8d8d85; text-decoration: none;">{arrow} &nbsp; {self._label().strip()}</a>'
+            f'<a href="toggle" style="color: #8d8d85; text-decoration: none;">{arrow} &nbsp; {escape(self._label().strip())}</a>'
         )
 
     def _label(self):
@@ -157,8 +187,14 @@ class ToolActivity(QFrame):
         count = len(self.calls)
         if pending:
             return f"  Working with {count} tool{'s' if count != 1 else ''} · {pending} running"
+        names = list(
+            dict.fromkeys(call["name"].replace("_", " ") for call in self.calls)
+        )
+        summary = ", ".join(names[:3])
+        if len(names) > 3:
+            summary += f" +{len(names) - 3} more"
         return (
-            f"  {count} tool{'s' if count != 1 else ''} used"
+            f"Used {summary} · {count} call{'s' if count != 1 else ''}"
             + (f" · {failed} failed" if failed else "")
             + (f" · {unfinished} unfinished" if unfinished else "")
         )
@@ -239,7 +275,7 @@ class ToolActivity(QFrame):
         self.show()
         arrow = "⌄" if self._expanded else "›"
         self.toggle.setText(
-            f'<a href="toggle" style="color: #8d8d85; text-decoration: none;">{arrow} &nbsp; {self._label().strip()}</a>'
+            f'<a href="toggle" style="color: #8d8d85; text-decoration: none;">{arrow} &nbsp; {escape(self._label().strip())}</a>'
         )
 
 
@@ -285,6 +321,18 @@ class MessageCard(QFrame):
         self.previous_activity.linkActivated.connect(self._toggle_activity)
         self.body = MarkdownBody(theme)
         layout.addWidget(self.body)
+        self.work = QFrame()
+        self.work.setObjectName("workTimeline")
+        self.work_layout = QVBoxLayout(self.work)
+        self.work_layout.setContentsMargins(14, 4, 0, 8)
+        self.work_layout.setSpacing(12)
+        layout.removeWidget(self.activity_log)
+        self.work_layout.addWidget(self.activity_log)
+        layout.insertWidget(layout.indexOf(self.body), self.work)
+        self.work.hide()
+        self._work_finished = False
+        self._tools_open = False
+        self.tool_groups = []
         actions = QHBoxLayout()
         actions.setContentsMargins(0, 0, 0, 0)
         self.copy_button = QToolButton()
@@ -302,8 +350,8 @@ class MessageCard(QFrame):
         # Receipts/reasoning remain available to history and diagnostics APIs;
         # they are deliberately not rendered in the conversational surface.
         self.tools = ToolActivity()
-        if not user:
-            layout.insertWidget(1, self.tools)
+        self.tool_groups.append(self.tools)
+        self.work_layout.addWidget(self.tools)
         self.reasoning_button = QLabel(self)
         self.reasoning_button.setObjectName("activityLink")
         self.reasoning_button.setTextFormat(Qt.RichText)
@@ -316,14 +364,12 @@ class MessageCard(QFrame):
         self._render_timer = QTimer(self)
         self._render_timer.setSingleShot(True)
         self._render_timer.timeout.connect(self._render_stream_markdown)
-        if not user:
-            layout.insertWidget(1, self.reasoning_button)
+        self.work_layout.insertWidget(0, self.reasoning_button)
         self.reasoning_body = QPlainTextEdit(self)
         self.reasoning_body.setReadOnly(True)
         self.reasoning_body.setMaximumHeight(220)
         self.reasoning_body.hide()
-        if not user:
-            layout.insertWidget(2, self.reasoning_body)
+        self.work_layout.insertWidget(1, self.reasoning_body)
         self.reasoning_button.linkActivated.connect(self._toggle_reasoning)
         self.details_button = QToolButton(self)
         self.details_button.setCheckable(True)
@@ -344,8 +390,12 @@ class MessageCard(QFrame):
             return
         phase = MarkdownBody(self.theme)
         phase.setMarkdown(self.text)
-        self.layout().insertWidget(self.layout().indexOf(self.body), phase)
+        self.work_layout.addWidget(phase)
+        self.work.show()
+        self.previous_activity.show()
         self.phases.append((self.text, phase))
+        self._activity_expanded = True
+        self._update_activity_label()
         self.set_text("")
 
     def _copy(self, *args):
@@ -374,11 +424,38 @@ class MessageCard(QFrame):
 
     def _toggle_activity(self, *args):
         self._activity_expanded = not self._activity_expanded
-        self.activity_log.setVisible(self._activity_expanded)
+        self.work.setVisible(self._activity_expanded)
+        self.activity_log.setVisible(
+            self._activity_expanded and not self.activity_log.document().isEmpty()
+        )
+        self._update_activity_label()
+
+    def _update_activity_label(self):
+        count = sum(len(group.calls) for group in self.tool_groups)
+        failed = sum(
+            call["status"] == "failed"
+            for group in self.tool_groups
+            for call in group.calls
+        )
+        label = "View activity" if self._work_finished else "Working"
+        if count:
+            label += f" · {count} tool call{'s' if count != 1 else ''}"
+        if failed:
+            label += f" · {failed} failed"
         arrow = "⌄" if self._activity_expanded else "›"
         self.previous_activity.setText(
-            f'<a href="toggle" style="color: #8d8d85; text-decoration: none;">{arrow} &nbsp; Previous activity</a>'
+            f'<a href="toggle" style="color: #8d8d85; text-decoration: none;">{arrow} &nbsp; {label}</a>'
         )
+
+    def finish_work(self):
+        self._render_timer.stop()
+        self._render_stream_markdown()
+        self._work_finished = True
+        for group in self.tool_groups:
+            group.finalize()
+        self._activity_expanded = False
+        self.work.hide()
+        self._update_activity_label()
 
     def add_activity(self, label):
         if not label:
@@ -405,6 +482,7 @@ class MessageCard(QFrame):
         self.body.reflow()
 
     def append_stream(self, text):
+        self._tools_open = False
         self.text += text
         self.body.show()
         if not self._render_timer.isActive():
@@ -419,6 +497,10 @@ class MessageCard(QFrame):
         # UI preview is bounded; canonical history belongs to the runtime.
         self.reasoning = self.reasoning[-100000:]
         self.reasoning_button.show()
+        self.previous_activity.show()
+        if not self._work_finished:
+            self.work.show()
+            self._activity_expanded = True
         cursor = self.reasoning_body.textCursor()
         cursor.movePosition(QTextCursor.End)
         cursor.insertText(text)
@@ -429,8 +511,9 @@ class MessageCard(QFrame):
         working = str(text).startswith("●")
         self._status_base = str(text).rstrip(".… ") if working else ""
         self._dots = 0
-        self.status.setText(text if working else "")
-        self.status.setVisible(working)
+        show_outcome = bool(text) and str(text).lower() not in {"completed", "complete"}
+        self.status.setText(str(text) if working or show_outcome else "")
+        self.status.setVisible(working or show_outcome)
         if working:
             self._dots_timer.start()
         else:
@@ -440,16 +523,35 @@ class MessageCard(QFrame):
         self.details.appendPlainText(text)
 
     def add_tool_call(self, name, arguments=None, call_id=None):
+        self.archive_phase()
+        if not self._tools_open:
+            if self.tools.calls:
+                self.tools = ToolActivity()
+                self.tool_groups.append(self.tools)
+                self.work_layout.addWidget(self.tools)
+            self.work_layout.removeWidget(self.tools)
+            self.work_layout.addWidget(self.tools)
+            self._tools_open = True
         self.tools.add_call(name, arguments, call_id)
-        self.add_activity("↗  " + str(name) + " · started")
+        self.previous_activity.show()
+        self._activity_expanded = True
+        self.work.show()
+        self._update_activity_label()
 
     def add_tool_result(self, name, success, summary="", call_id=None):
-        self.tools.finish_call(name, success, summary, call_id)
-        self.add_activity(
-            ("✓  " if success else "✕  ")
-            + str(name or "Tool")
-            + (" · " + str(summary)[:170] if summary else "")
-        )
+        for group in self.tool_groups:
+            if any(
+                call["status"] == "running"
+                and (
+                    call["call_id"] == call_id
+                    if call_id
+                    else (not name or call["name"] == name)
+                )
+                for call in group.calls
+            ):
+                group.finish_call(name, success, summary, call_id)
+                break
+        self._update_activity_label()
 
 
 class ConversationView(QScrollArea):
@@ -475,6 +577,7 @@ class ConversationView(QScrollArea):
         self.live = None
         self._follow = True
         self.verticalScrollBar().valueChanged.connect(self._track_scroll)
+        self.verticalScrollBar().rangeChanged.connect(lambda *_: self.scroll_to_end())
 
     def _make_welcome(self):
         host = QWidget()
@@ -535,6 +638,9 @@ class ConversationView(QScrollArea):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        if hasattr(self, "layout"):
+            margin = max(20, (self.viewport().width() - 850) // 2)
+            self.layout.setContentsMargins(margin, 20, margin, 36)
         if hasattr(self, "welcome_hero"):
             self.welcome_hero.setFixedWidth(
                 max(300, min(600, self.viewport().width() - 76))
@@ -625,8 +731,71 @@ class ConversationView(QScrollArea):
             # Canonical non-empty final text may replace the live draft.
             self.live.set_text(final_text)
         self.live.set_status(status)
-        self.live.tools.finalize()
+        self.live.finish_work()
         self.scroll_to_end()
+
+    def restore_turn(self, events):
+        """Replay the journal in order, using the same cards as live streaming."""
+        self.end_turn()
+        completed = False
+        fallback = None
+        for event in events:
+            kind = event.get("type")
+            if kind == "user_message":
+                self.add_message("You", event.get("text", ""))
+                continue
+            if kind == "studio_result":
+                fallback = event.get("text", "")
+                continue
+            if kind not in {
+                "generation_start",
+                "generation_retry",
+                "content_delta",
+                "assistant_message",
+                "thinking_delta",
+                "tool_call",
+                "tool_result",
+                "final_response",
+            }:
+                continue
+            if self.live is None:
+                self.begin_turn()
+            card = self.live
+            if kind == "generation_start":
+                card.archive_phase()
+            elif kind == "generation_retry":
+                card.set_text("")
+                card.reasoning = ""
+                card.reasoning_body.clear()
+                card.reasoning_button.hide()
+            elif kind == "content_delta":
+                card.append_stream(event.get("text", ""))
+            elif kind == "assistant_message":
+                card.set_text(event.get("text", ""))
+            elif kind == "thinking_delta":
+                card.append_reasoning(event.get("text", ""))
+            elif kind == "tool_call":
+                card.add_tool_call(
+                    event.get("name", "tool"),
+                    event.get("arguments"),
+                    event.get("call_id"),
+                )
+            elif kind == "tool_result":
+                card.add_tool_result(
+                    event.get("name", ""),
+                    bool(event.get("success")),
+                    event.get("summary", ""),
+                    event.get("call_id"),
+                )
+            elif kind == "final_response":
+                self.finish(
+                    event.get("text", ""),
+                    event.get("outcome", "Completed").replace("_", " ").title(),
+                )
+                completed = True
+        if not completed and (self.live is not None or fallback is not None):
+            self.finish(fallback or "", "Stopped")
+        self.end_turn()
 
     def end_turn(self):
         self.live = None
