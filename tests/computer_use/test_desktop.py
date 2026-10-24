@@ -109,6 +109,39 @@ def test_real_pointer_keyboard_unicode_scroll_and_drag(tmp_path):
         time.sleep(0.1)
         assert state()["submitted"] == "https://example.org/demo"
         assert state()["text"] == "https://example.org/demo"
+        # Stress distinct Unicode keysyms across the adapter's free-keycode batches.
+        # A real client processing barrier must preserve text and restore XKB state.
+        from Xlib.display import Display
+        from contextlib import closing
+
+        def keymap():
+            with closing(Display()) as display:
+                first, last = (
+                    display.display.info.min_keycode,
+                    display.display.info.max_keycode,
+                )
+                return [
+                    tuple(row)
+                    for row in display.get_keyboard_mapping(first, last - first + 1)
+                ]
+
+        before = keymap()
+        for value in ["سلام فارسی Ελληνικά 中文 日本語 😀 café —", "سلام سلام سلام"]:
+            r = tool.execute(
+                "key",
+                snapshot_id=r.content["observation"]["snapshot_id"],
+                keys=["CTRL", "l"],
+            )
+            assert r.success, r.content
+            r = tool.execute(
+                "type", snapshot_id=r.content["observation"]["snapshot_id"], text=value
+            )
+            assert r.success, r.content
+            deadline = time.monotonic() + 2
+            while state()["text"] != value and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert state()["text"] == value
+            assert keymap() == before
         # Save a real fixture screenshot/trace for the release evidence.
         artifact = os.environ.get("DAENA_TEST_ARTIFACTS")
         if artifact:

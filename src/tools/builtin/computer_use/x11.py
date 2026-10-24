@@ -250,13 +250,18 @@ class X11Backend:
         elif action == "type_text":
             if "x" in args:
                 self._run(["click", 1])
-            # A private file avoids placing typed text in the process command line.
-            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8") as text:
-                text.write(args["text"])
-                text.flush()
-                self._run(
-                    ["type", "--clearmodifiers", "--delay", 25, "--file", text.name]
-                )
+            from .x11_text import type_stable
+
+            def send(value):
+                # A private file keeps text out of process command-line arguments.
+                with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8") as text:
+                    text.write(value)
+                    text.flush()
+                    self._run(
+                        ["type", "--clearmodifiers", "--delay", 25, "--file", text.name]
+                    )
+
+            type_stable(args["text"], window.window_id if window else None, send)
         elif action in {"press_key", "hotkey"}:
             keys = args.get("keys") or [args["key"]]
             aliases = {

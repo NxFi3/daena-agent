@@ -36,6 +36,14 @@ does not provide accessibility controls, and does not control native Wayland
 surfaces. Cua support depends on the installed driver/backend. Unsupported
 capabilities produce errors rather than claiming an event was sent.
 
+X11 Unicode typing reserves distinct unused keycodes and waits for the target's
+standard EWMH `_NET_WM_PING` acknowledgement before restoring the keyboard map.
+This avoids libxdo's temporary-keycode reuse race with Qt/XKB clients. A target
+that lacks this protocol (or a keyboard map without spare codes) reports an
+explicit unsupported-text error for unmapped characters; use browser DOM input
+or Cua native text input on such surfaces. The clipboard is not modified. Native
+tests cover mixed scripts/emoji across batches and exact keymap restoration.
+
 ## Observation and action
 
 Capture the intended window from `list_windows`, then use its returned
