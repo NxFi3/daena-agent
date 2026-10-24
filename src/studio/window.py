@@ -817,13 +817,7 @@ class StudioWindow(QMainWindow):
         if kind == "generation_start":
             self.flush_stream()
             if self.transcript.live and self.transcript.live.text:
-                # Preserve intermediate agent narration instead of silently erasing it
-                # when a new model/tool phase begins. Keep the final answer surface
-                # clean by folding earlier narration into Previous activity.
-                previous = self.transcript.live.text.strip()
-                self.transcript.add_detail("Model update: " + previous[:1200])
-                self.transcript.live.add_activity("Model update\n" + previous)
-                self.transcript.live.set_text("")
+                self.transcript.live.archive_phase()
             if not self._automation_run:
                 self.transcript.set_status("● Generating")
         if kind == "generation_retry" and not self._automation_run:
@@ -909,6 +903,7 @@ class StudioWindow(QMainWindow):
                 f"Model generating · {event.get('elapsed_seconds', 0):.0f}s · Stop to interrupt"
             )
         elif kind == "tool_call":
+            self.flush_stream()
             self.state_label.setText("Using tool · " + event.get("name", ""))
             if not self._automation_run:
                 self.transcript.set_status("● Working · " + event.get("name", "tool"))
@@ -1452,9 +1447,21 @@ class StudioWindow(QMainWindow):
             for turn in turns:
                 receipts = []
                 reasoning = []
+                phases = []
+                draft = ""
                 for event in turn["events"]:
                     kind = event.get("type")
-                    if kind == "user_message":
+                    if kind == "generation_start":
+                        if draft.strip():
+                            phases.append(draft)
+                        draft = ""
+                    elif kind == "generation_retry":
+                        draft = ""
+                    elif kind == "content_delta":
+                        draft += event.get("text", "")
+                    elif kind == "assistant_message":
+                        draft = event.get("text", "")
+                    elif kind == "user_message":
                         self.add_message("You", event["text"])
                     elif kind == "tool_call":
                         receipts.append(("call", event))
@@ -1464,12 +1471,12 @@ class StudioWindow(QMainWindow):
                         reasoning.append(event.get("text", ""))
                     elif kind == "final_response":
                         card = self.add_message("Daena", event["text"])
-                        self._restore_receipts(card, receipts, reasoning)
+                        self._restore_receipts(card, receipts, reasoning, phases)
                     elif kind == "studio_result" and not any(
                         e.get("type") == "final_response" for e in turn["events"]
                     ):
                         card = self.add_message("Daena", event["text"])
-                        self._restore_receipts(card, receipts, reasoning)
+                        self._restore_receipts(card, receipts, reasoning, phases)
             for event in run["events"]:
                 kind = event.get("type")
                 if kind == "subagent_event":
@@ -1490,7 +1497,12 @@ class StudioWindow(QMainWindow):
             self.error(str(exc))
 
     @staticmethod
-    def _restore_receipts(card, receipts, reasoning):
+    def _restore_receipts(card, receipts, reasoning, phases=()):
+        final = card.text
+        for text in phases:
+            card.set_text(text)
+            card.archive_phase()
+        card.set_text(final)
         for action, event in receipts:
             if action == "call":
                 card.add_tool_call(event.get("name", "tool"), event.get("arguments"))

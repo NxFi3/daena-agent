@@ -401,6 +401,16 @@ class ToolManager:
         for name in self._active_tool_names:
             add(name)
 
+        # Advertise every allowed capability even when its full schema is lazy.
+        # This keeps small contexts viable without hiding browser/desktop tools.
+        from copy import deepcopy
+        catalog = [name for name in by_name if name not in emitted]
+        if catalog:
+            ordered = deepcopy(ordered)
+            ordered[0]["function"]["description"] += (
+                " Available additional tools: " + ", ".join(sorted(catalog))
+                + ". Search a tool name to load its complete argument schema."
+            )
         return ordered
 
     def _find_tool(self, name: str):

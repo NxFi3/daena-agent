@@ -123,7 +123,9 @@ class ToolActivity(QFrame):
         self.toggle.setObjectName("activityLink")
         self.toggle.setTextFormat(Qt.RichText)
         self.toggle.setOpenExternalLinks(False)
-        self.toggle.setText('<a href="toggle">› &nbsp; Tool calls</a>')
+        self.toggle.setText(
+            '<a href="toggle" style="color: #8d8d85; text-decoration: none;">› &nbsp; Tool calls</a>'
+        )
         self.toggle.linkActivated.connect(self._toggle)
         outer.addWidget(self.toggle, alignment=Qt.AlignLeft)
         self._expanded = False
@@ -145,7 +147,7 @@ class ToolActivity(QFrame):
         self.details.setVisible(self._expanded)
         arrow = "⌄" if self._expanded else "›"
         self.toggle.setText(
-            f'<a href="toggle">{arrow} &nbsp; {self._label().strip()}</a>'
+            f'<a href="toggle" style="color: #8d8d85; text-decoration: none;">{arrow} &nbsp; {self._label().strip()}</a>'
         )
 
     def _label(self):
@@ -237,7 +239,7 @@ class ToolActivity(QFrame):
         self.show()
         arrow = "⌄" if self._expanded else "›"
         self.toggle.setText(
-            f'<a href="toggle">{arrow} &nbsp; {self._label().strip()}</a>'
+            f'<a href="toggle" style="color: #8d8d85; text-decoration: none;">{arrow} &nbsp; {self._label().strip()}</a>'
         )
 
 
@@ -245,6 +247,8 @@ class MessageCard(QFrame):
     def __init__(self, speaker, text="", *, user=False, theme="dark"):
         super().__init__()
         self.speaker, self.text, self.reasoning = speaker, str(text), ""
+        self.phases = []
+        self.theme = theme
         self._user = user
         self._status_base = ""
         self._dots = 0
@@ -267,7 +271,7 @@ class MessageCard(QFrame):
         self.previous_activity.setTextFormat(Qt.RichText)
         self.previous_activity.setOpenExternalLinks(False)
         self.previous_activity.setText(
-            '<a href="toggle">› &nbsp; Previous activity</a>'
+            '<a href="toggle" style="color: #8d8d85; text-decoration: none;">› &nbsp; Previous activity</a>'
         )
         self.previous_activity.hide()
         layout.addWidget(self.previous_activity)
@@ -304,7 +308,9 @@ class MessageCard(QFrame):
         self.reasoning_button.setObjectName("activityLink")
         self.reasoning_button.setTextFormat(Qt.RichText)
         self.reasoning_button.setOpenExternalLinks(False)
-        self.reasoning_button.setText('<a href="toggle">› &nbsp; Reasoning</a>')
+        self.reasoning_button.setText(
+            '<a href="toggle" style="color: #8d8d85; text-decoration: none;">› &nbsp; Reasoning</a>'
+        )
         self.reasoning_button.hide()
         self._reasoning_expanded = False
         self._render_timer = QTimer(self)
@@ -331,6 +337,17 @@ class MessageCard(QFrame):
         self.details_button.toggled.connect(self.details.setVisible)
         self.set_text(text)
 
+    def archive_phase(self):
+        """Keep completed narration in its original position during streaming."""
+        self._render_timer.stop()
+        if not self.text.strip():
+            return
+        phase = MarkdownBody(self.theme)
+        phase.setMarkdown(self.text)
+        self.layout().insertWidget(self.layout().indexOf(self.body), phase)
+        self.phases.append((self.text, phase))
+        self.set_text("")
+
     def _copy(self, *args):
         QApplication.clipboard().setText(self.text)
         self.copy_button.setText("✓  Copied")
@@ -343,6 +360,9 @@ class MessageCard(QFrame):
             pass
 
     def set_theme(self, theme):
+        self.theme = theme
+        for _, phase in self.phases:
+            phase.set_theme(theme)
         self.body.set_theme(theme)
         if self.text:
             self.body.setMarkdown(self.text)
@@ -357,7 +377,7 @@ class MessageCard(QFrame):
         self.activity_log.setVisible(self._activity_expanded)
         arrow = "⌄" if self._activity_expanded else "›"
         self.previous_activity.setText(
-            f'<a href="toggle">{arrow} &nbsp; Previous activity</a>'
+            f'<a href="toggle" style="color: #8d8d85; text-decoration: none;">{arrow} &nbsp; Previous activity</a>'
         )
 
     def add_activity(self, label):
@@ -370,7 +390,9 @@ class MessageCard(QFrame):
         self._reasoning_expanded = not self._reasoning_expanded
         self.reasoning_body.setVisible(self._reasoning_expanded)
         arrow = "⌄" if self._reasoning_expanded else "›"
-        self.reasoning_button.setText(f'<a href="toggle">{arrow} &nbsp; Reasoning</a>')
+        self.reasoning_button.setText(
+            f'<a href="toggle" style="color: #8d8d85; text-decoration: none;">{arrow} &nbsp; Reasoning</a>'
+        )
 
     def set_text(self, text, *, markdown=True):
         self._render_timer.stop()

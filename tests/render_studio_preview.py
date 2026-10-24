@@ -24,6 +24,7 @@ def capture(window, name):
 
 
 with TemporaryDirectory() as directory:
+    os.environ["XDG_DATA_HOME"] = str(Path(directory) / "user-data")
     print("PREVIEW_PHASE: construct window", flush=True)
     window = StudioWindow(directory)
     print("PREVIEW_PHASE: window constructed", flush=True)

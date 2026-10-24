@@ -342,3 +342,29 @@ def test_open_history_missing_workspace_preserves_current_conversation(
     window.open_history(window.history.item(0))
     assert window.session_id == before and window.workspace == tmp_path
     assert "unavailable" in window._errors.pop()
+
+
+def test_streamed_phases_remain_ordered_and_restore_from_history(window):
+    window.transcript.begin_turn()
+    events = [
+        {"type": "generation_start"},
+        {"type": "content_delta", "text": "Opening the browser."},
+        {"type": "assistant_message", "text": "Opening the browser."},
+        {"type": "generation_start"},
+        {"type": "content_delta", "text": "The form is ready."},
+        {"type": "final_response", "text": "The form is ready."},
+    ]
+    for event in events:
+        window.on_event(event)
+    card = window.transcript.live
+    assert [text for text, _ in card.phases] == ["Opening the browser."]
+    assert card.text == "The form is ready."
+    assert card.layout().indexOf(card.phases[0][1]) < card.layout().indexOf(card.body)
+    window.store.save_run(
+        window.session_id, "Browser task", events, {"completed": True}
+    )
+    window.refresh_history()
+    window.open_history(window.history.item(0))
+    restored = window.transcript.cards[-1]
+    assert [text for text, _ in restored.phases] == ["Opening the browser."]
+    assert restored.text == "The form is ready."

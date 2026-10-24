@@ -125,6 +125,23 @@ class ToolDispatcher:
                     )
 
             schema = getattr(tool, "parameters", {}) or {}
+            # Some providers double-encode structured values inside arguments.
+            # Decode only containers explicitly required by the tool schema;
+            # never infer actions, coordinates, strings, or numeric intent.
+            arguments = dict(arguments)
+            for key, spec in schema.get("properties", {}).items():
+                value = arguments.get(key)
+                expected = spec.get("type")
+                if isinstance(value, str) and expected in ("array", "object"):
+                    try:
+                        decoded = json.loads(value)
+                    except (ValueError, TypeError):
+                        continue
+                    if (expected == "array" and isinstance(decoded, list)) or (
+                        expected == "object" and isinstance(decoded, dict)
+                    ):
+                        arguments[key] = decoded
+                        normalization_notes.append(f"Decoded JSON {expected} argument: {key}.")
             properties = schema.get("properties", {})
             if not isinstance(properties, dict):
                 properties = {}
