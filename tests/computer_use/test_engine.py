@@ -438,3 +438,11 @@ def test_missing_backend_diagnostic_is_json_not_an_exception(engine):
         "message": "Driver not installed",
     }
     assert not backend.calls
+
+
+def test_capture_explains_window_and_snapshot_identity_without_guessing(engine):
+    tool, backend = engine
+    result = tool.execute('capture', snapshot_id='76')
+    assert not result.success
+    assert 'window_id' in str(result.content)
+    assert 'not snapshot_id' in str(result.content)

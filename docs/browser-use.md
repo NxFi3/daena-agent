@@ -158,3 +158,14 @@ DAENA_TEST_BROWSER=1 python -m pytest -q tests/browser_use
 To test an existing installation, set `DAENA_TEST_CHROMIUM=/usr/bin/chromium`.
 CI installs Playwright's bundled Chromium and runs the real-browser tests in a
 separate CI check alongside the Python and native-desktop suites.
+
+## Embedded forms and overlays
+
+Observations interleave controls from visible frames before pagination, with a
+bounded collection budget per frame. Frame text and control counts are included
+even when the main URL does not change. `in_viewport` and `occluded` describe
+viewport intersection and a sampled hit test; they are evidence, not guarantees
+that an action will succeed. Playwright still performs its actionability checks.
+Use an observed ref to target an embedded control, or include its frame_id in a
+semantic target. No site-specific login selectors or forced overlay clicks are
+used.

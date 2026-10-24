@@ -176,7 +176,7 @@ PROPERTIES = {
     },
     "snapshot_id": {
         "type": "string",
-        "description": "ID of the observation used to choose this input. Required for input and zoom.",
+        "description": "Observation ID returned by capture (s_...). Required for input and zoom. This is not a window ID; use window_id to select a window for capture.",
     },
     "element": {
         "type": ["string", "integer"],
@@ -205,7 +205,7 @@ PROPERTIES = {
     "app": {"type": "string"},
     "window_title": {"type": "string"},
     "pid": {"type": "integer", "minimum": 1},
-    "window_id": {"type": ["integer", "string"]},
+    "window_id": {"type": ["integer", "string"], "description": "Native window identifier from list_windows or window_ambiguous candidates. Pass it to capture, for example action=capture, window_id=76. Capture returns a new snapshot_id for subsequent input."},
     "query": {"type": "string", "maxLength": 200},
     "max_results": {"type": "integer", "minimum": 1, "maximum": 100},
     "offset": {
@@ -293,6 +293,13 @@ def validate_request(request, *, sequence_step=False):
 
     finite(request)
     action = request["action"]
+    if action == "capture" and request.get("snapshot_id") and not any(
+        request.get(k) is not None for k in ("window_id", "pid", "window_title", "app")
+    ) and request.get("scope") != "desktop":
+        raise ComputerError(
+            "invalid_arguments",
+            "capture selects a window with window_id or pid, not snapshot_id. Use list_windows, then capture(window_id=<returned window ID>). A successful capture returns snapshot_id for later input.",
+        )
     if action == "launch" and not request.get("app", "").strip():
         raise ComputerError(
             "invalid_arguments",

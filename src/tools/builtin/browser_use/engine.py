@@ -197,9 +197,18 @@ class BrowserSession:
             observation["frames"].append(
                 dict(frame_id=frame_id, url=frame.url, name=frame.name)
             )
-            remaining = max(0, 1200 - len(records))
+            remaining = min(max(0, 1200 - len(records)), max(1, 1200 // len(page.frames)))
             collection = None
             try:
+                if index:
+                    owner = await frame.frame_element()
+                    try:
+                        shown = await owner.is_visible()
+                    finally:
+                        await owner.dispose()
+                    observation["frames"][-1]["visible"] = shown
+                    if not shown:
+                        continue
                 collection = await frame.evaluate_handle(COLLECT, remaining)
                 data = await collection.evaluate(
                     "(x) => ({records:x.records,total:x.total,text:x.text,ready_state:x.ready_state})"
@@ -208,6 +217,11 @@ class BrowserSession:
                 handles = await nodes.get_properties()
                 await nodes.dispose()
                 observation["total_controls"] += data["total"]
+                observation["frames"][-1].update(
+                    total_controls=data["total"],
+                    text=data["text"][:1000],
+                    ready_state=data["ready_state"],
+                )
                 if index == 0:
                     observation["text"] = data["text"][:4000]
                     observation["ready_state"] = data["ready_state"]
@@ -221,6 +235,15 @@ class BrowserSession:
             finally:
                 if collection:
                     await collection.dispose()
+        # Interleave frames before pagination so a large main document cannot
+        # hide embedded forms. Within each frame put exposed controls first.
+        from itertools import zip_longest
+        groups = []
+        for frame_id in self.frames:
+            group = [r for r in records if r["frame_id"] == frame_id]
+            group.sort(key=lambda r: (not r.get("in_viewport", True), bool(r.get("occluded")), not r.get("focused", False)))
+            groups.append(group)
+        records = [r for row in zip_longest(*groups) for r in row if r is not None]
         query = request.get("query", "").casefold()
         matches = [
             r

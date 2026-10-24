@@ -33,6 +33,15 @@ COLLECT = r"""(limit) => {
       const record = {role:role(e), name:name(e), tag:e.tagName.toLowerCase(),
         visible:shown, disabled:!!e.disabled || e.getAttribute('aria-disabled') === 'true',
         focused:e.getRootNode().activeElement === e};
+      if (shown) {
+        const r = e.getBoundingClientRect();
+        const x = Math.max(0, r.left) + (Math.min(innerWidth, r.right) - Math.max(0, r.left)) / 2;
+        const y = Math.max(0, r.top) + (Math.min(innerHeight, r.bottom) - Math.max(0, r.top)) / 2;
+        const root = e.getRootNode();
+        const hit = root.elementFromPoint?.(x, y);
+        record.in_viewport = r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth;
+        if (record.in_viewport && hit) record.occluded = hit !== e && !e.contains(hit);
+      }
       if (e.matches('input,textarea,select')) record.value = e.type === 'password' ? '[redacted]' : tidy(e.value);
       if (e.matches('input[type=checkbox],input[type=radio]')) record.checked = e.checked;
       if (e.placeholder) record.placeholder = tidy(e.placeholder);

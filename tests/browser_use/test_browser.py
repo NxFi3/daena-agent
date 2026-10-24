@@ -262,3 +262,34 @@ def test_system_chrome_fallback_without_playwright_browser_download(browser, web
     ok(browser, 'fill', target={'label':'Phone'}, text='09120000000')
     data = ok(browser, 'click', target={'role':'button','name':'Send code'})
     assert 'Code sent' in data['observation']['text']
+
+
+def test_embedded_modal_controls_survive_busy_parent_and_context_budget(browser, website):
+    from src.context.payloads import fit_json
+    ok(browser, 'open', url=website)
+    async def modal():
+        page = browser._session.page
+        await page.evaluate('''() => {
+            document.body.innerHTML = '';
+            for (let i=0;i<1300;i++) {
+                const b=document.createElement('button'); b.textContent='Background '+i;
+                document.body.appendChild(b);
+            }
+            const overlay=document.createElement('div');
+            overlay.style.cssText='position:fixed;inset:0;background:white;z-index:100';
+            const frame=document.createElement('iframe');
+            frame.title='Account dialog';
+            frame.srcdoc='<label>Phone<input type="tel"></label><button>Continue</button>';
+            overlay.appendChild(frame); document.body.appendChild(overlay);
+        }''')
+        await page.frame_locator('iframe').get_by_label('Phone').wait_for()
+    asyncio.run_coroutine_threadsafe(modal(), browser._loop).result(5)
+    observation = ok(browser, 'observe', limit=40)['observation']
+    phone = next(e for e in observation['elements'] if e['name']=='Phone')
+    assert phone['frame_id'] != 'frame_0'
+    assert any(e.get('occluded') for e in observation['elements'] if e['frame_id']=='frame_0')
+    compact = json.loads(fit_json(observation,12000))
+    assert any(e['name']=='Phone' for e in compact['elements'])
+    assert any('Phone' in f.get('text','') for f in observation['frames'])
+    after = ok(browser,'fill',target={'ref':phone['ref']},text='09120000000')['observation']
+    assert any(e.get('value')=='09120000000' for e in after['elements'])
