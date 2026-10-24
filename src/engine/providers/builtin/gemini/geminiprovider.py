@@ -15,6 +15,7 @@ except ImportError:
     genai = types = None
 
 from src.engine.providers.ProviderBase import ProviderBase
+from src.engine.errors import OutputTokenLimitError
 from src.engine.transport import emit, remote_options, seconds, supervise
 from src.models.LLMResult import LLMResult
 
@@ -41,6 +42,16 @@ class GeminiProvider(ProviderBase):
     def _convert_messages(messages):
         contents, systems, names, response_ids = [], [], {}, {}
         for m in messages:
+            # DAENA_COMPUTER_GEMINI_V1
+            if m.get("role") == "user" and m.get("computer_image"):
+                from src.tools.builtin.computer_use.integration import (
+                    gemini_image_parts,
+                )
+
+                contents.append(
+                    types.Content(role="user", parts=gemini_image_parts(m, types))
+                )
+                continue
             role, text = m.get("role"), m.get("content") or ""
             if role == "system":
                 systems.append(str(text))
@@ -242,6 +253,14 @@ class GeminiProvider(ProviderBase):
                                 )
                 finally:
                     await stream.aclose()
+                if reason in {"MAX_TOKENS", "MAX_OUTPUT_TOKENS"}:
+                    raise OutputTokenLimitError(
+                        "Gemini reached its output-token limit; partial tool calls were not executed.",
+                        recovery_hint=(
+                            "The previous generation was discarded before tool execution. "
+                            "Continue the same task with smaller edits/tool calls."
+                        ),
+                    )
                 if reason != "STOP":
                     raise RuntimeError(
                         f"Gemini stream incomplete or stopped with {reason!r}; no partial tools executed"

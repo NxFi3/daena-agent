@@ -44,6 +44,16 @@ DEFAULT_ALLOWED_TOOLS = {
     "subagent",
     "task_finish",
     "make_directory",
+    "computer_use",
+    "browser_use",
+    "context_search",
+    "edit_file",
+    "explore",
+    "glob",
+    "grep",
+    "list_dir",
+    "tool_search",
+    "write_file",
 }
 
 
@@ -153,7 +163,7 @@ class SecurityPolicy:
         if name == "command_exec":
             return self._check_command(args, sandbox)
 
-        if name in {"web_search", "web_fetch"}:
+        if name in {"web_search", "web_fetch", "browser_use"}:
             if not self.allow_network_tools:
                 return SecurityDecision(
                     False,

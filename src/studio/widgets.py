@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from pathlib import Path
+
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QTextCursor, QDesktopServices
 from PySide6.QtWidgets import (
@@ -15,9 +16,12 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QTextBrowser,
     QToolButton,
+    QPushButton,
     QVBoxLayout,
     QWidget,
 )
+
+from src.studio.theme import markdown_css
 
 
 class Composer(QPlainTextEdit):
@@ -27,11 +31,10 @@ class Composer(QPlainTextEdit):
         super().__init__(parent)
         self._composing = False
         self.setObjectName("composer")
-        self.setPlaceholderText(
-            "Ask Daena to build, investigate, or improve something…"
-        )
-        self.setMinimumHeight(72)
+        self.setPlaceholderText("Message Daena")
+        self.setMinimumHeight(56)
         self.setMaximumHeight(168)
+        self.setFixedHeight(56)
         self.document().documentLayout().documentSizeChanged.connect(self._resize)
 
     def inputMethodEvent(self, event):
@@ -51,33 +54,31 @@ class Composer(QPlainTextEdit):
         super().keyPressEvent(event)
 
     def _resize(self, *args):
-        height = (
-            int(self.document().size().height() * self.fontMetrics().lineSpacing()) + 24
-        )
-        self.setFixedHeight(max(72, min(168, height)))
+        # QTextDocument.size() is already measured in pixels. Multiplying it by
+        # lineSpacing kept the composer permanently at its maximum height.
+        height = int(self.document().size().height()) + 19
+        self.setFixedHeight(max(56, min(168, height)))
 
 
 class MarkdownBody(QTextBrowser):
     """Size short messages to their contents; long code keeps an internal scroll."""
 
-    def __init__(self):
+    def __init__(self, theme="dark"):
         super().__init__()
         self.setFrameShape(QFrame.NoFrame)
         self.setOpenLinks(False)
         self.anchorClicked.connect(self._open_link)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.document().setDefaultStyleSheet(
-            "body {line-height:1.55;} p {margin-top:6px;margin-bottom:12px;}"
-            "pre {background:#0d1320;color:#d9e7fa;padding:14px;white-space:pre-wrap;}"
-            "code {font-family:monospace;color:#c3b6ff;}"
-            "a {color:#a795ff;} h1,h2,h3 {color:#f0f3fa;}"
-        )
+        self.document().setDefaultStyleSheet(markdown_css(theme))
         self._resize_timer = QTimer(self)
         self._resize_timer.setSingleShot(True)
         self._resize_timer.timeout.connect(self._apply_reflow)
         self.document().documentLayout().documentSizeChanged.connect(self.reflow)
         self.setMinimumHeight(36)
+
+    def set_theme(self, theme):
+        self.document().setDefaultStyleSheet(markdown_css(theme))
 
     def _open_link(self, url):
         if url.scheme() in {"https", "http"}:
@@ -95,7 +96,8 @@ class MarkdownBody(QTextBrowser):
         width = max(80, self.viewport().width())
         if abs(self.document().textWidth() - width) > 1:
             self.document().setTextWidth(width)
-        height = max(36, min(780, int(self.document().size().height()) + 16))
+        # Avoid a nested scrollbar for normal long answers/code blocks.
+        height = max(36, min(16000, int(self.document().size().height()) + 20))
         if self.height() != height:
             self.setFixedHeight(height)
 
@@ -107,70 +109,293 @@ class MarkdownBody(QTextBrowser):
         self.reflow()
 
 
+class ToolActivity(QFrame):
+    """Collect per-turn receipts for diagnostics without cluttering the chat."""
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("toolActivity")
+        self.calls = []
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 4, 0, 4)
+        outer.setSpacing(4)
+        self.toggle = QLabel()
+        self.toggle.setObjectName("activityLink")
+        self.toggle.setTextFormat(Qt.RichText)
+        self.toggle.setOpenExternalLinks(False)
+        self.toggle.setText(
+            '<a href="toggle" style="color: #8d8d85; text-decoration: none;">› &nbsp; Tool calls</a>'
+        )
+        self.toggle.linkActivated.connect(self._toggle)
+        outer.addWidget(self.toggle, alignment=Qt.AlignLeft)
+        self._expanded = False
+        self.details = QPlainTextEdit()
+        self.details.setReadOnly(True)
+        self.details.setMaximumHeight(190)
+        self.details.setObjectName("toolReceipts")
+        self.details.hide()
+        outer.addWidget(self.details)
+        self.preview = QLabel()
+        self.preview.setObjectName("toolPreview")
+        self.preview.setTextFormat(Qt.PlainText)
+        self.preview.setWordWrap(True)
+        outer.addWidget(self.preview)
+        self.hide()
+
+    def _toggle(self, *args):
+        self._expanded = not self._expanded
+        self.details.setVisible(self._expanded)
+        arrow = "⌄" if self._expanded else "›"
+        self.toggle.setText(
+            f'<a href="toggle" style="color: #8d8d85; text-decoration: none;">{arrow} &nbsp; {self._label().strip()}</a>'
+        )
+
+    def _label(self):
+        pending = sum(call["status"] == "running" for call in self.calls)
+        failed = sum(call["status"] == "failed" for call in self.calls)
+        unfinished = sum(call["status"] == "unfinished" for call in self.calls)
+        count = len(self.calls)
+        if pending:
+            return f"  Working with {count} tool{'s' if count != 1 else ''} · {pending} running"
+        return (
+            f"  {count} tool{'s' if count != 1 else ''} used"
+            + (f" · {failed} failed" if failed else "")
+            + (f" · {unfinished} unfinished" if unfinished else "")
+        )
+
+    def add_call(self, name, arguments=None, call_id=None):
+        self.calls.append(
+            {
+                "name": str(name),
+                "call_id": call_id,
+                "arguments": arguments,
+                "status": "running",
+                "summary": "",
+            }
+        )
+        self.show()
+        self._refresh()
+
+    def finish_call(self, name, success, summary="", call_id=None):
+        # The runtime emits results in dispatch order and does not expose a call ID.
+        for call in self.calls:
+            if call["status"] == "running" and (
+                call["call_id"] == call_id
+                if call_id
+                else (not name or call["name"] == name)
+            ):
+                call["status"] = "complete" if success else "failed"
+                call["summary"] = str(summary)
+                break
+        self._refresh()
+
+    def finalize(self):
+        for call in self.calls:
+            if call["status"] == "running":
+                call["status"] = "unfinished"
+                call["summary"] = "No result receipt before the run ended"
+        if self.calls:
+            self._refresh()
+
+    def _refresh(self):
+        import json
+
+        lines = []
+        previews = []
+        for index, call in enumerate(self.calls, 1):
+            symbol = {
+                "running": "…",
+                "complete": "✓",
+                "failed": "×",
+                "unfinished": "!",
+            }[call["status"]]
+            lines.append(f"{index}. {symbol} {call['name']}")
+            args = call["arguments"]
+            target = ""
+            if isinstance(args, dict):
+                target = next(
+                    (
+                        str(args[key])
+                        for key in ("file_path", "path", "query", "url")
+                        if args.get(key)
+                    ),
+                    "",
+                )
+            previews.append(f"{symbol} {Path(target).name if target else call['name']}")
+            if args:
+                try:
+                    rendered = json.dumps(args, ensure_ascii=False, default=str)
+                except (TypeError, ValueError):
+                    rendered = str(args)
+                lines.append("   " + rendered[:1200])
+            if call["summary"]:
+                lines.append("   " + call["summary"][:1200])
+        self.details.setPlainText("\n".join(lines))
+        visible = previews[-5:]
+        self.preview.setText(
+            "   ·   ".join(visible)
+            + (f"   ·   +{len(previews) - 5} earlier" if len(previews) > 5 else "")
+        )
+        self.show()
+        arrow = "⌄" if self._expanded else "›"
+        self.toggle.setText(
+            f'<a href="toggle" style="color: #8d8d85; text-decoration: none;">{arrow} &nbsp; {self._label().strip()}</a>'
+        )
+
+
 class MessageCard(QFrame):
-    def __init__(self, speaker, text="", *, user=False):
+    def __init__(self, speaker, text="", *, user=False, theme="dark"):
         super().__init__()
         self.speaker, self.text, self.reasoning = speaker, str(text), ""
+        self.phases = []
+        self.theme = theme
+        self._user = user
+        self._status_base = ""
+        self._dots = 0
         self.setObjectName("userMessage" if user else "assistantMessage")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 16, 20, 16)
-        layout.setSpacing(9)
-        head = QHBoxLayout()
-        avatar = QLabel("Y" if user else "◈")
-        avatar.setObjectName("userAvatar" if user else "agentAvatar")
-        avatar.setFixedSize(30, 30)
-        avatar.setAlignment(Qt.AlignCenter)
-        head.addWidget(avatar)
-        name = QLabel(speaker)
-        name.setObjectName("messageSpeaker")
-        head.addWidget(name)
-        time = QLabel(datetime.now().strftime("%H:%M"))
-        time.setObjectName("quiet")
-        head.addWidget(time)
-        head.addStretch()
-        copy = QToolButton()
-        copy.setText("Copy")
-        copy.setToolTip("Copy message text")
-        copy.clicked.connect(lambda: QApplication.clipboard().setText(self.text))
-        head.addWidget(copy)
-        layout.addLayout(head)
+        layout.setContentsMargins(
+            18 if user else 0, 11 if user else 2, 18 if user else 0, 11 if user else 2
+        )
+        layout.setSpacing(6)
         self.status = QLabel()
-        self.status.setObjectName("messageStatus")
+        self.status.setObjectName("thinkingDots")
         self.status.hide()
         layout.addWidget(self.status)
-        self.body = MarkdownBody()
+        self._dots_timer = QTimer(self)
+        self._dots_timer.setInterval(420)
+        self._dots_timer.timeout.connect(self._tick_status)
+        self.previous_activity = QLabel(self)
+        self.previous_activity.setObjectName("activityLink")
+        self.previous_activity.setTextFormat(Qt.RichText)
+        self.previous_activity.setOpenExternalLinks(False)
+        self.previous_activity.setText(
+            '<a href="toggle" style="color: #8d8d85; text-decoration: none;">› &nbsp; Previous activity</a>'
+        )
+        self.previous_activity.hide()
+        layout.addWidget(self.previous_activity)
+        self._activity_expanded = False
+        self.activity_log = QPlainTextEdit(self)
+        self.activity_log.setReadOnly(True)
+        self.activity_log.setMaximumHeight(170)
+        self.activity_log.document().setMaximumBlockCount(150)
+        self.activity_log.hide()
+        layout.addWidget(self.activity_log)
+        self.previous_activity.linkActivated.connect(self._toggle_activity)
+        self.body = MarkdownBody(theme)
         layout.addWidget(self.body)
-        self.reasoning_button = QToolButton()
-        self.reasoning_button.setText("▸ Reasoning")
-        self.reasoning_button.setCheckable(True)
+        actions = QHBoxLayout()
+        actions.setContentsMargins(0, 0, 0, 0)
+        self.copy_button = QToolButton()
+        self.copy_button.setObjectName("messageCopy")
+        self.copy_button.setText("⧉  Copy")
+        self.copy_button.setToolTip("Copy message")
+        self.copy_button.setCursor(Qt.PointingHandCursor)
+        self.copy_button.clicked.connect(self._copy)
+        actions.addWidget(self.copy_button)
+        actions.addStretch(1)
+        if user:
+            self.copy_button.hide()
+        else:
+            layout.addLayout(actions)
+        # Receipts/reasoning remain available to history and diagnostics APIs;
+        # they are deliberately not rendered in the conversational surface.
+        self.tools = ToolActivity()
+        if not user:
+            layout.insertWidget(1, self.tools)
+        self.reasoning_button = QLabel(self)
+        self.reasoning_button.setObjectName("activityLink")
+        self.reasoning_button.setTextFormat(Qt.RichText)
+        self.reasoning_button.setOpenExternalLinks(False)
+        self.reasoning_button.setText(
+            '<a href="toggle" style="color: #8d8d85; text-decoration: none;">› &nbsp; Reasoning</a>'
+        )
         self.reasoning_button.hide()
-        self.reasoning_body = QPlainTextEdit()
+        self._reasoning_expanded = False
+        self._render_timer = QTimer(self)
+        self._render_timer.setSingleShot(True)
+        self._render_timer.timeout.connect(self._render_stream_markdown)
+        if not user:
+            layout.insertWidget(1, self.reasoning_button)
+        self.reasoning_body = QPlainTextEdit(self)
         self.reasoning_body.setReadOnly(True)
         self.reasoning_body.setMaximumHeight(220)
         self.reasoning_body.hide()
-        self.reasoning_button.toggled.connect(self._toggle_reasoning)
-        layout.addWidget(self.reasoning_button)
-        layout.addWidget(self.reasoning_body)
-        self.details_button = QToolButton()
+        if not user:
+            layout.insertWidget(2, self.reasoning_body)
+        self.reasoning_button.linkActivated.connect(self._toggle_reasoning)
+        self.details_button = QToolButton(self)
         self.details_button.setCheckable(True)
         self.details_button.setText("▸ Execution details")
         self.details_button.hide()
-        self.details = QPlainTextEdit()
+        self.details = QPlainTextEdit(self)
         self.details.setReadOnly(True)
         self.details.setMaximumHeight(180)
         self.details.document().setMaximumBlockCount(300)
         self.details.hide()
         self.details_button.toggled.connect(self.details.setVisible)
-        layout.addWidget(self.details_button)
-        layout.addWidget(self.details)
         self.set_text(text)
 
-    def _toggle_reasoning(self, visible):
-        self.reasoning_body.setVisible(visible)
-        self.reasoning_button.setText(("▾" if visible else "▸") + " Reasoning")
+    def archive_phase(self):
+        """Keep completed narration in its original position during streaming."""
+        self._render_timer.stop()
+        if not self.text.strip():
+            return
+        phase = MarkdownBody(self.theme)
+        phase.setMarkdown(self.text)
+        self.layout().insertWidget(self.layout().indexOf(self.body), phase)
+        self.phases.append((self.text, phase))
+        self.set_text("")
+
+    def _copy(self, *args):
+        QApplication.clipboard().setText(self.text)
+        self.copy_button.setText("✓  Copied")
+        QTimer.singleShot(1500, self._reset_copy_label)
+
+    def _reset_copy_label(self):
+        try:
+            self.copy_button.setText("⧉  Copy")
+        except RuntimeError:  # the card was deleted before the timer fired
+            pass
+
+    def set_theme(self, theme):
+        self.theme = theme
+        for _, phase in self.phases:
+            phase.set_theme(theme)
+        self.body.set_theme(theme)
+        if self.text:
+            self.body.setMarkdown(self.text)
+            self.body.reflow()
+
+    def _tick_status(self):
+        self._dots = (self._dots + 1) % 4
+        self.status.setText(self._status_base + "." * self._dots)
+
+    def _toggle_activity(self, *args):
+        self._activity_expanded = not self._activity_expanded
+        self.activity_log.setVisible(self._activity_expanded)
+        arrow = "⌄" if self._activity_expanded else "›"
+        self.previous_activity.setText(
+            f'<a href="toggle" style="color: #8d8d85; text-decoration: none;">{arrow} &nbsp; Previous activity</a>'
+        )
+
+    def add_activity(self, label):
+        if not label:
+            return
+        self.activity_log.appendPlainText(str(label)[:550])
+        self.previous_activity.show()
+
+    def _toggle_reasoning(self, *args):
+        self._reasoning_expanded = not self._reasoning_expanded
+        self.reasoning_body.setVisible(self._reasoning_expanded)
+        arrow = "⌄" if self._reasoning_expanded else "›"
+        self.reasoning_button.setText(
+            f'<a href="toggle" style="color: #8d8d85; text-decoration: none;">{arrow} &nbsp; Reasoning</a>'
+        )
 
     def set_text(self, text, *, markdown=True):
+        self._render_timer.stop()
         self.text = str(text)
         if markdown:
             self.body.setMarkdown(self.text)
@@ -182,7 +407,12 @@ class MessageCard(QFrame):
     def append_stream(self, text):
         self.text += text
         self.body.show()
-        self.body.append_text(text)
+        if not self._render_timer.isActive():
+            self._render_timer.start(90)
+
+    def _render_stream_markdown(self):
+        self.body.setMarkdown(self.text)
+        self.body.reflow()
 
     def append_reasoning(self, text):
         self.reasoning += text
@@ -196,17 +426,38 @@ class MessageCard(QFrame):
             self.reasoning_body.setPlainText(self.reasoning)
 
     def set_status(self, text):
-        self.status.setText(text)
-        self.status.setVisible(bool(text))
+        working = str(text).startswith("●")
+        self._status_base = str(text).rstrip(".… ") if working else ""
+        self._dots = 0
+        self.status.setText(text if working else "")
+        self.status.setVisible(working)
+        if working:
+            self._dots_timer.start()
+        else:
+            self._dots_timer.stop()
 
     def add_detail(self, text):
-        self.details_button.show()
         self.details.appendPlainText(text)
+
+    def add_tool_call(self, name, arguments=None, call_id=None):
+        self.tools.add_call(name, arguments, call_id)
+        self.add_activity("↗  " + str(name) + " · started")
+
+    def add_tool_result(self, name, success, summary="", call_id=None):
+        self.tools.finish_call(name, success, summary, call_id)
+        self.add_activity(
+            ("✓  " if success else "✕  ")
+            + str(name or "Tool")
+            + (" · " + str(summary)[:170] if summary else "")
+        )
 
 
 class ConversationView(QScrollArea):
-    def __init__(self):
+    suggestedPrompt = Signal(str)
+
+    def __init__(self, theme="dark"):
         super().__init__()
+        self.theme = theme
         self.setObjectName("conversation")
         self.setWidgetResizable(True)
         self.setFrameShape(QFrame.NoFrame)
@@ -214,14 +465,90 @@ class ConversationView(QScrollArea):
         self.container = QWidget()
         self.container.setObjectName("conversationCanvas")
         self.layout = QVBoxLayout(self.container)
-        self.layout.setContentsMargins(8, 18, 8, 24)
-        self.layout.setSpacing(18)
+        self.layout.setContentsMargins(24, 12, 24, 32)
+        self.layout.setSpacing(26)
+        self.welcome = self._make_welcome()
+        self.layout.addWidget(self.welcome, 1)
         self.layout.addStretch()
         self.setWidget(self.container)
         self.cards = []
         self.live = None
         self._follow = True
         self.verticalScrollBar().valueChanged.connect(self._track_scroll)
+
+    def _make_welcome(self):
+        host = QWidget()
+        host.setObjectName("welcomeHost")
+        root = QVBoxLayout(host)
+        root.setContentsMargins(12, 8, 12, 8)
+        root.addStretch(1)
+        hero = QWidget()
+        self.welcome_hero = hero
+        hero.setMaximumWidth(600)
+        hero.setMinimumWidth(300)
+        panel = QVBoxLayout(hero)
+        panel.setSpacing(12)
+        symbol = QLabel("✳")
+        symbol.setObjectName("welcomeSymbol")
+        symbol.setAlignment(Qt.AlignCenter)
+        panel.addWidget(symbol)
+        title = QLabel("How can I help today?")
+        title.setObjectName("welcomeTitle")
+        title.setWordWrap(True)
+        title.setMinimumHeight(48)
+        title.setAlignment(Qt.AlignCenter)
+        panel.addWidget(title)
+        subtitle = QLabel(
+            "Ask Daena to explore, build or fix things in your workspace."
+        )
+        subtitle.setObjectName("welcomeSub")
+        subtitle.setWordWrap(True)
+        subtitle.setAlignment(Qt.AlignCenter)
+        panel.addWidget(subtitle)
+        self.welcome_buttons = []
+        for heading, prompt in [
+            (
+                "Explore my codebase  ↗",
+                "Explore this workspace and explain its architecture, entry points, and important files.",
+            ),
+            (
+                "Build a new feature  ↗",
+                "Help me plan and implement a useful feature in this project. Start by inspecting the codebase.",
+            ),
+            (
+                "Find and fix a bug  ↗",
+                "Inspect this project for a high-impact bug, fix it, and run relevant tests.",
+            ),
+        ]:
+            button = QPushButton(heading)
+            button.setObjectName("suggestion")
+            button.setCursor(Qt.PointingHandCursor)
+            button.setToolTip(prompt)
+            button.clicked.connect(
+                lambda checked=False, text=prompt: self.suggestedPrompt.emit(text)
+            )
+            panel.addWidget(button)
+            self.welcome_buttons.append(button)
+        root.addWidget(hero, 0, Qt.AlignHCenter)
+        root.addStretch(1)
+        return host
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "welcome_hero"):
+            self.welcome_hero.setFixedWidth(
+                max(300, min(600, self.viewport().width() - 76))
+            )
+            available = self.viewport().height()
+            for index, button in enumerate(self.welcome_buttons):
+                button.setVisible(
+                    index == 0 or available >= (385 if index == 1 else 445)
+                )
+
+    def apply_theme(self, theme):
+        self.theme = theme
+        for card in self.cards:
+            card.set_theme(theme)
 
     def _track_scroll(self, value):
         bar = self.verticalScrollBar()
@@ -238,10 +565,30 @@ class ConversationView(QScrollArea):
 
     def add_message(self, speaker, text):
         self._follow = True
+        self.welcome.hide()
         card = MessageCard(
-            speaker, text, user=speaker.startswith("You") or speaker == "Queued"
+            speaker,
+            text,
+            user=speaker.startswith("You") or speaker == "Queued",
+            theme=self.theme,
         )
-        self.layout.insertWidget(self.layout.count() - 1, card)
+        card.setMaximumWidth(640 if card.objectName() == "userMessage" else 780)
+        row = QWidget()
+        row.setObjectName("messageRow")
+        line = QHBoxLayout(row)
+        line.setContentsMargins(0, 0, 0, 0)
+        line.setSpacing(14)
+        if card.objectName() == "userMessage":
+            line.addStretch(1)
+            line.addWidget(card, 0)
+        else:
+            avatar = QLabel("✳")
+            avatar.setObjectName("avatar")
+            avatar.setFixedSize(28, 28)
+            avatar.setAlignment(Qt.AlignCenter)
+            line.addWidget(avatar, 0, Qt.AlignTop)
+            line.addWidget(card, 1)
+        self.layout.insertWidget(self.layout.count() - 1, row)
         self.cards.append(card)
         self.scroll_to_end()
         return card
@@ -270,11 +617,15 @@ class ConversationView(QScrollArea):
             self.live.add_detail(text)
 
     def finish(self, text, status="Completed"):
+        final_text = str(text or "")
         if self.live is None:
-            self.live = self.add_message("Daena", text)
-        else:
-            self.live.set_text(text)
+            self.live = self.add_message("Daena", final_text)
+        elif final_text:
+            # Never erase visible streamed content with an empty final payload.
+            # Canonical non-empty final text may replace the live draft.
+            self.live.set_text(final_text)
         self.live.set_status(status)
+        self.live.tools.finalize()
         self.scroll_to_end()
 
     def end_turn(self):
@@ -282,10 +633,12 @@ class ConversationView(QScrollArea):
 
     def clear(self):
         for card in self.cards:
-            self.layout.removeWidget(card)
-            card.deleteLater()
+            row = card.parentWidget()
+            self.layout.removeWidget(row)
+            row.deleteLater()
         self.cards = []
         self.live = None
+        self.welcome.show()
 
     def toPlainText(self):
         return "\n\n".join(f"{card.speaker}\n{card.text}" for card in self.cards)

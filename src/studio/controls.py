@@ -34,6 +34,8 @@ LABELS = {
     "process_stop": "Stop processes",
     "web_search": "Search the web",
     "web_fetch": "Read web pages",
+    "browser_use": "Control browser tabs and forms",
+    "computer_use": "Control desktop applications",
     "subagent": "Delegate to agents",
     "plan": "Manage a plan",
     "skill_list": "Discover skills",

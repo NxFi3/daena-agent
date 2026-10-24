@@ -30,6 +30,7 @@ class ContextService:
         self._retrieval_cache_key: tuple[str, str, int] | None = None
         self._retrieval_cache: list[ContextEvent] = []
         self._session_key = None
+        self._session_revision = None
 
     @staticmethod
     def _task_to_dict(event: ContextEvent | None) -> dict[str, Any]:
@@ -79,10 +80,19 @@ class ContextService:
         search_top_k: int | None = None,
         available_tool_names: set[str] | None = None,
         include_plan: bool = True,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
-        if self._session_key != str(session_id):
+        revision_reader = getattr(self.stm, "get_session_revision", None)
+        revision = revision_reader(session_id) if callable(revision_reader) else 0
+        if self._session_key != str(session_id) or self._session_revision != revision:
             self._session_key = str(session_id)
-            for attr in ("_history_task", "_history_summary", "_covered_groups"):
+            self._session_revision = revision
+            for attr in (
+                "_history_task",
+                "_history_summary",
+                "_covered_groups",
+                "_pending_history",
+            ):
                 if hasattr(self.contextbuilder, attr):
                     delattr(self.contextbuilder, attr)
             self._retrieval_cache_key = None
@@ -92,7 +102,8 @@ class ContextService:
             if checkpoint:
                 self.contextbuilder._history_summary = checkpoint["summary"]
                 self.contextbuilder._covered_groups = set(checkpoint["covered_groups"])
-        recent_events = self.stm.get_recent(
+        recent_reader = getattr(self.stm, "get_recent_complete", self.stm.get_recent)
+        recent_events = recent_reader(
             session_id=session_id,
             limit=recent_limit or self.default_recent_limit,
         )
@@ -116,6 +127,30 @@ class ContextService:
 
         events = self._merge_events(recent_events, relevant_events)
 
+        # This ledger contains only text from earlier confirmed model requests.
+        # It survives recent-event eviction and process restarts independently of
+        # an LLM-generated historical summary. It never claims text is retained.
+        attachments = list(attachments or [])
+        reader = getattr(self.stm, "get_file_reads", None)
+        ledger = reader(session_id) if callable(reader) else None
+        if ledger and ledger.get("items"):
+            from src.context.payloads import fit_json
+
+            budget = self.contextbuilder.tokenbudget
+            limit = max(
+                256, min(2400, int(budget.budget * budget.chars_per_token * 0.08))
+            )
+            import json
+
+            working_set = dict(working_set or {})
+            working_set["file_read_history"] = json.loads(fit_json(ledger, limit))
+            history = working_set["file_read_history"]
+            history["shown_versions"] = len(history.get("items", []))
+            history["total_versions"] = ledger["total_versions"]
+            history["truncated"] = history["shown_versions"] < history["total_versions"]
+            working_set["file_read_history"]["meaning"] = (
+                "Historical delivered character ranges only; source text may no longer be in this request. Hashes are not revalidated against disk. Recover specific text with read_file and follow next_read."
+            )
         self.context = self.contextbuilder.build_context(
             events=events,
             task=self._task_to_dict(user_task),
@@ -127,6 +162,7 @@ class ContextService:
             workspace=workspace_directory,
             available_tool_names=available_tool_names,
             include_plan=include_plan,
+            attachments=attachments,
         )
         builder = self.contextbuilder
         checkpoint_key = (builder._history_summary, frozenset(builder._covered_groups))
@@ -139,6 +175,13 @@ class ContextService:
             saver(session_id, builder._history_summary, builder._covered_groups)
             self._saved_checkpoint = checkpoint_key
         return self.context
+
+    def record_delivery(self, session_id):
+        from src.context.file_reads import delivered_reads
+
+        saver = getattr(self.stm, "record_file_reads", None)
+        if callable(saver):
+            saver(session_id, list(delivered_reads(self.context)))
 
     def calibrate(self, llmresult: LLMResult) -> None:
         self.contextbuilder.tokenbudget.calibrate_from_response(

@@ -92,7 +92,10 @@ class ToolResult:
         except Exception:
             serialized = str(value)
 
-        return cls._truncate_text(serialized, limit)
+        if len(serialized) <= limit:
+            return serialized
+        from src.context.payloads import fit_json
+        return fit_json(value, limit)
 
     @staticmethod
     def _last_meaningful_line(text: str) -> str:
@@ -315,7 +318,7 @@ class ToolResult:
             if "exit_code" in content:
                 evidence["exit_code"] = content["exit_code"]
 
-            for key in ("status", "process_id", "pid", "managed"):
+            for key in ("status", "process_id", "pid", "managed", "output_pending"):
                 if key in content:
                     evidence[key] = content[key]
 

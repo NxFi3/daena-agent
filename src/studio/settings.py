@@ -138,6 +138,12 @@ class SettingsPanel(QWidget):
         self.reserve = QSpinBox()
         self.reserve.setRange(0, 131072)
         self.reserve.setSingleStep(1024)
+        self.image_reserve = QSpinBox()
+        self.image_reserve.setRange(128, 32768)
+        self.image_reserve.setSingleStep(512)
+        self.image_reserve.setToolTip(
+            "Estimated tokens reserved per screenshot before fitting conversation history. Actual image costs depend on the model."
+        )
         self.summary = QSpinBox()
         self.summary.setRange(128, 32768)
         self.summary.setSingleStep(256)
@@ -150,6 +156,7 @@ class SettingsPanel(QWidget):
         for label, widget in [
             ("Prompt budget", self.context),
             ("Output reserve", self.reserve),
+            ("Tokens per screenshot · estimate", self.image_reserve),
             ("Recent events", self.recent),
             ("Summary target", self.summary),
             ("Iteration limit", self.iterations),
@@ -192,7 +199,7 @@ class SettingsPanel(QWidget):
         title = QLabel("Tool permissions")
         title.setObjectName("sectionTitle")
         t.addWidget(title)
-        self.network = QCheckBox("Allow web search and web fetch")
+        self.network = QCheckBox("Allow web search, web fetch and browser control")
         self.background = QCheckBox("Allow managed background processes")
         self.workspace_only = QCheckBox("Keep file tools inside the workspace")
         for widget in (self.network, self.background, self.workspace_only):
@@ -200,6 +207,25 @@ class SettingsPanel(QWidget):
         self.scope_editor = ToolScopeEditor()
         self.tools = self.scope_editor.list
         t.addWidget(self.scope_editor)
+        browser_title = QLabel("Browser")
+        browser_title.setObjectName("sectionTitle")
+        t.addWidget(browser_title)
+        browser_form = QFormLayout()
+        self.browser_headless = QCheckBox("Run without a visible browser window")
+        self.browser_executable = QLineEdit()
+        self.browser_executable.setPlaceholderText("Blank: Playwright Chromium")
+        self.browser_cdp = QLineEdit()
+        self.browser_cdp.setPlaceholderText("Optional: http://localhost:9222")
+        browser_form.addRow(self.browser_headless)
+        browser_form.addRow("Chromium executable", self.browser_executable)
+        browser_form.addRow("Connect to existing browser · CDP", self.browser_cdp)
+        t.addLayout(browser_form)
+        browser_note = QLabel(
+            "Install the browser extra and run: python -m playwright install chromium. Blank CDP uses a separate browser profile for this conversation."
+        )
+        browser_note.setWordWrap(True)
+        browser_note.setObjectName("muted")
+        t.addWidget(browser_note)
         self.pages.addWidget(tools)
 
         advanced = QWidget()
@@ -300,6 +326,7 @@ class SettingsPanel(QWidget):
         self.context.setValue(c.get("max_prompt_tokens", 24000))
         self.recent.setValue(c.get("recent_event_limit", 80))
         self.reserve.setValue(c.get("output_reserve_tokens", 4096))
+        self.image_reserve.setValue(c.get("image_token_reserve", 4096))
         self.summary.setValue(c.get("compaction_target_tokens", 2048))
         self.iterations.setValue(config.get("max_agent_iterations", 100))
         self.protocol.setCurrentIndex(
@@ -324,6 +351,10 @@ class SettingsPanel(QWidget):
         self.background.setChecked(policy.allow_background)
         self.workspace_only.setChecked(policy.workspace_only)
         self.scope_editor.set_scope(policy.allowed_tools)
+        browser = config.get("browser", {})
+        self.browser_headless.setChecked(browser.get("headless", False))
+        self.browser_executable.setText(browser.get("executable_path", ""))
+        self.browser_cdp.setText(browser.get("cdp_url", ""))
         self._syncing = False
         self.sync_generation_controls()
 
@@ -407,6 +438,7 @@ class SettingsPanel(QWidget):
             max_prompt_tokens=self.context.value(),
             recent_event_limit=self.recent.value(),
             output_reserve_tokens=self.reserve.value(),
+            image_token_reserve=self.image_reserve.value(),
             compaction_target_tokens=self.summary.value(),
             compaction_enabled=self.compact.isChecked(),
         )
@@ -429,6 +461,11 @@ class SettingsPanel(QWidget):
             allow_background=self.background.isChecked(),
             workspace_only=self.workspace_only.isChecked(),
             allowed_tools=self.scope_editor.scope(),
+        )
+        result.setdefault("browser", {}).update(
+            headless=self.browser_headless.isChecked(),
+            executable_path=self.browser_executable.text().strip(),
+            cdp_url=self.browser_cdp.text().strip(),
         )
         return validate_config(result)
 

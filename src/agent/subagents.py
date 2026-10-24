@@ -78,6 +78,9 @@ class SubagentManager:
 
     READ_TOOLS = {
         "read_file",
+        "glob",
+        "grep",
+        "list_dir",
         "web_search",
         "web_fetch",
         "skill_list",
@@ -86,6 +89,8 @@ class SubagentManager:
     }
     WORK_TOOLS = READ_TOOLS | {
         "apply_patch",
+        "write_file",
+        "edit_file",
         "make_directory",
         "command_exec",
         "process_poll",

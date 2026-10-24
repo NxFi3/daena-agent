@@ -77,7 +77,7 @@ class Agent:
             )
         finally:
             try:
-                self.loop.tool.close()
+                self.loop.tool.finish_run()
             finally:
                 self._run_lock.release()
 

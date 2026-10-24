@@ -125,6 +125,23 @@ class ToolDispatcher:
                     )
 
             schema = getattr(tool, "parameters", {}) or {}
+            # Some providers double-encode structured values inside arguments.
+            # Decode only containers explicitly required by the tool schema;
+            # never infer actions, coordinates, strings, or numeric intent.
+            arguments = dict(arguments)
+            for key, spec in schema.get("properties", {}).items():
+                value = arguments.get(key)
+                expected = spec.get("type")
+                if isinstance(value, str) and expected in ("array", "object"):
+                    try:
+                        decoded = json.loads(value)
+                    except (ValueError, TypeError):
+                        continue
+                    if (expected == "array" and isinstance(decoded, list)) or (
+                        expected == "object" and isinstance(decoded, dict)
+                    ):
+                        arguments[key] = decoded
+                        normalization_notes.append(f"Decoded JSON {expected} argument: {key}.")
             properties = schema.get("properties", {})
             if not isinstance(properties, dict):
                 properties = {}
@@ -188,6 +205,17 @@ class ToolDispatcher:
                         ),
                         normalization_notes=normalization_notes,
                     )
+
+            schema_error = self._schema_validation_error(schema, arguments)
+            if schema_error:
+                return ToolCall(
+                    name=name,
+                    id=call_id,
+                    args=arguments,
+                    valid=False,
+                    validation_error=schema_error,
+                    normalization_notes=normalization_notes,
+                )
 
             validate = getattr(tool, "validate", None)
             if callable(validate):
@@ -343,6 +371,113 @@ class ToolDispatcher:
             candidate_args,
             f"Tool name repaired from {current_name!r} to {candidate_name!r} based on the argument schema.",
         )
+    @staticmethod
+    def _schema_validation_error(
+        schema: dict[str, Any],
+        arguments: dict[str, Any],
+    ) -> str | None:
+        """Validate the small JSON-Schema subset used by built-in tools.
+
+        Provider/native tool-call layers do not consistently enforce constraints
+        such as minItems. Reject malformed calls before they reach tool execution
+        so a bad model emission cannot create a misleading started/failed tool
+        lifecycle.
+        """
+        properties = schema.get("properties", {})
+        if not isinstance(properties, dict):
+            return None
+
+        def type_matches(value: Any, expected: str) -> bool:
+            if expected == "string":
+                return isinstance(value, str)
+            if expected == "array":
+                return isinstance(value, list)
+            if expected == "object":
+                return isinstance(value, Mapping)
+            if expected == "integer":
+                return isinstance(value, int) and not isinstance(value, bool)
+            if expected == "number":
+                return (
+                    isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                )
+            if expected == "boolean":
+                return isinstance(value, bool)
+            if expected == "null":
+                return value is None
+            return True
+
+        for key, value in arguments.items():
+            item_schema = properties.get(key)
+            if not isinstance(item_schema, dict):
+                continue
+
+            expected = item_schema.get("type")
+            expected_types = (
+                [expected]
+                if isinstance(expected, str)
+                else expected
+                if isinstance(expected, list)
+                else []
+            )
+            if expected_types and not any(
+                isinstance(item, str) and type_matches(value, item)
+                for item in expected_types
+            ):
+                return (
+                    f"Argument '{key}' has the wrong type. "
+                    f"Expected {expected_types}, got {type(value).__name__}."
+                )
+
+            enum = item_schema.get("enum")
+            if isinstance(enum, list) and value not in enum:
+                return (
+                    f"Argument '{key}' must be one of: "
+                    + ", ".join(repr(item) for item in enum)
+                    + "."
+                )
+
+            if isinstance(value, list):
+                minimum = item_schema.get("minItems")
+                maximum = item_schema.get("maxItems")
+                if isinstance(minimum, int) and len(value) < minimum:
+                    return (
+                        f"Argument '{key}' must contain at least "
+                        f"{minimum} item(s)."
+                    )
+                if isinstance(maximum, int) and len(value) > maximum:
+                    return (
+                        f"Argument '{key}' must contain at most "
+                        f"{maximum} item(s)."
+                    )
+
+                child_schema = item_schema.get("items")
+                if isinstance(child_schema, dict):
+                    child_type = child_schema.get("type")
+                    if isinstance(child_type, str):
+                        for index, item in enumerate(value):
+                            if not type_matches(item, child_type):
+                                return (
+                                    f"Argument '{key}[{index}]' has the wrong "
+                                    f"type. Expected {child_type}."
+                                )
+
+            if isinstance(value, str):
+                minimum = item_schema.get("minLength")
+                maximum = item_schema.get("maxLength")
+                if isinstance(minimum, int) and len(value) < minimum:
+                    return (
+                        f"Argument '{key}' must contain at least "
+                        f"{minimum} character(s)."
+                    )
+                if isinstance(maximum, int) and len(value) > maximum:
+                    return (
+                        f"Argument '{key}' must contain at most "
+                        f"{maximum} character(s)."
+                    )
+
+        return None
+
     @staticmethod
     def _normalize_call_id(raw_id: Any) -> str:
         if raw_id is None:

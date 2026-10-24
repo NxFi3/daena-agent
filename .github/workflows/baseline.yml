@@ -6,9 +6,31 @@ on:
       - "baseline/**"
       - main
       - "release-*"
+      - "feat/studio-conversation-redesign"
   pull_request:
 
 jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: python -m pip install -r requirements-dev.txt -e '.[browser]'
+      - run: python -m playwright install --with-deps chromium
+      - name: Real browser and conversation integration
+        run: DAENA_TEST_BROWSER=1 python -m pytest -q tests/browser_use
+      - name: Installed browser wheel
+        run: |
+          python -m build
+          python -m venv --system-site-packages "$RUNNER_TEMP/browser-wheel"
+          "$RUNNER_TEMP/browser-wheel/bin/python" -m pip install --ignore-installed --no-deps dist/daena_agent-0.6.0-py3-none-any.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/browser-wheel/bin/python" "$GITHUB_WORKSPACE/tests/smoke_browser_wheel.py" "$GITHUB_WORKSPACE"
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -44,16 +66,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Qt system libraries
-        run: sudo apt-get update && sudo apt-get install -y libegl1 libopengl0 libxcb-cursor0
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libopengl0 libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-keysyms1 libxcb-xinerama0 libxcb-shape0 xvfb xdotool xauth
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: pyproject.toml
-      - run: python -m pip install -r requirements-dev.txt -e '.[desktop]'
-      - name: Desktop formatting
-        run: python -m ruff format --check src/studio tests/test_studio.py tests/test_studio_interactions.py tests/render_studio_preview.py tests/smoke_studio_wheel.py tests/test_reasoning_controls.py src/engine/providers/builtin/gemini/geminiprovider.py
+      - run: python -m pip install -r requirements-dev.txt -e '.[desktop,computer-x11]'
+      - name: Verify native Qt plugin dependencies
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          from PySide6.QtCore import QLibraryInfo
+          plugin = Path(QLibraryInfo.path(QLibraryInfo.PluginsPath)) / "platforms/libqxcb.so"
+          output = subprocess.check_output(["ldd", str(plugin)], text=True)
+          print(output)
+          assert "not found" not in output, "Missing native Qt/X11 libraries"
+          PY
       - run: python -m pytest -q tests
+      - name: Native desktop input
+        run: DAENA_TEST_DESKTOP=1 xvfb-run -a python -m pytest -q tests/computer_use/test_desktop.py
       - run: daena-studio --help
 
       - name: Build and smoke-test installed desktop wheel
@@ -63,6 +96,8 @@ jobs:
           "$RUNNER_TEMP/studio-wheel/bin/python" -m pip install --ignore-installed --no-deps dist/daena_agent-0.6.0-py3-none-any.whl
           cd "$RUNNER_TEMP"
           "$RUNNER_TEMP/studio-wheel/bin/python" "$GITHUB_WORKSPACE/tests/smoke_studio_wheel.py" "$GITHUB_WORKSPACE"
+      - name: Desktop formatting
+        run: python -m ruff format --check src/studio tests/test_studio.py tests/test_studio_interactions.py tests/render_studio_preview.py tests/smoke_studio_wheel.py tests/test_reasoning_controls.py src/engine/providers/builtin/gemini/geminiprovider.py
       - name: Render desktop previews
         timeout-minutes: 1
         if: always()

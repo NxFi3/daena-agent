@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import hashlib
 import json
 import re
@@ -9,6 +10,7 @@ from typing import Any
 from src.context.compactor import Compactor
 from src.context.contextwindow import ContextWindow
 from src.context.tokenbudget import TokenBudget
+from src.context.payloads import fit_json, fit_tool_text
 from src.engine.LlmProviderManager import LlmProvider
 from src.models.ContextEvent import ContextEvent
 
@@ -265,6 +267,7 @@ class ContextBuilder:
                             "role": "user",
                             "content": text,
                             "_history_id": event_id,
+                            "_history_order": (event.step, event.timestamp.isoformat()),
                             "_current_request": not is_historical
                             and not metadata.get("runtime_nudge", False),
                         }
@@ -278,6 +281,10 @@ class ContextBuilder:
 
                 if message.get("content") or message.get("tool_calls"):
                     message["_history_id"] = event_id
+                    message["_history_order"] = (
+                        event.step,
+                        event.timestamp.isoformat(),
+                    )
                     target.append(message)
                 continue
 
@@ -290,6 +297,7 @@ class ContextBuilder:
                 tool_message: dict[str, Any] = {
                     "role": "tool",
                     "_history_id": event_id,
+                    "_history_order": (event.step, event.timestamp.isoformat()),
                     "content": self._tool_payload(payload),
                 }
                 if payload.get("tool_call_id"):
@@ -314,6 +322,10 @@ class ContextBuilder:
                         "role": "user",
                         "content": task_text,
                         "_history_id": str(task_id),
+                        "_history_order": (
+                            int(task.get("step", 0)),
+                            str(task.get("timestamp", "")),
+                        ),
                         "_current_request": True,
                     },
                 )
@@ -369,10 +381,7 @@ class ContextBuilder:
             if isinstance(evidence, dict) and evidence:
                 compact["evidence"] = evidence
 
-            text = json.dumps(compact, ensure_ascii=False, default=str)
-            if len(text) > self.MAX_TOOL_CHARS:
-                text = self._head_tail(text, self.MAX_TOOL_CHARS)
-            return text
+            return fit_json(compact, self.MAX_TOOL_CHARS)
 
         inner = event_content.get("content")
         payload = (
@@ -478,7 +487,7 @@ class ContextBuilder:
 
     @staticmethod
     def _read_signature(message: dict[str, Any]) -> tuple[str, str, str] | None:
-        """Identify a successful read_file result as (path, start, end)."""
+        """Identify source-version spans; legacy receipts compare visible text too."""
         if message.get("tool_name") != "read_file":
             return None
 
@@ -486,6 +495,18 @@ class ContextBuilder:
         if not isinstance(content, str):
             return None
 
+        try:
+            from src.context.file_reads import file_evidence
+
+            evidence = file_evidence(json.loads(content))
+        except (ValueError, TypeError):
+            evidence = None
+        if evidence is not None:
+            return (
+                evidence["path"],
+                evidence["file_sha256"],
+                str((evidence["source_start_offset"], evidence["source_end_offset"])),
+            )
         header = content[:1200]
         path_match = _READ_PATH_RE.search(header)
         if path_match is None:
@@ -497,7 +518,9 @@ class ContextBuilder:
         return (
             path_match.group(1),
             start_match.group(1) if start_match else "",
-            end_match.group(1) if end_match else "",
+            (end_match.group(1) if end_match else "")
+            + ":view:"
+            + hashlib.sha256(content.encode()).hexdigest(),
         )
 
     def _shrink_old_tool_results(self, messages: list[dict[str, Any]]) -> None:
@@ -513,7 +536,7 @@ class ContextBuilder:
         old_positions = tool_positions[: -self.FULL_TOOL_RESULTS]
 
         # Keep only the newest occurrence of an identical read observation
-        # at full size. Re-reading the same range produces the same evidence;
+        # at full size. Re-reading the same range of the same version produces the same evidence;
         # replaying every copy only consumes context.
         seen_reads: set[tuple[str, str, str]] = set()
         duplicate_read_positions: set[int] = set()
@@ -532,8 +555,13 @@ class ContextBuilder:
         for index in duplicate_read_positions:
             content = messages[index].get("content", "")
             if isinstance(content, str):
-                messages[index]["content"] = (
-                    content[: self.OLD_TOOL_CHARS] + self.OLD_RESULT_MARKER
+                messages[index]["content"] = fit_tool_text(
+                    content,
+                    self.OLD_TOOL_CHARS,
+                    lambda text, limit: (
+                        text[: max(0, limit - len(self.OLD_RESULT_MARKER))]
+                        + self.OLD_RESULT_MARKER
+                    ),
                 )
 
         # Pin the newest distinct file reads that are about to age out, unless
@@ -561,15 +589,19 @@ class ContextBuilder:
 
             if index in pinned:
                 if len(content) > self.PINNED_READ_CHARS:
-                    messages[index]["content"] = self._head_tail(
-                        content,
-                        self.PINNED_READ_CHARS,
+                    messages[index]["content"] = fit_tool_text(
+                        content, self.PINNED_READ_CHARS, self._head_tail
                     )
                 continue
 
             if len(content) > self.OLD_TOOL_CHARS:
-                messages[index]["content"] = (
-                    content[: self.OLD_TOOL_CHARS] + self.OLD_RESULT_MARKER
+                messages[index]["content"] = fit_tool_text(
+                    content,
+                    self.OLD_TOOL_CHARS,
+                    lambda text, limit: (
+                        text[: max(0, limit - len(self.OLD_RESULT_MARKER))]
+                        + self.OLD_RESULT_MARKER
+                    ),
                 )
 
     def _compact_execution_state(
@@ -592,6 +624,8 @@ class ContextBuilder:
             }
 
         if isinstance(working_set, dict):
+            if working_set.get("file_read_history"):
+                state["file_read_history"] = working_set["file_read_history"]
             for key in ("subagents", "active_process_ids"):
                 if key in working_set:
                     state[key] = working_set[key]
@@ -828,6 +862,13 @@ class ContextBuilder:
             entries.pop()
             state["workspace"]["truncated"] = True
             rendered = json.dumps(state, ensure_ascii=False, default=str)
+        ledger = state.get("file_read_history", {})
+        ledger_items = ledger.get("items", [])
+        while ledger_items and len(rendered) > self.MAX_EXECUTION_STATE_CHARS:
+            ledger_items.pop()
+            ledger["shown_versions"] = len(ledger_items)
+            ledger["truncated"] = True
+            rendered = json.dumps(state, ensure_ascii=False, default=str)
         return rendered
 
     def _populate_window(
@@ -956,8 +997,11 @@ class ContextBuilder:
                 # complete older groups instead of rewriting their signed payload.
                 continue
             if message.get("role") in {"tool", "assistant"}:
-                message["content"] = self._head_tail(
-                    str(message.get("content") or ""), limit
+                text = str(message.get("content") or "")
+                message["content"] = (
+                    fit_tool_text(text, limit, self._head_tail)
+                    if message.get("role") == "tool"
+                    else self._head_tail(text, limit)
                 )
             if message.get("tool_calls"):
                 # Deep copy before reducing arguments: canonical events must not change.
@@ -996,15 +1040,10 @@ class ContextBuilder:
             ),
         }
 
-    def _fit_protocol(self, system, requests, summary, groups):
+    def _fit_protocol(self, system, requests, summary, groups, attachments=()):
         def render():
             history = [m for group in groups for m in group]
-            return [
-                system,
-                *requests,
-                *summary,
-                *history,
-            ]
+            return [system, *requests, *summary, *history, *attachments]
 
         # Oldest complete groups leave first. Keep the actual task/instructions
         # and most recent tool receipt; never relocate the task to the end.
@@ -1035,7 +1074,12 @@ class ContextBuilder:
                     if message.get("gemini_parts"):
                         continue
                     text = str(message.get("content", ""))
-                    message["content"] = self._head_tail(text, max(64, len(text) // 2))
+                    limit = max(64, len(text) // 2)
+                    message["content"] = (
+                        fit_tool_text(text, limit, self._head_tail)
+                        if message.get("role") == "tool"
+                        else self._head_tail(text, limit)
+                    )
                     for call in message.get("tool_calls", []):
                         function = call["function"]
                         arguments = json.loads(function["arguments"])
@@ -1050,7 +1094,7 @@ class ContextBuilder:
         result = self._sanitize_tool_protocol(render())
         if not self.tokenbudget.fits(result):
             raise ValueError(
-                "Context budget is too small for user instructions and the latest tool exchange"
+                "Context budget is too small for user instructions, the latest tool exchange and attached observations. Increase the context window or reduce the configured image reserve/output cap."
             )
         return [
             {key: value for key, value in message.items() if not key.startswith("_")}
@@ -1070,6 +1114,7 @@ class ContextBuilder:
         learned_experience=None,
         available_tool_names=None,
         include_plan=True,
+        attachments=None,
     ):
         task_key = str((task or {}).get("id", ""))
         if task_key != getattr(self, "_history_task", None):
@@ -1093,12 +1138,36 @@ class ContextBuilder:
         )
         messages = self.window.get_prompt()
         system = dict(messages[0])
-        groups = self._message_groups(messages[1:])
+        fresh = messages[1:]
+        fresh_ids = {m.get("_history_id") for m in fresh}
+        previous = (
+            getattr(self, "_pending_history", []) if self.compaction_enabled else []
+        )
+        missing_ids = {
+            m.get("_history_id")
+            for m in previous
+            if m.get("_history_id") not in fresh_ids
+        }
+        combined = {m["_history_id"]: m for m in previous if m.get("_history_id")}
+        combined.update({m["_history_id"]: m for m in fresh if m.get("_history_id")})
+        ordered = sorted(
+            combined.values(), key=lambda m: m.get("_history_order", (0, ""))
+        )
+        groups = self._message_groups(
+            ordered + [m for m in fresh if not m.get("_history_id")]
+        )
         # Preserve chronological user/tool order, including operator steering.
         self._requests = []
         pending = []
         for group in groups:
-            if self._group_key(group) not in self._covered_groups:
+            covered_events = all(
+                "event:" + str(m.get("_history_id")) in self._covered_groups
+                for m in group
+            )
+            if (
+                self._group_key(group) not in self._covered_groups
+                and not covered_events
+            ):
                 pending.append(group)
         # Preserve earlier explicit steering when the database retrieval window
         # advances, without re-appending it as a new instruction at the end.
@@ -1113,16 +1182,31 @@ class ContextBuilder:
             *self._requests,
             *summary,
             *[m for g in pending for m in g],
+            *(attachments or []),
         ]
         trigger = self.tokenbudget.budget * self.compaction_trigger_ratio
         if (
             self.compaction_enabled
-            and self.tokenbudget.estimate_request_tokens(candidate) > trigger
-            and sum(not self._is_request(g) for g in pending) > 2
+            and (
+                self.tokenbudget.estimate_request_tokens(candidate) > trigger
+                or missing_ids
+            )
+            and sum(not self._is_request(g) for g in pending)
+            > (1 if missing_ids else 2)
         ):
             # Incremental checkpoint: only the unconsumed prefix is summarized.
             # Keep at least the two newest complete exchanges verbatim.
             split = max(1, len(pending) - 4)
+            if missing_ids:
+                missing_end = max(
+                    (
+                        i + 1
+                        for i, g in enumerate(pending)
+                        if any(m.get("_history_id") in missing_ids for m in g)
+                    ),
+                    default=0,
+                )
+                split = min(len(pending) - 1, max(split, missing_end))
             older, recent = pending[:split], pending[split:]
             source = self._serialize_for_compaction([m for g in older for m in g])
             if self._history_summary:
@@ -1140,11 +1224,54 @@ class ContextBuilder:
                 target,
                 stop_event=getattr(self, "stop_event", None),
             )
+            if not compacted:
+                # Preserve receipts if semantic summarization fails, rather than
+                # silently forgetting them or retaining an unbounded source cache.
+                receipts = []
+                for group in older:
+                    for message in group:
+                        if message.get("role") == "tool":
+                            parsed = self._parse_json(message.get("content", ""))
+                            receipts.append(
+                                {"tool": message.get("tool_name"), "receipt": parsed}
+                            )
+                if receipts:
+                    compacted = fit_json(
+                        {
+                            "receipt_only_checkpoint": True,
+                            "prior_summary": self._history_summary,
+                            "tool_receipts": receipts,
+                        },
+                        max(256, int(target * self.tokenbudget.chars_per_token * 0.8)),
+                    )
             if compacted:
                 limit = int(target * self.tokenbudget.chars_per_token * 0.8)
                 self._history_summary = self._head_tail(compacted, limit)
                 consumed = [g for g in older if not self._is_request(g)]
                 self._covered_groups.update(self._group_key(g) for g in consumed)
+                self._covered_groups.update(
+                    "event:" + str(m["_history_id"])
+                    for g in consumed
+                    for m in g
+                    if m.get("_history_id")
+                )
                 pending = [g for g in older if self._is_request(g)] + recent
                 summary = [self._summary_message()]
-        return self._fit_protocol(system, list(self._requests), summary, pending)
+        # Keep uncheckpointed complete tool exchanges until the next retrieval window;
+        # request text has a separate explicit-instruction retention path.
+        self._pending_history = (
+            deepcopy(
+                [
+                    m
+                    for g in pending
+                    for m in g
+                    if m.get("role") == "tool"
+                    or (m.get("role") == "assistant" and m.get("tool_calls"))
+                ]
+            )
+            if self.compaction_enabled
+            else []
+        )
+        return self._fit_protocol(
+            system, list(self._requests), summary, pending, attachments or ()
+        )

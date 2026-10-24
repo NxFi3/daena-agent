@@ -1,6 +1,7 @@
 """Exercise the installed wheel outside the source checkout, without inference."""
 
 import json
+import os
 from pathlib import Path
 import time
 from tempfile import TemporaryDirectory
@@ -54,6 +55,7 @@ class Model:
 
 app = QApplication([])
 with TemporaryDirectory() as directory:
+    os.environ["XDG_DATA_HOME"] = str(Path(directory) / "user-data")
     window = StudioWindow(directory)
     model = Model()
     window.agent_factory = lambda c: Agent(c, llm=model)
