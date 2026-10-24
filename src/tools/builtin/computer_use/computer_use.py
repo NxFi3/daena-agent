@@ -175,6 +175,10 @@ class ComputerUseTool(Tool):
 
     def _choose_window(self, request):
         windows = self.backend.windows(self.session)
+        if not windows and request.get("scope") != "desktop":
+            blocker = getattr(self.backend, "empty_window_error", None)
+            if callable(blocker):
+                blocker()
         if request.get("scope") == "desktop":
             if any(k in request for k in ("pid", "window_id", "app", "window_title")):
                 raise ComputerError(
@@ -710,6 +714,10 @@ class ComputerUseTool(Tool):
                 )
             if action in {"list_windows", "list_apps"}:
                 windows = self.backend.windows(self.session)
+                if not windows:
+                    blocker = getattr(self.backend, "empty_window_error", None)
+                    if callable(blocker):
+                        blocker()
                 return self._result(
                     True,
                     {
@@ -718,7 +726,7 @@ class ComputerUseTool(Tool):
                         "scope": "currently_open_windows",
                         "backend": self.backend.name,
                         "window_diagnostics": getattr(self.backend, "window_diagnostics", {}),
-                        "next_step": "Capture an observed window_id. An empty list means no eligible windows were found by this backend; it does not establish that an application is absent or uninstalled. Use doctor to check display/session support. Native Wayland windows may be invisible to X11. list_apps is an alias for open windows, not installed applications. Only launch a known executable; do not guess app names or installation paths.",
+                        "next_step": "Capture an observed window_id. An empty list means no eligible windows were found by this backend; it does not establish that an application is absent or uninstalled. Use doctor and window_diagnostics to check the actual display session and identity exclusions. list_apps is an alias for open windows, not installed applications. Only launch a known executable; do not guess app names or installation paths.",
                     },
                     "Listed visible native windows.",
                 )
@@ -828,6 +836,9 @@ class ComputerUseTool(Tool):
                 content["recovery"] = (
                     "Correct the named argument. No recapture is needed solely for an argument error."
                 )
+            elif exc.code == "native_wayland_unavailable":
+                content["retry_requires_setup_change"] = True
+                content["recovery"] = "Host display setup is required. This X11 backend lacks native Wayland access. Explain the blocker; do not claim the user's app is absent, install substitutes, or repeat capture before setup changes."
             elif exc.code == "window_ambiguous":
                 content["recovery"] = (
                     "Choose the intended window_id from the returned windows. Do not choose an unrelated application to satisfy the argument."
@@ -1004,7 +1015,10 @@ class ComputerUseTool(Tool):
                 else "not_dispatched"
             )
             details = {}
-            if getattr(exc, "code", None) == "invalid_arguments":
+            if getattr(exc, "code", None) == "native_wayland_unavailable":
+                details["recovery"] = "Host display setup is required. Explain the backend/session blocker to the user. Do not infer app absence or install substitute applications; changing the backend environment variable alone does not switch the desktop session."
+                details["retry_requires_setup_change"] = True
+            elif getattr(exc, "code", None) == "invalid_arguments":
                 details["recovery"] = (
                     "Correct the named argument; this is not a backend capability failure."
                 )

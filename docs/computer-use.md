@@ -164,3 +164,21 @@ uninstalled. Native Wayland windows can be invisible to an X11 connection;
 a supported native backend or an X11 desktop session. The `desktop-control`
 builtin skill describes discovery, identity selection, input and verification
 without assuming an application's executable name or installation path.
+
+### Native Wayland is a host capability boundary
+
+`DAENA_COMPUTER_BACKEND=x11` selects the X11 adapter; it does not switch a Wayland
+login session into Xorg. In a Wayland session, `DISPLAY` normally points at
+Xwayland, which exposes only X11 clients. Native Wayland windows remain outside
+this backend's control. An empty inventory now reports
+`native_wayland_unavailable` with `retry_requires_setup_change`, rather than
+suggesting the user's application is missing. Whole-desktop capture is rejected
+because an Xwayland root image is not the Wayland compositor's desktop.
+Explicitly selected Xwayland clients remain usable.
+
+For the tested native X11 path, save your work, log out, choose an X11/Xorg
+session in the login screen if your desktop provides one, then restart Daena.
+Check `XDG_SESSION_TYPE` in that session. Alternatively use a native backend
+that explicitly supports your compositor; this update does not implement a
+Wayland RemoteDesktop portal backend. The model should report this limitation
+instead of installing replacement applications or inventing terminal commands.

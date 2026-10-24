@@ -19,6 +19,18 @@ from .runtime import ComputerError, checkpoint
 class X11Backend:
     name = "x11"
 
+    @staticmethod
+    def _wayland_session():
+        session = os.environ.get("XDG_SESSION_TYPE", "").lower()
+        return session == "wayland" or (session not in {"x11", "tty"} and bool(os.environ.get("WAYLAND_DISPLAY")))
+
+    def empty_window_error(self):
+        if self._wayland_session():
+            raise ComputerError(
+                "native_wayland_unavailable",
+                "This X11 backend cannot enumerate or control native Wayland windows. No eligible Xwayland windows were found; this does not mean the user's app is closed or uninstalled. Installing another app or retrying capture will not add native Wayland support. Use a supported native Wayland backend, or log out and select an X11/Xorg desktop session before restarting Daena. Setting DAENA_COMPUTER_BACKEND=x11 does not change the desktop session.",
+            )
+
     def preflight(self, action, arguments):
         if not shutil.which("xdotool"):
             raise ComputerError("dependency_missing", "Install xdotool for X11 input. Window discovery and screenshots remain available.")
@@ -32,7 +44,7 @@ class X11Backend:
         if not os.environ.get("DISPLAY"):
             raise ComputerError(
                 "display_missing",
-                "X11 requires DISPLAY. Use Cua Driver for native Wayland.",
+                "X11 requires DISPLAY. Native Wayland requires a backend that supports your compositor or an X11/Xorg login session.",
             )
         try:
             from Xlib.display import Display
@@ -80,7 +92,7 @@ class X11Backend:
             handles = [display.create_resource_object("window", int(i))
                        for i in listing.value] if listing is not None else []
             self.window_diagnostics = {
-                "scope": "X11-visible clients only; native Wayland windows are not visible here",
+                "scope": "Xwayland clients only" if self._wayland_session() else "X11 clients",
                 "session_type": os.environ.get("XDG_SESSION_TYPE", "unknown"),
                 "wayland_display_configured": bool(os.environ.get("WAYLAND_DISPLAY")),
                 "missing_identity": 0,
@@ -154,6 +166,11 @@ class X11Backend:
         from Xlib import X
         from Xlib.display import Display
 
+        if window is None and self._wayland_session():
+            raise ComputerError(
+                "native_wayland_unavailable",
+                "An Xwayland root screenshot is not a capture of the Wayland desktop. Use a supported native capture backend or an X11/Xorg desktop session. An explicitly selected Xwayland window can still be captured.",
+            )
         if not pixels:
             raise ComputerError(
                 "unsupported",
@@ -371,13 +388,21 @@ class X11Backend:
             "backend": self.name,
             "installed": bool(shutil.which("xdotool")),
             "display_configured": bool(os.environ.get("DISPLAY")),
+            "native_desktop_supported": not self._wayland_session(),
+            "whole_desktop_capture_supported": not self._wayland_session(),
+            "window_scope": "Xwayland clients only" if self._wayland_session() else "X11 clients",
+            "changing_backend_changes_desktop_session": False,
             "accessibility": False,
             "background_input": False,
             "pointer_move": True,
             "session_type": os.environ.get("XDG_SESSION_TYPE", "unknown"),
             "wayland_display_configured": bool(os.environ.get("WAYLAND_DISPLAY")),
             "window_diagnostics": getattr(self, "window_diagnostics", {}),
-            "next_step": "Select foreground delivery explicitly. An empty X11 window list does not prove no applications are open or installed. Native Wayland windows require a supported native backend or an X11 desktop session.",
+            "next_step": (
+                "Native Wayland control is unsupported by this X11 backend. Select a supported native backend or log out and select an X11/Xorg desktop session; an environment variable does not change the login session."
+                if self._wayland_session()
+                else "Select foreground delivery explicitly. Read the actual session_type and window_diagnostics; an empty list does not prove no apps are open or installed."
+            ),
         }
 
     launch = CuaBackend.launch
