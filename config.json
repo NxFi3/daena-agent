@@ -44,7 +44,9 @@
       "task_finish",
       "web_fetch",
       "web_search",
-      "computer_use"
+      "computer_use",
+      "browser_use",
+      "tool_search"
     ]
   },
   "models": {
@@ -75,5 +77,10 @@
   "runtime": {
     "completion_protocol": "implicit",
     "generation_retries": 2
+  },
+  "browser": {
+    "headless": false,
+    "executable_path": "",
+    "cdp_url": ""
   }
 }

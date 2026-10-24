@@ -106,7 +106,7 @@ def test_disabled_skills_cannot_be_called_directly(tmp_path):
 def test_builtin_skills_are_valid(tmp_path):
     skills = SkillRegistry()
     skills.set_workspace(str(tmp_path))
-    assert len(skills.list()) == 6
+    assert len(skills.list()) == 7
     assert not skills.warnings
 
 

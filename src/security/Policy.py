@@ -45,6 +45,7 @@ DEFAULT_ALLOWED_TOOLS = {
     "task_finish",
     "make_directory",
     "computer_use",
+    "browser_use",
     "context_search",
     "edit_file",
     "explore",
@@ -162,7 +163,7 @@ class SecurityPolicy:
         if name == "command_exec":
             return self._check_command(args, sandbox)
 
-        if name in {"web_search", "web_fetch"}:
+        if name in {"web_search", "web_fetch", "browser_use"}:
             if not self.allow_network_tools:
                 return SecurityDecision(
                     False,

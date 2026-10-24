@@ -64,12 +64,22 @@ class ToolManager:
         if callable(set_workspace):
             set_workspace(directory)
 
-    def close(self) -> None:
-        """Release runtime-owned resources, including managed processes."""
+    def finish_run(self) -> None:
+        """Release task resources while preserving conversation-owned browser state."""
         try:
             self.process_manager.close()
         finally:
             self.subagents.close()
+
+    def close(self) -> None:
+        """Release all task and conversation resources."""
+        try:
+            self.finish_run()
+        finally:
+            for tool in self.toolregistry.tools.values():
+                closer = getattr(tool, "close", None)
+                if callable(closer):
+                    closer()
 
     def approve_background_command(
         self,
@@ -101,6 +111,9 @@ class ToolManager:
         """Inject runtime-owned services into discovered tool instances."""
         self.process_manager.stop_event = self.stop_event
         for tool in self.toolregistry.tools.values():
+            config_setter = getattr(tool, "set_runtime_config", None)
+            if callable(config_setter):
+                config_setter(self.config)
             if hasattr(tool, "skill_registry"):
                 tool.skill_registry = self.skills
             if hasattr(tool, "subagent_manager"):
@@ -148,7 +161,7 @@ class ToolManager:
             name = str(function.get("name", "")).strip().lower()
             if not name or name not in allowed:
                 continue
-            if name in {"web_search", "web_fetch"} and not network_allowed:
+            if name in {"web_search", "web_fetch", "browser_use"} and not network_allowed:
                 continue
             if name in {"skill_list", "skill_read"} and not self.skills.enabled:
                 continue

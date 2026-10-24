@@ -50,7 +50,8 @@ class ComputerUseTool(Tool):
         "label (optionally label+role); use screenshot coordinates when the target is visually clear. Coordinates are native "
         "pixels in the returned frame, never scaled preview pixels. Zoom returns a crop with an explicit mapping to native pixels. "
         "Every input consumes its snapshot and normally returns a new one. Review that observation before the next action. "
-        "For opening a URL in the selected browser, use navigate(url=..., delivery_mode='foreground') instead of finding/clicking its address bar. "
+        "For web pages, prefer browser_use.open(url), which launches its own browser. Desktop navigate only sends shortcuts to an already selected browser window; it cannot open a browser or navigate a terminal/file manager. "
+        "If controlling an existing native browser, capture its window first, then navigate(snapshot_id=..., url=..., delivery_mode='foreground'). launch requires app: an executable name/path. "
         "type sends literal text to the focused field. A successful focus click can be followed by type or key using the returned snapshot; another focus click is unnecessary. "
         "An explicit delivery_mode persists for the same session/window. inspect searches/pages an existing snapshot without another screenshot. "
         "Ambiguous targets return candidate IDs; choose among those without repeating the same label. "
@@ -698,7 +699,12 @@ class ComputerUseTool(Tool):
                 windows = self.backend.windows(self.session)
                 return self._result(
                     True,
-                    {"action": action, "windows": [w.public() for w in windows]},
+                    {
+                        "action": action,
+                        "windows": [w.public() for w in windows],
+                        "scope": "currently_open_windows",
+                        "next_step": "Capture the intended window_id. If the needed app is absent, launch(app=executable); for websites use browser_use.open(url). list_apps is an alias for open windows, not installed applications.",
+                    },
                     "Listed visible native windows.",
                 )
             if action in INPUT_ACTIONS:
@@ -744,10 +750,10 @@ class ComputerUseTool(Tool):
                     "Zoomed the existing screenshot. Use the provided mapping for native input coordinates.",
                 )
             if action == "launch":
-                if not request.get("app") or not hasattr(self.backend, "launch"):
+                if not hasattr(self.backend, "launch"):
                     raise ComputerError(
                         "unsupported",
-                        "launch requires an executable and a backend that supports launching.",
+                        "This backend does not support application launch. Use command_exec with an executable or browser_use.open(url) for web pages.",
                     )
                 self._advance_revision()
                 data = self.backend.launch(request["app"])
@@ -802,6 +808,22 @@ class ComputerUseTool(Tool):
                     snapshot_id=snapshot["snapshot_id"],
                     snapshot_consumed=snapshot.get("consumed", False),
                     delivery_mode=snapshot.get("delivery_mode", "background"),
+                )
+            if exc.code == "invalid_arguments":
+                content["recovery"] = (
+                    "Correct the named argument. No recapture is needed solely for an argument error."
+                )
+            elif exc.code == "window_ambiguous":
+                content["recovery"] = (
+                    "Choose the intended window_id from the returned windows. Do not choose an unrelated application to satisfy the argument."
+                )
+            elif (
+                exc.code == "stale_snapshot"
+                and snapshot
+                and not snapshot.get("consumed")
+            ):
+                content["recovery"] = (
+                    "Supply the snapshot_id returned here only if it is the intended application and observed frame. Otherwise capture the intended window first."
                 )
             return self._result(False, content, f"{action}: {exc.code}: {exc}")
 
@@ -966,6 +988,21 @@ class ComputerUseTool(Tool):
                 if getattr(exc, "dispatched", False)
                 else "not_dispatched"
             )
+            details = {}
+            if getattr(exc, "code", None) == "invalid_arguments":
+                details["recovery"] = (
+                    "Correct the named argument; this is not a backend capability failure."
+                )
+            elif getattr(exc, "code", None) == "stale_snapshot":
+                snapshot = self._state().get("snapshot", {})
+                if snapshot:
+                    details.update(
+                        snapshot_id=snapshot.get("snapshot_id"),
+                        snapshot_consumed=snapshot.get("consumed", False),
+                    )
+                details["recovery"] = (
+                    "Input requires the snapshot_id from your observation of the intended application. Use browser_use.open(url) when no browser window is open; never navigate an unrelated terminal or file manager."
+                )
             return self._result(
                 False,
                 {
@@ -975,6 +1012,7 @@ class ComputerUseTool(Tool):
                         "code": getattr(exc, "code", "runtime_error"),
                         "message": str(exc),
                     },
+                    **details,
                 },
                 f"{action}: {exc}",
             )

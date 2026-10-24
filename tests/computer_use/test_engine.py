@@ -9,6 +9,24 @@ from src.tools.builtin.computer_use.runtime import ComputerError
 from tests.computer_use.conftest import capture
 
 
+def test_missing_launch_app_is_an_argument_error_not_unsupported(engine):
+    tool, backend = engine
+    result = tool.execute("launch")
+    assert result.content["error"]["code"] == "invalid_arguments"
+    assert "app" in result.content["error"]["message"]
+    assert "argument" in result.content["recovery"]
+    assert not backend.calls
+
+
+def test_missing_snapshot_reports_existing_id_without_dispatch(engine):
+    tool, backend = engine
+    sid = capture(tool)
+    result = tool.execute("navigate", url="https://example.org")
+    assert not result.success
+    assert result.content["snapshot_id"] == sid
+    assert not backend.calls
+
+
 def test_exact_labels_and_native_tokens(engine):
     tool, backend = engine
     sid = capture(tool)

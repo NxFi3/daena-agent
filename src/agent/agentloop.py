@@ -415,9 +415,9 @@ class Loop:
         state["active_process_ids"] = sorted(self._active_process_ids)
         builder = self.context.contextbuilder
         builder.stop_event = self._stop_event
-        from src.tools.builtin.computer_use.integration import desktop_messages
+        from src.tools.builtin.browser_use.integration import interaction_messages
 
-        attachments = desktop_messages(self, names)
+        attachments = interaction_messages(self, names)
         messages = self.context.get_context(
             session_id=self.session_id,
             user_task=user_task,
@@ -512,7 +512,7 @@ class Loop:
     ):
         if not isinstance(user_task, ContextEvent):
             raise TypeError("user_task must be a ContextEvent")
-        self.tool.close()
+        self.tool.finish_run()
         self._reset_run_state()
         self._stop_event = stop_event if stop_event is not None else Event()
         self._event_sink = event_sink
@@ -612,7 +612,7 @@ class Loop:
                 self.metrics["generation_failures"] += 1
             return self._stopped_result(f"{type(exc).__name__}: {exc}")
         finally:
-            self.tool.close()
+            self.tool.finish_run()
 
     def set_workspace(self, workspace_directory):
         self.tool.set_workspace(workspace_directory)

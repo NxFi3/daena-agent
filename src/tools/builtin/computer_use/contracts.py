@@ -293,6 +293,11 @@ def validate_request(request, *, sequence_step=False):
 
     finite(request)
     action = request["action"]
+    if action == "launch" and not request.get("app", "").strip():
+        raise ComputerError(
+            "invalid_arguments",
+            "launch requires app: an executable name or absolute path, for example app='firefox'. Use browser_use.open(url) for managed website browsing.",
+        )
     if (
         action in INPUT_ACTIONS | {"sequence", "navigate", "zoom", "inspect"}
         and not sequence_step

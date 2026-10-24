@@ -27,6 +27,7 @@ retrieval = ["sentence-transformers>=3,<6"]
 dev = ["pytest>=8,<10", "ruff>=0.9,<1", "build>=1,<2"]
 desktop = ["PySide6>=6.8,<7"]
 computer-x11 = ["python-xlib>=0.33,<1"]
+browser = ["playwright>=1.56,<2"]
 
 [project.scripts]
 daena = "cli.app:main"

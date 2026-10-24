@@ -190,8 +190,12 @@ def test_graph_reports_real_worker_and_integrated_files(window, tmp_path):
 def test_settings_persist_tool_scope_and_generation_options(window):
     settings = window.settings
     settings.image_reserve.setValue(3072)
+    settings.browser_headless.setChecked(True)
+    settings.browser_executable.setText("/usr/bin/chromium")
     settings.select_tools(False)
     settings.apply_form()
+    assert settings.value()["browser"]["headless"] is True
+    assert settings.value()["browser"]["executable_path"] == "/usr/bin/chromium"
     saved = json.loads(window.store.profile.read_text())
     assert saved["security"]["allowed_tools"] == []
     assert saved["context"]["image_token_reserve"] == 3072

@@ -29,6 +29,10 @@ Use `python -m cli --version` to check which source version is running.
 For desktop control, image/context handling, native backend setup and update
 instructions, see [Computer Use](docs/computer-use.md).
 
+For interactive websites, the separate [Browser Use](docs/browser-use.md) tool
+launches Chromium and controls real tabs, DOM elements, forms, frames and downloads.
+Install the `browser` extra and run `python -m playwright install chromium`.
+
 ```bash
 python -m pip install -e '.[desktop,ollama,openrouter,gemini,web]'
 daena-studio --cwd /path/to/project

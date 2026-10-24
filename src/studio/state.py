@@ -21,6 +21,11 @@ def default_config():
 def validate_config(value):
     if not isinstance(value, dict):
         raise ValueError("Configuration must be a JSON object")
+    from src.tools.builtin.browser_use.contracts import (
+        validate_config as validate_browser,
+    )
+
+    validate_browser(value.get("browser", {}))
     for section in (
         "llm",
         "context",

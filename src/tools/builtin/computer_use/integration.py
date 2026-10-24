@@ -66,6 +66,8 @@ def observation_message(observation, provider, workspace):
 
 
 def remember_result(loop, call, result):
+    if call.name in {"browser_use", "computer_use"}:
+        loop._active_ui_tool = call.name
     # Zoom is a view of the current snapshot. Retain its mapping until another
     # observation supersedes it; unrelated tool calls/errors do not erase vision.
     if (
