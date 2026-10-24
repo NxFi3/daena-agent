@@ -186,9 +186,9 @@ class BrowserUseTool(Tool):
                         "error_code": code,
                     }
                     data["observation"] = observation
-                if code == "browser_error" and session.context is None:
+                if session.context is None:
                     data["recovery"] = (
-                        "Check browser.executable_path/headless in Settings and install Chromium with python -m playwright install chromium. Use doctor for setup status."
+                        "The browser has not started. observe cannot recover this state. Use doctor to inspect installation and executable_path; resolve the reported startup error, then call open(url)."
                     )
                 return self._result(False, request["action"], data)
 

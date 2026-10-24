@@ -81,7 +81,6 @@ class Loop:
     def _reset_run_state(self):
         self.agent_state.reset()
         self.working_set.reset()
-        self.tool.reset_tool_selection()
         self._plan_active_this_run = False
         self._finish_request = None
         self._active_process_ids = set()
@@ -464,6 +463,11 @@ class Loop:
             raise TypeError("Provider must return LLMResult")
         self.metrics["tokens"] += max(0, int(result.usage or 0))
         self.context.calibrate(result)
+        if not result.tool_calls and not str(result.response or "").strip():
+            raise RecoverableGenerationError(
+                "Provider returned no text or tool calls",
+                recovery_hint="The previous generation contained no usable answer or tool call. No action was executed. Continue with a valid tool call or a user-visible response.",
+            )
         return result
 
     def _finish(self, result, completed, reason="", outcome=None, evidence=None):

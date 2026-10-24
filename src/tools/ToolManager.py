@@ -313,8 +313,14 @@ class ToolManager:
             if score > 0:
                 scored.append((score, definition))
 
+        query_words = " " + " ".join(self._search_tokens(query)) + " "
+        def explicit_name(definition):
+            name = str(definition.get("function", {}).get("name", ""))
+            return " " + " ".join(self._search_tokens(name.replace("_", " "))) + " " in query_words
+
         scored.sort(
             key=lambda item: (
+                not explicit_name(item[1]),
                 -item[0],
                 str((item[1].get("function") or {}).get("name", "")),
             )

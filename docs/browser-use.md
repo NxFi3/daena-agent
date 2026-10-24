@@ -17,6 +17,13 @@ python -m playwright install chromium
 daena-studio
 ```
 
+With an empty `browser.executable_path`, Daena uses the Playwright browser when
+available, otherwise an installed Chrome/Chromium/Edge executable. It does not
+download a browser automatically. An explicitly configured missing executable is
+reported instead of silently selecting another browser. `browser_use(action="doctor")`
+reports the selected path and source. If the Playwright download is unavailable
+in your location but Chrome is installed, leave the path empty and retry `open`.
+
 On Linux, if Chromium reports missing system libraries, install them with
 `python -m playwright install --with-deps chromium` (system-package installation
 may require administrator access). Alternatively choose an installed Chromium

@@ -11,6 +11,7 @@ import uuid
 
 from .contracts import BrowserError
 from .dom import COLLECT
+from .executable import resolve_executable
 
 
 class BrowserSession:
@@ -64,8 +65,12 @@ class BrowserSession:
                     viewport=None,
                     timeout=15000,
                 )
-                if self.config.get("executable_path"):
-                    options["executable_path"] = self.config["executable_path"]
+                executable, source = resolve_executable(self.config, self.pw.chromium.executable_path)
+                # Let Playwright choose its bundled headed/headless variant.
+                if source != "playwright":
+                    options["executable_path"] = executable
+                self.executable = executable
+                self.executable_source = source
                 self.context = await self.pw.chromium.launch_persistent_context(
                     str(self.root / "profile"), **options
                 )
@@ -304,7 +309,20 @@ class BrowserSession:
         action = request["action"]
         self.delivery = "not_sent"
         if action == "doctor":
+            executable = source = error = None
+            try:
+                bundled = self.pw.chromium.executable_path if self.pw else None
+                if bundled is None and importlib.util.find_spec("playwright") is not None:
+                    from playwright.async_api import async_playwright
+                    async with async_playwright() as probe:
+                        bundled = probe.chromium.executable_path
+                executable, source = resolve_executable(self.config, bundled)
+            except BrowserError as exc:
+                error = str(exc)
             return dict(
+                executable_path=executable,
+                executable_source=source,
+                executable_error=error,
                 playwright_installed=importlib.util.find_spec("playwright") is not None,
                 running=self.context is not None,
                 headed=not self.config.get("headless", False),

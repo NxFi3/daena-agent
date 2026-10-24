@@ -242,3 +242,23 @@ def test_cancel_pending_click_aborts_driver_work_before_next_action(browser, web
     assert (
         "Browser workbench" in ok(browser, "open", url=website)["observation"]["text"]
     )
+
+
+def test_system_chrome_fallback_without_playwright_browser_download(browser, website, monkeypatch):
+    import os
+    from src.tools.builtin.browser_use import executable
+    installed = os.environ.get('DAENA_TEST_CHROMIUM')
+    if not installed:
+        pytest.skip('Requires a separately installed Chromium executable')
+    browser.set_runtime_config({'browser': {'headless': True}})
+    original = executable.resolve_executable
+    # Simulate an absent Playwright download with an installed system browser.
+    monkeypatch.setattr('shutil.which', lambda name: installed if name == 'google-chrome-stable' else None)
+    monkeypatch.setattr('src.tools.builtin.browser_use.engine.resolve_executable', lambda config, bundled=None: original(config, '/nonexistent/playwright/chrome'))
+    data = ok(browser, 'open', url=website)
+    assert 'Ready' in data['observation']['text']
+    diagnostic = ok(browser, 'doctor')
+    assert diagnostic['executable_source'] == 'system'
+    ok(browser, 'fill', target={'label':'Phone'}, text='09120000000')
+    data = ok(browser, 'click', target={'role':'button','name':'Send code'})
+    assert 'Code sent' in data['observation']['text']
