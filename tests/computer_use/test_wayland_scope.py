@@ -22,6 +22,8 @@ def test_wayland_blocker_is_not_reported_as_missing_application(tmp_path, monkey
     assert not report["native_desktop_supported"]
     assert not report["whole_desktop_capture_supported"]
     assert report["window_scope"] == "Xwayland clients only"
+    import sys
+    monkeypatch.setitem(sys.modules, "Xlib", None)
     with pytest.raises(ComputerError, match="not a capture of the Wayland desktop"):
         backend.capture("test", None, tmp_path / "must-not-exist.png")
     assert not (tmp_path / "must-not-exist.png").exists()

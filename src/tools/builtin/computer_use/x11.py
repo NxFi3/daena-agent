@@ -163,14 +163,14 @@ class X11Backend:
         return rows
 
     def capture(self, session, window, output, *, pixels=True, accessibility=True):
-        from Xlib import X
-        from Xlib.display import Display
-
         if window is None and self._wayland_session():
             raise ComputerError(
                 "native_wayland_unavailable",
                 "An Xwayland root screenshot is not a capture of the Wayland desktop. Use a supported native capture backend or an X11/Xorg desktop session. An explicitly selected Xwayland window can still be captured.",
             )
+        from Xlib import X
+        from Xlib.display import Display
+
         if not pixels:
             raise ComputerError(
                 "unsupported",
