@@ -57,9 +57,9 @@ class EditFile(Tool):
         if raw.startswith(b"\xef\xbb\xbf"):
             return raw.decode("utf-8-sig"), "utf-8-sig"
         if raw.startswith(b"\xff\xfe"):
-            return raw.decode("utf-16"), "utf-16"
+            return raw[2:].decode("utf-16-le"), "utf-16-le"
         if raw.startswith(b"\xfe\xff"):
-            return raw.decode("utf-16"), "utf-16"
+            return raw[2:].decode("utf-16-be"), "utf-16-be"
         return raw.decode("utf-8"), "utf-8"
 
     @staticmethod
@@ -162,6 +162,8 @@ class EditFile(Tool):
         diff_preview = diff[:3000]
         mode = stat.S_IMODE(path.stat().st_mode)
         payload = updated.encode(encoding)
+        if encoding in {"utf-16-le", "utf-16-be"}:
+            payload = raw[:2] + payload
         temporary: str | None = None
         try:
             fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))

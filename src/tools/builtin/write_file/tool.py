@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import stat
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -130,6 +131,7 @@ class WriteFile(Tool):
         temp_path: Path | None = None
 
         try:
+            mode = stat.S_IMODE(path.stat().st_mode) if overwrite and path.exists() else None
             with tempfile.NamedTemporaryFile(
                 mode="wb",
                 dir=parent,
@@ -143,6 +145,8 @@ class WriteFile(Tool):
                 os.fsync(handle.fileno())
 
             if overwrite:
+                if mode is not None:
+                    os.chmod(temp_path, mode)
                 os.replace(temp_path, path)
                 temp_path = None
             else:

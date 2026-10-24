@@ -1,5 +1,7 @@
 """Attach one current desktop observation before context budgeting/provider encoding."""
 
+from src.engine.runtime_config import provider_name
+
 import base64
 import json
 from pathlib import Path
@@ -97,7 +99,7 @@ def desktop_messages(loop, available_tools):
     return [
         observation_message(
             observation,
-            loop.config.get("llm", {}).get("provider", "ollama"),
+            provider_name(getattr(loop, "llm", None), loop.config),
             tool.workspace_root,
         )
     ]

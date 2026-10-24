@@ -1,5 +1,7 @@
 """Pin one compact current browser observation; screenshots are explicitly requested."""
 
+from src.engine.runtime_config import provider_name
+
 import base64
 import json
 from pathlib import Path
@@ -33,7 +35,7 @@ def browser_messages(loop, available_tools):
         + fit_json(observation, 12000),
     }
     if encoded:
-        provider = loop.config.get("llm", {}).get("provider", "ollama")
+        provider = provider_name(getattr(loop, "llm", None), loop.config)
         if provider == "ollama":
             message["images"] = [encoded]
         elif provider in {"openrouter", "openai"}:

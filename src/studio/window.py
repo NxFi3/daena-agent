@@ -1370,10 +1370,10 @@ class StudioWindow(QMainWindow):
             if answer != QMessageBox.Yes:
                 return
             active = str(self.session_id) == str(session_id)
-            deleted = self.store.delete_session(session_id)
-            self.refresh_history()
             if active:
                 self.new_session()
+            deleted = self.store.delete_session(session_id)
+            self.refresh_history()
             self.state_label.setText(
                 f"Deleted conversation · {deleted} archived turn{'s' if deleted != 1 else ''} removed"
             )
@@ -1392,7 +1392,7 @@ class StudioWindow(QMainWindow):
             title = title.strip()[:160]
             if not accepted or not title:
                 return
-            for path, run in self.store.runs():
+            for path, run in self.store.runs(limit=None):
                 if run["session_id"] == selected["session_id"]:
                     run["title"] = title
                     write_json(path, run)
@@ -1408,28 +1408,38 @@ class StudioWindow(QMainWindow):
             run = json.loads(Path(item.data(Qt.UserRole)).read_text())
             turns = [
                 data
-                for _, data in reversed(self.store.runs())
+                for _, data in reversed(self.store.runs(limit=None))
                 if data["session_id"] == run["session_id"]
             ]
+            session_id = UUID(run["session_id"])
+            original_workspace = Path(run.get("workspace") or self.workspace).resolve()
+            if not original_workspace.is_dir():
+                raise ValueError(
+                    f"Conversation workspace is unavailable: {original_workspace}"
+                )
+            changed_workspace = original_workspace != self.workspace
+            if changed_workspace:
+                if not self.automation.flush_draft():
+                    return
+                store = StudioStore(original_workspace)
+                config = store.load_config()
             self.new_session()
-            self.session_id = UUID(run["session_id"])
+            self.session_id = session_id
             self.last_prompt = run["title"]
-            # Restore the project that originally owned this conversation.
-            original_workspace = run.get("workspace")
-            if (
-                original_workspace
-                and Path(original_workspace).is_dir()
-                and Path(original_workspace).resolve() != self.workspace
-            ):
-                self.workspace = Path(original_workspace).resolve()
-                self.store = StudioStore(self.workspace)
+            if changed_workspace:
+                self.workspace = original_workspace
+                self.store = store
+                self.config = config
                 self.workspace_edit.setText(str(self.workspace))
                 self.workspace_edit.setToolTip(str(self.workspace))
                 self.workspace_button.setToolTip(f"Change workspace\n{self.workspace}")
+                self.settings.populate(config)
                 self.automation.set_draft_path(
                     self.store.root / "automation-draft.json"
                 )
                 self.skills.refresh()
+                self._update_badge()
+                self._apply_appearance()
             self._result = {"metrics": run["metrics"]}
             self.graph.upsert(
                 "parent",

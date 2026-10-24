@@ -6,6 +6,7 @@ from pathlib import Path
 
 SKIP_DIRECTORIES = frozenset({
     ".git",
+    ".daena",
     "__pycache__",
     ".venv",
     "venv",

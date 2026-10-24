@@ -276,3 +276,15 @@ def test_real_agent_loop_sees_current_state_on_each_action_without_image_history
             "data:image" in str(e.content) or '"images"' in str(e.content)
             for e in events
         )
+
+
+def test_desktop_image_adapter_follows_runtime_provider_switch(engine):
+    tool, _ = engine
+    capture(tool)
+    loop = loop_for(tool, 'ollama')
+    loop.llm = SimpleNamespace(provider_name='openrouter')
+    message = desktop_messages(loop, {'computer_use'})[0]
+    assert message['content'][1]['type'] == 'image_url'
+    assert 'images' not in message
+    loop.llm.provider_name = 'gemini'
+    assert desktop_messages(loop, {'computer_use'})[0]['computer_image']

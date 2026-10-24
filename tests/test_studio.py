@@ -304,3 +304,41 @@ def test_profile_validation_rejects_bad_limits_and_preserves_empty_tool_scopes()
                 "security": {"allowed_tools": []},
             }
         )
+
+
+def test_open_history_restores_original_workspace_profile(window, tmp_path):
+    from uuid import uuid4
+
+    other = tmp_path / "other"
+    other.mkdir()
+    store = StudioStore(other)
+    config = default_config()
+    config["llm"]["provider"] = "gemini"
+    config["llm"]["provider_config"]["model_name"] = "workspace-model"
+    store.save_config(config)
+    session = uuid4()
+    store.save_run(session, "Other workspace", [], {"completed": True})
+    window.refresh_history()
+    window.open_history(window.history.item(0))
+    assert window.workspace == other
+    assert window.config == config
+    assert window.session_id == session
+    assert window.workspace_edit.text() == str(other)
+
+
+def test_open_history_missing_workspace_preserves_current_conversation(
+    window, tmp_path
+):
+    from uuid import uuid4
+    import shutil
+
+    other = tmp_path / "removed"
+    other.mkdir()
+    store = StudioStore(other)
+    store.save_run(uuid4(), "Missing workspace", [], {"completed": True})
+    shutil.rmtree(other)
+    before = window.session_id
+    window.refresh_history()
+    window.open_history(window.history.item(0))
+    assert window.session_id == before and window.workspace == tmp_path
+    assert "unavailable" in window._errors.pop()

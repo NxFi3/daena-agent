@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import atexit
+import codecs
 import errno
 import os
 import signal
@@ -11,6 +12,33 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO
+
+
+class _OutputSpool:
+    """Independent file descriptions: reading must never seek the child's writer."""
+
+    def __init__(self):
+        self._directory = tempfile.TemporaryDirectory(prefix="daena-process-")
+        path = Path(self._directory.name) / "output"
+        self._writer = path.open("w+b", buffering=0)
+        self._reader = path.open("rb", buffering=0)
+
+    def __getattr__(self, name):
+        return getattr(self._writer, name)
+
+    def read_at(self, offset, size):
+        self._reader.seek(offset)
+        return self._reader.read(size)
+
+    def close(self):
+        try:
+            self._reader.close()
+            self._writer.close()
+        finally:
+            self._directory.cleanup()
+
+    def __del__(self):
+        self.close()
 
 
 @dataclass
@@ -127,8 +155,8 @@ class ProcessManager:
                 background=background,
             )
 
-        stdout_file = tempfile.TemporaryFile(mode="w+b")
-        stderr_file = tempfile.TemporaryFile(mode="w+b")
+        stdout_file = _OutputSpool()
+        stderr_file = _OutputSpool()
 
         try:
             process = self._spawn(
@@ -146,34 +174,6 @@ class ProcessManager:
         started = time.perf_counter()
 
         self._wait_process(process, yield_time_ms)
-
-        if process.poll() is not None:
-            entry = ManagedProcess(
-                process_id="",
-                command=list(command),
-                workdir=workdir,
-                process=process,
-                stdout_file=stdout_file,
-                stderr_file=stderr_file,
-                started_at=started,
-                pipe_stdin=pipe_stdin,
-                background=background,
-                status="exited",
-                exit_code=process.returncode,
-            )
-            output = self._read_incremental(entry, max_output_chars)
-            stdout_file.close()
-            stderr_file.close()
-            return {
-                "status": "exited",
-                "process_id": None,
-                "pid": process.pid,
-                "exit_code": process.returncode,
-                "background": background,
-                "stdout": output["stdout"],
-                "stderr": output["stderr"],
-                "duration_ms": self._duration_ms(started),
-            }
 
         process_id = f"proc-{os.urandom(6).hex()}"
 
@@ -201,17 +201,14 @@ class ProcessManager:
             output = self._read_incremental(entry, max_output_chars)
             self._prune_finished_locked()
 
-        return {
-            "status": entry.status,
-            "command": list(entry.command),
-            "workdir": str(entry.workdir) if entry.workdir is not None else None,
-            "process_id": entry.process_id,
-            "pid": entry.process.pid,
-            "exit_code": entry.exit_code,
-            "stdout": output["stdout"],
-            "stderr": output["stderr"],
-            "duration_ms": self._duration_ms(started),
-        }
+        result = self._entry_result(entry, output)
+        if entry.status != "running" and not result["output_pending"]:
+            with self._lock:
+                self._processes.pop(entry.process_id, None)
+            stdout_file.close()
+            stderr_file.close()
+            result["process_id"] = None
+        return result
 
     def poll(
         self,
@@ -363,7 +360,7 @@ class ProcessManager:
 
             return self._entry_result(entry, output)
 
-    def close(self) -> None:
+    def close(self, *, discard_output: bool = False) -> None:
         with self._lock:
             for entry in list(self._processes.values()):
                 if entry.status == "running":
@@ -371,6 +368,16 @@ class ProcessManager:
                     self._refresh_locked(entry)
 
             self._prune_finished_locked()
+            if discard_output:
+                for entry in self._processes.values():
+                    if entry.pty_reader_thread is not None:
+                        entry.pty_reader_thread.join(timeout=1.0)
+                    self._close_pty_master(entry)
+                    with entry.output_lock:
+                        entry.stdout_file.close()
+                        entry.stderr_file.close()
+                    if entry.process.stdin is not None:
+                        entry.process.stdin.close()
 
     def _start_tty(
         self,
@@ -391,8 +398,8 @@ class ProcessManager:
         import termios
 
         master_fd, slave_fd = pty.openpty()
-        stdout_file = tempfile.TemporaryFile(mode="w+b")
-        stderr_file = tempfile.TemporaryFile(mode="w+b")
+        stdout_file = _OutputSpool()
+        stderr_file = _OutputSpool()
 
         def configure_tty_child() -> None:
             _set_parent_death_signal()
@@ -574,15 +581,37 @@ class ProcessManager:
 
     @staticmethod
     def _read_file_incremental(
-        file: IO[bytes],
-        offset: int,
-        max_bytes: int,
+        file: IO[bytes], offset: int, max_bytes: int, *, finished: bool = False,
     ) -> tuple[str, int]:
-        file.seek(offset)
-        data = file.read(max_bytes)
-        new_offset = file.tell()
+        if file.closed:
+            return "", offset
+        size = max(4, max_bytes)
+        if isinstance(file, _OutputSpool):
+            data = file.read_at(offset, size)
+        elif hasattr(os, "pread"):
+            data = os.pread(file.fileno(), size, offset)
+        else:
+            cursor = file.tell()
+            try:
+                file.seek(offset)
+                data = file.read(size)
+            finally:
+                file.seek(cursor)
+        final = finished and offset + len(data) >= os.fstat(file.fileno()).st_size
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        text = decoder.decode(data, final=final)
+        pending, _ = decoder.getstate()
+        return text, offset + len(data) - len(pending)
 
-        return data.decode("utf-8", errors="replace"), new_offset
+    @staticmethod
+    def _output_pending(entry: ManagedProcess) -> bool:
+        return any(
+            not stream.closed and os.fstat(stream.fileno()).st_size > offset
+            for stream, offset in (
+                (entry.stdout_file, entry.stdout_offset),
+                (entry.stderr_file, entry.stderr_offset),
+            )
+        ) or bool(entry.pty_reader_thread and entry.pty_reader_thread.is_alive())
 
     def _read_incremental(
         self,
@@ -591,17 +620,23 @@ class ProcessManager:
     ) -> dict[str, str]:
         max_bytes = max(1, max_output_chars)
 
+        finished = entry.status != "running"
+        if finished and entry.pty_reader_thread is not None:
+            entry.pty_reader_thread.join(timeout=1.0)
+            finished = not entry.pty_reader_thread.is_alive()
         with entry.output_lock:
             stdout, entry.stdout_offset = self._read_file_incremental(
                 entry.stdout_file,
                 entry.stdout_offset,
                 max_bytes,
+                finished=finished,
             )
 
             stderr, entry.stderr_offset = self._read_file_incremental(
                 entry.stderr_file,
                 entry.stderr_offset,
                 max_bytes,
+                finished=finished,
             )
 
         return {
@@ -625,6 +660,7 @@ class ProcessManager:
             "background": entry.background,
             "stdout": output["stdout"],
             "stderr": output["stderr"],
+            "output_pending": self._output_pending(entry),
             "duration_ms": self._duration_ms(entry.started_at),
         }
 
@@ -713,4 +749,4 @@ class ProcessManager:
 
 
 PROCESS_MANAGER = ProcessManager()
-atexit.register(PROCESS_MANAGER.close)
+atexit.register(PROCESS_MANAGER.close, discard_output=True)

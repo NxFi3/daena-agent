@@ -76,6 +76,7 @@ class ToolManager:
         try:
             self.finish_run()
         finally:
+            self.process_manager.close(discard_output=True)
             for tool in self.toolregistry.tools.values():
                 closer = getattr(tool, "close", None)
                 if callable(closer):

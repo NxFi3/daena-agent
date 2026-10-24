@@ -14,6 +14,7 @@ from src.models.ContextEvent import (
 )
 from src.models.ToolResult import ToolResult
 from src.tools.Tool import Tool
+from src.tools.builtin.workspace_utils import workspace_path
 
 
 class Explore(Tool):
@@ -61,12 +62,20 @@ class Explore(Tool):
     def __init__(self) -> None:
         self._workspace_root: Path | None = None
         self._llm_provider = None
+        self._runtime_config = {}
+        self._process_manager = None
 
     def set_workspace(self, directory: str | Path) -> None:
         self._workspace_root = Path(directory).expanduser().resolve()
 
     def set_llm_provider(self, llm_provider) -> None:
         self._llm_provider = llm_provider
+
+    def set_runtime_config(self, config):
+        self._runtime_config = config
+
+    def set_process_manager(self, manager):
+        self._process_manager = manager
 
     def execute(
         self,
@@ -86,41 +95,47 @@ class Explore(Tool):
         if not isinstance(max_report_chars, int) or isinstance(max_report_chars, bool) or not 500 <= max_report_chars <= 12000:
             return self._error("invalid_argument", "max_report_chars must be between 500 and 12000.")
 
-        focus = str(path or ".").strip() or "."
+        try:
+            focus = str(workspace_path(self._workspace_root, path).relative_to(self._workspace_root))
+        except (ValueError, TypeError, PermissionError, OSError) as exc:
+            return self._error("invalid_path", str(exc))
         isolated_config = copy.deepcopy(self._build_config(max_iterations))
 
         try:
             from src.agent.agentloop import Loop
 
             with tempfile.TemporaryDirectory(prefix="daena-explore-") as temp_dir:
-                isolated_config.setdefault("memory", {})["stm_db_path"] = str(
+                isolated_config.setdefault("memory", {})["database"] = str(
                     Path(temp_dir) / "stm.sqlite3"
                 )
 
                 loop = Loop(isolated_config, self._llm_provider)
-                loop.session_id = uuid4()
-                loop.set_workspace(str(self._workspace_root))
+                try:
+                    loop.session_id = uuid4()
+                    loop.set_workspace(str(self._workspace_root))
 
-                task = ContextEvent(
-                    role=ContextRole.USER,
-                    type=ContextType.MESSAGE,
-                    content=(
-                        "Explore this repository in read-only mode and answer the following.\n\n"
-                        f"Focus path: {focus}\n"
-                        f"Question: {query.strip()}\n\n"
-                        "Use grep/glob/list_dir/read_file to gather concrete evidence. "
-                        "Do not modify files, run commands, use plan bookkeeping, or speculate. "
-                        "Return a concise report naming relevant files and explaining the evidence."
-                    ),
-                    priority=ContextPriority.HIGH,
-                )
+                    task = ContextEvent(
+                        role=ContextRole.USER,
+                        type=ContextType.MESSAGE,
+                        content=(
+                            "Explore this repository in read-only mode and answer the following.\n\n"
+                            f"Focus path: {focus}\n"
+                            f"Question: {query.strip()}\n\n"
+                            "Use grep/glob/list_dir/read_file to gather concrete evidence. "
+                            "Do not modify files, run commands, use plan bookkeeping, or speculate. "
+                            "Return a concise report naming relevant files and explaining the evidence."
+                        ),
+                        priority=ContextPriority.HIGH,
+                    )
 
-                result = loop.run(
-                    user_task=task,
-                    workspace_directory=str(self._workspace_root),
-                )
-                metrics = loop.get_metrics()
-                loop.close()
+                    result = loop.run(
+                        user_task=task,
+                        workspace_directory=str(self._workspace_root),
+                        stop_event=getattr(self._process_manager, "stop_event", None),
+                    )
+                    metrics = loop.get_metrics()
+                finally:
+                    loop.close()
 
         except Exception as exc:
             return self._error("explore_failed", f"Read-only exploration failed: {exc}")
@@ -134,12 +149,14 @@ class Explore(Tool):
 
         report = report[:max_report_chars]
         return ToolResult(
-            success=True,
+            success=bool(metrics.get("completed", False)),
             name=self.name,
             content={
                 "query": query.strip(),
                 "path": focus,
                 "report": report,
+                "completed": bool(metrics.get("completed", False)),
+                "stop_reason": metrics.get("stop_reason"),
                 "iterations": metrics.get("iterations", 0),
                 "tool_successes": metrics.get("tool_successes", 0),
                 "tool_failures": metrics.get("tool_failures", 0),
@@ -191,6 +208,12 @@ class Explore(Tool):
                 "generation_config": dict(generation),
             },
         }
+        allowed = self._runtime_config.get("security", {}).get("allowed_tools")
+        if allowed is not None:
+            base["security"]["allowed_tools"] = [
+                name for name in base["security"]["allowed_tools"] if name in allowed
+            ]
+        base["subagents"] = {"enabled": False}
         return base
 
     def _error(self, error_type: str, message: str) -> ToolResult:

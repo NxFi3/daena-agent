@@ -5,6 +5,7 @@ import math
 
 from src.engine.LlmProviderManager import LlmProvider
 from src.models.LLMResult import LLMResult
+from src.engine.runtime_config import effective_config
 from src.utils.logger import get_logger
 
 logger = get_logger("[TOKENBUDGET]")
@@ -17,6 +18,12 @@ class TokenBudget:
         llm_provider: LlmProvider,
     ) -> None:
 
+        config = effective_config(config, llm_provider)
+        self._settings = self._settings_key(config, llm_provider)
+        self._model_identity = (
+            config.get("llm", {}).get("provider"),
+            config.get("llm", {}).get("provider_config", {}).get("model_name"),
+        )
         self.config = config.get("context") or {}
 
         self.llm_provider = llm_provider
@@ -139,6 +146,23 @@ class TokenBudget:
             1, int(self.config.get("image_token_reserve", 4096))
         )
         self._initialize_calibration()
+
+    @staticmethod
+    def _settings_key(config, llm):
+        return json.dumps({
+            "llm": config.get("llm"), "context": config.get("context"),
+            "defaults": getattr(getattr(llm, "model", None), "defaultConfig", {}),
+        }, sort_keys=True, default=str)
+
+    def refresh(self, config):
+        effective = effective_config(config, self.llm_provider)
+        if self._settings_key(effective, self.llm_provider) == self._settings:
+            return
+        replacement = TokenBudget(effective, self.llm_provider)
+        replacement.tools = self.tools
+        if replacement._model_identity == self._model_identity:
+            replacement.chars_per_token = self.chars_per_token
+        self.__dict__.update(replacement.__dict__)
 
     def reserve_tools(self, tools):
         self.tools = list(tools or [])

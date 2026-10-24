@@ -403,6 +403,7 @@ class Loop:
     def _generate_next_action(self, user_task, workspace_directory):
         self.working_set.refresh_workspace()
         self.tool_definitions = self.tool.get_model_tools()
+        self.context.contextbuilder.tokenbudget.refresh(self.config)
         self.context.contextbuilder.tokenbudget.reserve_tools(self.tool_definitions)
         names = {item["function"]["name"] for item in self.tool_definitions}
         state = self.working_set.context()

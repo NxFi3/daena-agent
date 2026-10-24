@@ -186,7 +186,24 @@ class StudioStore:
         """Delete every archived turn for one conversation session."""
         target = str(session_id)
         deleted = 0
-        for path, run in list(self.runs()):
+        databases = set()
+        matching = [
+            (path, run)
+            for path, run in self.runs(limit=None)
+            if str(run.get("session_id")) == target
+        ]
+        for _, run in matching:
+            if run.get("workspace"):
+                databases.add(
+                    Path(run["workspace"]) / ".daena" / "studio" / "history.sqlite3"
+                )
+        from src.memories.stm.stmdatabase import STMDatabase
+
+        for database in databases:
+            if database.is_file():
+                with STMDatabase(database) as memory:
+                    memory.clear_session(target)
+        for path, run in matching:
             if str(run.get("session_id")) != target:
                 continue
             try:
@@ -196,7 +213,7 @@ class StudioStore:
                 continue
         return deleted
 
-    def runs(self):
+    def runs(self, limit=500):
         # New archives are global; older workspace-local archives remain readable.
         roots = [self.chat_root / "runs", self.root / "runs"]
         registry = self.chat_root / "workspaces.json"
@@ -215,14 +232,17 @@ class StudioStore:
         paths = {}
         for root in roots:
             for path in root.glob("*.json"):
-                paths[str(path)] = path
+                try:
+                    paths[str(path)] = (path.stat().st_mtime, path)
+                except OSError:
+                    continue
         entries = []
-        for path in sorted(
-            paths.values(), key=lambda p: p.stat().st_mtime, reverse=True
-        )[:500]:
+        for _, path in sorted(paths.values(), key=lambda item: item[0], reverse=True):
+            if limit is not None and len(entries) >= limit:
+                break
             try:
                 run = json.loads(path.read_text(encoding="utf-8"))
-                if "session_id" not in run:
+                if not isinstance(run, dict) or "session_id" not in run:
                     continue
                 if "workspace" not in run and path.parent != self.chat_root / "runs":
                     run["workspace"] = str(path.parent.parent.parent.parent)
