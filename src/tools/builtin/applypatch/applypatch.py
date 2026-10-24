@@ -8,6 +8,7 @@ checks source snapshots, then commits with best-effort rollback.
 from __future__ import annotations
 
 import os
+import hashlib
 import re
 import stat
 import tempfile
@@ -35,6 +36,10 @@ class PatchContextError(ValueError):
         self.details = details or {}
 
 
+class PatchSyntaxError(PatchContextError):
+    """A malformed patch whose intended change cannot safely be inferred."""
+
+
 class ApplyPatch(Tool):
     name = "apply_patch"
     action = "modify"
@@ -42,35 +47,61 @@ class ApplyPatch(Tool):
     MAX_FILE_BYTES = 10 * 1024 * 1024
 
     description = (
-        "Modify UTF-8 text files safely with `patch` (REQUIRED). "
-        "Use Codex format: *** Begin Patch, *** Update File: path, @@, "
-        "-EXACT_OLD_LINE, +NEW_LINE, *** End Patch. "
-        "The '-' line is essential: NEVER put old text only in the @@ header. "
-        "Convenience: for a UNIQUE existing full line you may use "
-        "@@ EXACT_OLD_LINE @@ followed by +NEW_LINE as a replacement. "
-        "Use one patch call with multiple Update File blocks. "
-        "Ambiguous or stale edits are rejected rather than applied to the wrong place. "
-        "Never use `edits` in tool calls: this deployment requires `patch`."
+        "Apply transactional text edits using exactly one of patch or edits. "
+        "For local replacements, edits=[{operation:'replace',path:'file.c',old:'exact old text',new:'new text'}] avoids diff-prefix syntax. "
+        "Old text must match uniquely. expected_sha256 optionally guards the original source version. "
+        "For patch, use *** Begin Patch, *** Update File: path, @@, then lines prefixed with '-' (remove), '+' (add), or ' ' (unchanged), and *** End Patch. "
+        "Every update hunk must make a change. A bare '}' is invalid; use ' }', '-}', or '+}' according to intent. "
+        "Syntax/context failures occur before writes. Correct the reported hunk or use a targeted structured replacement; a syntax error does not require replacing the whole file."
     )
-    # Keep the external tool contract backward-compatible: Daena's dispatch/validation
-    # layers may hard-require `patch` even if this tool advertises `edits`.
-    # Direct Python callers can still use execute(edits=[...]).
     parameters = {
         "type": "object",
         "properties": {
             "patch": {
                 "type": "string",
-                "description": (
-                    "Required. Codex text patch. EXAMPLE: "
-                    "*** Begin Patch\n*** Update File: main.c\n@@\n"
-                    "-old_statement;\n+new_statement;\n*** End Patch. "
-                    "Use full, exact old lines prefixed with '-'. "
-                    "Convenience syntax: @@ old_statement; @@ followed by "
-                    "+new_statement; replaces that uniquely matched old line."
-                ),
+                "description": "Codex patch with explicit context/removal/addition line prefixes. Framed patches must end with *** End Patch.",
+            },
+            "edits": {
+                "type": "array",
+                "minItems": 1,
+                "description": "Exact local text edits, planned together before any write. Paths are relative to the workspace unless absolute. expected_sha256 guards each file's original bytes, not intermediate edits.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "minLength": 1},
+                        "operation": {
+                            "enum": [
+                                "replace",
+                                "insert_before",
+                                "insert_after",
+                                "append",
+                                "create",
+                                "delete",
+                            ]
+                        },
+                        "old": {
+                            "type": "string",
+                            "description": "Nonempty exact unique source text for replace/insert operations.",
+                        },
+                        "new": {
+                            "type": "string",
+                            "description": "Replacement or inserted text. Required except for delete.",
+                        },
+                        "expected_sha256": {
+                            "type": "string",
+                            "pattern": "^[a-fA-F0-9]{64}$",
+                            "description": "Optional full SHA-256 from read_file for the original file bytes.",
+                        },
+                    },
+                    "required": ["path", "operation"],
+                    "additionalProperties": False,
+                },
             },
         },
-        "required": ["patch"],
+        "oneOf": [
+            {"required": ["patch"], "not": {"required": ["edits"]}},
+            {"required": ["edits"], "not": {"required": ["patch"]}},
+        ],
         "additionalProperties": False,
     }
 
@@ -111,12 +142,16 @@ class ApplyPatch(Tool):
                 },
                 metadata={"idempotent_replay": already_applied == len(results)},
             )
+        except PatchSyntaxError as exc:
+            return self._failure("patch_syntax_error", str(exc), exc.details)
         except PatchContextError as exc:
             return self._failure("patch_context_mismatch", str(exc), exc.details)
         except (TypeError, ValueError) as exc:
             return self._failure("validation_error", str(exc))
         except OSError as exc:
-            return self._failure("filesystem_error", str(exc))
+            return self._failure(
+                "filesystem_error", str(exc), getattr(exc, "details", None)
+            )
         except Exception as exc:
             return self._failure("application_error", str(exc))
 
@@ -127,6 +162,7 @@ class ApplyPatch(Tool):
             "success": False,
             "operation": self.name,
             "error": {"type": kind, "message": message},
+            "recovery": "Correct the reported patch or use edits with exact unique old/new text. Do not overwrite the entire file merely to recover from a patch syntax error.",
         }
         if details:
             content.update(details)
@@ -141,7 +177,7 @@ class ApplyPatch(Tool):
         for idx, edit in enumerate(edits, 1):
             if not isinstance(edit, dict):
                 raise ValueError(f"Edit {idx} must be an object.")
-            if set(edit) - {"path", "operation", "old", "new"}:
+            if set(edit) - {"path", "operation", "old", "new", "expected_sha256"}:
                 raise ValueError(f"Edit {idx} has unknown fields.")
             op, path = edit.get("operation"), edit.get("path")
             if op not in {
@@ -165,6 +201,20 @@ class ApplyPatch(Tool):
                 )
             if op in {"append", "create"} and not isinstance(edit.get("new"), str):
                 raise ValueError(f"Edit {idx}: requires string `new`.")
+            if op in {"append", "create", "delete"} and "old" in edit:
+                raise ValueError(
+                    f"Edit {idx}: old is only valid for replace/insert operations."
+                )
+            if op == "delete" and "new" in edit:
+                raise ValueError(f"Edit {idx}: delete does not accept new text.")
+            expected = edit.get("expected_sha256")
+            if expected is not None and (
+                not isinstance(expected, str)
+                or not re.fullmatch(r"[a-fA-F0-9]{64}", expected)
+            ):
+                raise ValueError(
+                    f"Edit {idx}: expected_sha256 must be a full SHA-256 hash."
+                )
             actions.append(dict(edit))
         return actions
 
@@ -185,14 +235,42 @@ class ApplyPatch(Tool):
             lines.pop()
         if not lines:
             raise ValueError("Empty patch.")
-        if lines[0].strip() == "*** Begin Patch":
-            lines.pop(0)
-        elif not lines[0].startswith(
+        lines = [
+            row.rstrip()
+            if row.startswith("*** ")
+            and row.rstrip() in {"*** Begin Patch", "*** End Patch", "*** End of File"}
+            else row
+            for row in lines
+        ]
+        if any(row == "*** Begin Patch" for row in lines):
+            opened = False
+            for number, row in enumerate(lines, 1):
+                if row == "*** Begin Patch":
+                    if opened:
+                        raise PatchSyntaxError(
+                            "Nested Begin Patch marker.", details={"line": number}
+                        )
+                    opened = True
+                elif row == "*** End Patch":
+                    if not opened:
+                        raise PatchSyntaxError(
+                            "End Patch has no matching Begin Patch.",
+                            details={"line": number},
+                        )
+                    opened = False
+                elif row.strip() and not opened:
+                    raise PatchSyntaxError(
+                        "Content outside a patch envelope. Wrap each complete block in Begin/End Patch.",
+                        details={"line": number},
+                    )
+            if opened:
+                raise PatchSyntaxError(
+                    "Incomplete patch: missing *** End Patch. No edits were applied."
+                )
+        if lines[0] != "*** Begin Patch" and not lines[0].startswith(
             ("*** Add File: ", "*** Update File: ", "*** Delete File: ")
         ):
             raise ValueError("Expected *** Begin Patch or *** Add/Update/Delete File.")
-        if lines and lines[-1].strip() == "*** End Patch":
-            lines.pop()
         actions: list[dict[str, Any]] = []
         i = 0
         while i < len(lines):
@@ -223,9 +301,10 @@ class ApplyPatch(Tool):
                     }
                 )
                 continue
-            hunks: list[tuple[str, list[str]]] = []
+            hunks: list[tuple[str, list[str], bool]] = []
             hint = None
             block: list[str] = []
+            eof = False
             while i < len(lines) and (
                 not lines[i].startswith("*** ") or lines[i] == "*** End of File"
             ):
@@ -235,9 +314,20 @@ class ApplyPatch(Tool):
                     if hint is not None:
                         if not block:
                             raise ValueError(f"Empty hunk in {path}.")
-                        hunks.append((hint, block))
+                        hunks.append((hint, block, eof))
                     hint, block = line[2:].strip().removesuffix("@@").strip(), []
+                    eof = False
                 elif line == "*** End of File":
+                    if hint is None:
+                        raise PatchSyntaxError(
+                            f"End of File marker in {path} requires a hunk."
+                        )
+                    eof = True
+                elif eof:
+                    if line.strip():
+                        raise PatchSyntaxError(
+                            f"Unexpected content after End of File in {path}."
+                        )
                     continue
                 elif hint is None:
                     if line.strip():
@@ -249,13 +339,32 @@ class ApplyPatch(Tool):
                 elif line == "\\ No newline at end of file":
                     pass
                 else:
-                    raise ValueError(f"Malformed update line in {path}: {line!r}")
+                    raise PatchSyntaxError(
+                        f"Malformed update line in {path}: {line!r}. Prefix every hunk line with space, '-' or '+'.",
+                        details={
+                            "path": path,
+                            "line": i,
+                            "hunk": len(hunks) + 1,
+                            "offending_line": line,
+                            "valid_prefixes": {
+                                " ": "unchanged context",
+                                "-": "removed source",
+                                "+": "new text",
+                            },
+                        },
+                    )
             if hint is not None:
                 if not block:
                     raise ValueError(f"Empty hunk in {path}.")
-                hunks.append((hint, block))
+                hunks.append((hint, block, eof))
             if not hunks:
                 raise ValueError(f"Update for {path} has no @@ hunks.")
+            for number, (_, hunk, _) in enumerate(hunks, 1):
+                if not any(row.startswith(("+", "-")) for row in hunk):
+                    raise PatchSyntaxError(
+                        f"Update hunk {number} in {path} contains only context and makes no change. Use '-' old text and '+' new text, or structured edits.",
+                        details={"path": path, "hunk": number},
+                    )
             actions.append({"path": path, "operation": "patch", "hunks": hunks})
         if not actions:
             raise ValueError("Patch contains no file operations.")
@@ -268,7 +377,7 @@ class ApplyPatch(Tool):
         path = Path(value).expanduser()
         if path.is_symlink():
             raise ValueError(f"Refusing to edit symlink: {path}")
-        return path
+        return path.resolve(strict=False)
 
     @classmethod
     def _read(cls, path: Path) -> tuple[bytes | None, str]:
@@ -323,7 +432,7 @@ class ApplyPatch(Tool):
         return value[min(-shift, length) :]
 
     def _patch_text(
-        self, content: str, hunks: list[tuple[str, list[str]]], path: Path
+        self, content: str, hunks: list[tuple[str, list[str], bool]], path: Path
     ) -> tuple[str, int, int]:
         eol = self._newline(content)
         trailing = content.endswith(("\n", "\r"))
@@ -332,7 +441,8 @@ class ApplyPatch(Tool):
             lines.pop()
         cursor = 0
         adds = removes = 0
-        for n, (hint, raw) in enumerate(hunks, 1):
+        line_delta = 0
+        for n, (hint, raw, must_end) in enumerate(hunks, 1):
             old = [r[1:] for r in raw if r[0] in " -"]
             # Model-friendly replacement shorthand:
             # @@ exact full old line @@
@@ -357,7 +467,10 @@ class ApplyPatch(Tool):
                         "or a unique full existing line in '@@ old line @@'. "
                         "Blind insertion is not permitted."
                     )
-            candidates, mode = self._match_positions(lines, old, cursor)
+            search_start = max(cursor, len(lines) - len(old)) if must_end else cursor
+            candidates, mode = self._match_positions(lines, old, search_start)
+            if must_end:
+                candidates = [p for p in candidates if p + len(old) == len(lines)]
             # Section hints can choose a region in which the exact old text is unique.
             if len(candidates) > 1 and hint and not hint.startswith("-"):
                 anchors = [
@@ -365,24 +478,14 @@ class ApplyPatch(Tool):
                 ]
                 if len(anchors) == 1:
                     anchor = anchors[0]
-                    next_section = next(
-                        (
-                            i
-                            for i in range(anchor + 1, len(lines))
-                            if lines[i]
-                            .lstrip()
-                            .startswith(("def ", "class ", "async def "))
-                        ),
-                        len(lines),
-                    )
-                    nearby = [pos for pos in candidates if anchor <= pos < next_section]
+                    nearby = [pos for pos in candidates if pos >= anchor]
                     if len(nearby) == 1:
                         candidates = nearby
             # Unified @@ -N... hints are only used when the indexed position itself matches.
             if len(candidates) > 1:
                 number = re.match(r"^-(\d+)(?:,\d+)?\s+\+\d+", hint)
                 if number:
-                    position = int(number.group(1)) - 1
+                    position = int(number.group(1)) - 1 + line_delta
                     if position in candidates:
                         candidates = [position]
             if len(candidates) != 1:
@@ -392,9 +495,11 @@ class ApplyPatch(Tool):
                         i
                         for i in range(cursor, len(lines) - len(replacement) + 1)
                         if lines[i : i + len(replacement)] == replacement
+                        and (not must_end or i + len(replacement) == len(lines))
                     ]
                     if len(existing) == 1:
                         cursor = existing[0] + len(replacement)
+                        line_delta += len(replacement) - len(old)
                         continue
                 reason = (
                     "did not match"
@@ -447,6 +552,7 @@ class ApplyPatch(Tool):
                     adds += 1
             lines[pos : pos + len(old)] = replacement
             cursor = pos + len(replacement)
+            line_delta += len(replacement) - len(old)
         output = eol.join(lines)
         if trailing and lines:
             output += eol
@@ -458,6 +564,7 @@ class ApplyPatch(Tool):
         # Preserve the file's existing newline convention when injecting text.
         if "\r\n" in text:
             new = new.replace("\r\n", "\n").replace("\n", "\r\n")
+            old = old.replace("\r\n", "\n").replace("\n", "\r\n")
         if op == "append":
             prefix = (
                 self._newline(text) if text and not text.endswith(("\n", "\r")) else ""
@@ -486,14 +593,15 @@ class ApplyPatch(Tool):
             if len(positions) == 1 and old_lines:
                 p = positions[0]
                 actual = "\n".join(source_lines[p : p + len(old_lines)])
-                replacement = new
+                replacement = new.replace("\r\n", "\n").replace("\r", "\n")
                 if mode == "indentation" and old_lines[0].strip():
                     observed = source_lines[p]
                     shift = (len(observed) - len(observed.lstrip(" "))) - (
                         len(old_lines[0]) - len(old_lines[0].lstrip(" "))
                     )
                     replacement = "\n".join(
-                        self._shift_indent(row, shift) for row in new.split("\n")
+                        self._shift_indent(row, shift)
+                        for row in replacement.split("\n")
                     )
                 if op == "replace":
                     source_lines[p : p + len(old_lines)] = replacement.split("\n")
@@ -556,10 +664,28 @@ class ApplyPatch(Tool):
                     "kind": "update",
                     "added": 0,
                     "removed": 0,
-                    "mode": (path.stat().st_mode & 0o777) if data is not None else None,
+                    "mode": stat.S_IMODE(path.stat().st_mode)
+                    if data is not None
+                    else None,
                 }
             item = planned[path]
             op = action["operation"]
+            expected = action.get("expected_sha256")
+            if expected is not None:
+                actual = (
+                    hashlib.sha256(item["before"]).hexdigest()
+                    if item["before"] is not None
+                    else None
+                )
+                if actual != expected.lower():
+                    raise PatchContextError(
+                        f"Source version changed for {path}; re-read before editing.",
+                        details={
+                            "path": str(path),
+                            "expected_sha256": expected,
+                            "actual_sha256": actual,
+                        },
+                    )
             if item.get("deleted"):
                 raise ValueError(f"Cannot edit after deletion: {path}")
             if op == "create":
@@ -632,6 +758,12 @@ class ApplyPatch(Tool):
                 path = item["path"]
                 if item.get("already_applied"):
                     continue
+                current, _ = self._read(path)
+                if current != item["before"]:
+                    raise PatchContextError(
+                        f"File changed before commit: {path}; no concurrent contents were overwritten.",
+                        details={"path": str(path)},
+                    )
                 if item.get("deleted"):
                     path.unlink()
                 else:
@@ -639,17 +771,38 @@ class ApplyPatch(Tool):
                         path, self._encode(item["text"], item["before"]), item["mode"]
                     )
                 completed.append(item)
-        except Exception:
-            # Best-effort rollback of previous successful changes.
+        except Exception as exc:
+            rollback_errors = []
             for item in reversed(completed):
                 path = item["path"]
                 try:
+                    expected_after = (
+                        None
+                        if item.get("deleted")
+                        else self._encode(item["text"], item["before"])
+                    )
+                    current, _ = self._read(path)
+                    if current != expected_after:
+                        raise OSError(
+                            "Concurrent changes detected; rollback will not overwrite them."
+                        )
                     if item["before"] is None:
                         path.unlink(missing_ok=True)
                     else:
                         self._write_atomic(path, item["before"], item["mode"])
-                except OSError:
-                    pass
+                except (OSError, ValueError) as rollback_exc:
+                    rollback_errors.append(
+                        {"path": str(path), "error": str(rollback_exc)}
+                    )
+            exc.details = {
+                **getattr(exc, "details", {}),
+                "rollback_complete": not rollback_errors,
+                "rollback_errors": rollback_errors,
+            }
+            if rollback_errors:
+                exc.details["recovery"] = (
+                    "Inspect the listed files: rollback was incomplete. Concurrent edits were preserved; do not blindly retry or overwrite them."
+                )
             raise
         results = []
         for item in planned:

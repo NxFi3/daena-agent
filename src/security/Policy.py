@@ -187,6 +187,21 @@ class SecurityPolicy:
         return SecurityDecision(True, "Read target is inside the workspace.", "workspace_read")
 
     def _check_apply_patch(self, args: dict[str, Any], sandbox) -> SecurityDecision:
+        if ("patch" in args) == ("edits" in args):
+            return SecurityDecision(False, "Provide exactly one of patch or edits.", "patch_arguments")
+        if "edits" in args:
+            try:
+                from src.tools.builtin.applypatch.applypatch import ApplyPatch
+                edits = ApplyPatch()._parse_edits(args["edits"])
+            except (ValueError, TypeError) as exc:
+                return SecurityDecision(False, str(exc), "patch_arguments")
+            try:
+                if self.workspace_only:
+                    for edit in edits:
+                        sandbox.resolve(edit["path"])
+            except (PermissionError, ValueError, TypeError) as exc:
+                return SecurityDecision(False, str(exc), "workspace_boundary")
+            return SecurityDecision(True, "Structured edit targets are inside the workspace.", "workspace_patch")
         patch = args.get("patch")
         if not isinstance(patch, str) or not patch.strip():
             return SecurityDecision(False, "patch is required.", "patch_required")

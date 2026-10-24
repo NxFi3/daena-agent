@@ -464,6 +464,13 @@ class ToolManager:
             )
 
         elif name == "apply_patch":
+            if "edits" in args:
+                args["edits"] = [
+                    {**edit, "path": str(self._resolve_execution_path(edit["path"]))}
+                    for edit in args["edits"]
+                ]
+                toolcall.args = args
+                return toolcall
             patch = args["patch"]
             lines = patch.replace("\r\n", "\n").replace("\r", "\n").split("\n")
             normalized: list[str] = []
