@@ -109,6 +109,17 @@ class STMDatabase:
                 content
             );
 
+            CREATE TABLE IF NOT EXISTS context_session_revisions (
+                session_id TEXT PRIMARY KEY,
+                revision INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS context_file_reads (
+                session_id TEXT NOT NULL,
+                path TEXT NOT NULL,
+                file_sha256 TEXT NOT NULL,
+                spans TEXT NOT NULL,
+                PRIMARY KEY(session_id, path, file_sha256)
+            );
             CREATE TABLE IF NOT EXISTS context_checkpoints (
                 session_id TEXT PRIMARY KEY,
                 summary TEXT NOT NULL,
@@ -323,6 +334,39 @@ class STMDatabase:
 
         return [self._row_to_event(row) for row in rows]
 
+    def get_recent_complete(self, session_id, limit=40):
+        """Extend a cutoff inside a tool batch to include its owning call."""
+        events = self.get_recent(session_id, limit)
+        if not events or events[0].role != ContextRole.TOOL:
+            return events
+        first = events[0]
+        try:
+            call_id = json.loads(first.content).get("tool_call_id")
+        except (ValueError, TypeError, AttributeError):
+            return events
+        owner = self.connection.execute(
+            "SELECT * FROM context_events WHERE session_id=? AND role='assistant' AND (step < ? OR (step=? AND timestamp<=?)) ORDER BY step DESC,timestamp DESC LIMIT 1",
+            (str(session_id), first.step, first.step, first.timestamp.isoformat()),
+        ).fetchone()
+        if owner is None:
+            return events
+        event = self._row_to_event(owner)
+        raw_message = event.metadata.get("llm_message")
+        calls = (
+            raw_message.get("tool_calls", []) if isinstance(raw_message, dict) else []
+        )
+        if not isinstance(calls, list):
+            return events
+        if not call_id or not any(
+            isinstance(c, dict) and str(c.get("id")) == str(call_id) for c in calls
+        ):
+            return events
+        rows = self.connection.execute(
+            "SELECT * FROM context_events WHERE session_id=? AND (step > ? OR (step=? AND timestamp>=?)) ORDER BY step,timestamp",
+            (str(session_id), event.step, event.step, event.timestamp.isoformat()),
+        ).fetchall()
+        return [self._row_to_event(row) for row in rows]
+
     def search(
         self,
         session_id: UUID | str,
@@ -462,8 +506,17 @@ class STMDatabase:
         """
 
         event_id = str(event_id)
+        owner = self.connection.execute(
+            "SELECT session_id FROM context_events WHERE id=?", (event_id,)
+        ).fetchone()
 
         try:
+            if owner:
+                self._invalidate_session(owner[0])
+            self.connection.execute(
+                "DELETE FROM context_file_reads WHERE session_id IN (SELECT session_id FROM context_events WHERE id = ?)",
+                (str(event_id),),
+            )
             self.connection.execute(
                 "DELETE FROM context_checkpoints WHERE session_id IN (SELECT session_id FROM context_events WHERE id = ?)",
                 (event_id,),
@@ -506,6 +559,10 @@ class STMDatabase:
         session_id = str(session_id)
 
         try:
+            self._invalidate_session(session_id)
+            self.connection.execute(
+                "DELETE FROM context_file_reads WHERE session_id = ?", (session_id,)
+            )
             self.connection.execute(
                 "DELETE FROM context_checkpoints WHERE session_id = ?", (session_id,)
             )
@@ -532,6 +589,69 @@ class STMDatabase:
         except Exception:
             self.connection.rollback()
             raise
+
+    def get_session_revision(self, session_id):
+        row = self.connection.execute(
+            "SELECT revision FROM context_session_revisions WHERE session_id=?",
+            (str(session_id),),
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def _invalidate_session(self, session_id):
+        self.connection.execute(
+            "INSERT INTO context_session_revisions VALUES (?,1) ON CONFLICT(session_id) DO UPDATE SET revision=revision+1",
+            (str(session_id),),
+        )
+
+    def record_file_reads(self, session_id, receipts):
+        from src.context.file_reads import file_evidence
+
+        with self.connection:
+            for receipt in receipts:
+                evidence = file_evidence(receipt)
+                if evidence is None:
+                    continue
+                key = (str(session_id), evidence["path"], evidence["file_sha256"])
+                row = self.connection.execute(
+                    "SELECT spans FROM context_file_reads WHERE session_id=? AND path=? AND file_sha256=?",
+                    key,
+                ).fetchone()
+                spans = json.loads(row["spans"]) if row else []
+                spans.append(
+                    [evidence["source_start_offset"], evidence["source_end_offset"]]
+                )
+                merged = []
+                for start, end in sorted(spans):
+                    if merged and start <= merged[-1][1]:
+                        merged[-1][1] = max(end, merged[-1][1])
+                    else:
+                        merged.append([start, end])
+                self.connection.execute(
+                    "INSERT INTO context_file_reads VALUES (?,?,?,?) ON CONFLICT(session_id,path,file_sha256) DO UPDATE SET spans=excluded.spans",
+                    (*key, json.dumps(merged)),
+                )
+
+    def get_file_reads(self, session_id, limit=32):
+        rows = self.connection.execute(
+            "SELECT path,file_sha256,spans FROM context_file_reads WHERE session_id=? ORDER BY rowid DESC LIMIT ?",
+            (str(session_id), int(limit)),
+        ).fetchall()
+        count = self.connection.execute(
+            "SELECT COUNT(*) FROM context_file_reads WHERE session_id=?",
+            (str(session_id),),
+        ).fetchone()[0]
+        return {
+            "items": [
+                {
+                    "path": r["path"],
+                    "file_sha256": r["file_sha256"],
+                    "delivered_character_ranges": json.loads(r["spans"]),
+                }
+                for r in rows
+            ],
+            "total_versions": count,
+            "truncated": count > len(rows),
+        }
 
     def get_checkpoint(self, session_id):
         row = self.connection.execute(

@@ -461,6 +461,7 @@ class Loop:
         )
         if not isinstance(result, LLMResult):
             raise TypeError("Provider must return LLMResult")
+        self.context.record_delivery(self.session_id)
         self.metrics["tokens"] += max(0, int(result.usage or 0))
         self.context.calibrate(result)
         if not result.tool_calls and not str(result.response or "").strip():

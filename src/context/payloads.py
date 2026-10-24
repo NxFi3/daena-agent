@@ -10,6 +10,46 @@ def fit_json(value, limit):
     def dump(obj):
         return json.dumps(obj, ensure_ascii=False, default=str)
 
+    from src.context.file_reads import file_evidence, trim_file_text
+
+    evidence = file_evidence(value)
+    if evidence is not None:
+        if len(dump(value)) <= limit:
+            return dump(value)
+        body = evidence["content"]
+
+        def trim(keep):
+            evidence["content"] = body
+            trim_file_text(evidence, keep)
+            if "summary" in value and value is not evidence:
+                value["summary"] = (
+                    "Source text reduced for context; the evidence offsets and next_read describe the exact delivered prefix."
+                )
+
+        trim(0)
+        if len(dump(value)) <= limit:
+            low, high, best = 0, len(body), 0
+            while low <= high:
+                keep = (low + high) // 2
+                trim(keep)
+                if len(dump(value)) <= limit:
+                    best, low = keep, keep + 1
+                else:
+                    high = keep - 1
+            trim(best)
+            return dump(value)
+        # Metadata cannot fit either. Do not leave a claimed source span whose
+        # corresponding text has been removed by the generic reducer.
+        minimal = dump(
+            {
+                "details_omitted": True,
+                "read_id": evidence["read_id"],
+                "path": evidence["path"],
+                "file_text_omitted": True,
+            }
+        )
+        return minimal if len(minimal) <= limit else '{"details_omitted":true}'
+
     while len(dump(value)) > limit:
         choices = []
 

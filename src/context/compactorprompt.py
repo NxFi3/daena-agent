@@ -46,6 +46,9 @@ RULES:
 - Never claim success without evidence.
 - Preserve exact paths and identifiers when important.
 - Preserve unresolved failures.
+- A read receipt proves only the version and source range actually returned. Do not describe a truncated file as fully inspected or reconstruct omitted code.
+- Distinguish observed tool evidence from the assistant's proposed actions. A promise to edit or verify is not completed work.
+- Preserve concrete build/test failures, affected locations, changes already applied, and unresolved evidence needed to continue. Do not replace these with a generic instruction to explore the repository again.
 - Prefer current state over history.
 - Prefer conclusions over raw logs.
 - Prefer compact factual statements over prose.

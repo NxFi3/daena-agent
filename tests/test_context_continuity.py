@@ -183,3 +183,53 @@ def test_compaction_preserves_latest_steering_position():
     messages = build(builder, [user, *exchange(1), steering], user)
     assert messages[-1] == {"role": "user", "content": "Only inspect now"}
     assert messages[-2]["role"] == "tool"
+
+
+def test_sliding_retrieval_window_checkpoints_before_forgetting():
+    model = SummaryModel()
+    builder = ContextBuilder(
+        {
+            "context": {
+                "max_prompt_tokens": 24000,
+                "compaction_trigger_ratio": 0.99,
+                "compaction_target_tokens": 512,
+            }
+        },
+        model,
+    )
+    user = task()
+    pairs = {i: exchange(i, f"file-{i}.txt", body="small") for i in range(1, 6)}
+    build(builder, [user, *pairs[1], *pairs[2], *pairs[3]], user)
+    assert not model.inputs
+    result = build(builder, [user, *pairs[3], *pairs[4]], user)
+    assert model.inputs
+    assert "call-1" in str(model.inputs[0]) and "call-2" in str(model.inputs[0])
+    assert result[-1]["tool_call_id"] == "call-4"
+    assert "event:" + str(pairs[1][0].id) in builder._covered_groups
+    # Recall of an older, covered exchange must not replay it as current evidence.
+    result = build(builder, [user, *pairs[1], *pairs[4], *pairs[5]], user)
+    assert not any(m.get("tool_call_id") == "call-1" for m in result)
+    assert all(not any(k.startswith("_history") for k in m) for m in result)
+
+
+def test_empty_compactor_uses_explicit_receipt_checkpoint():
+    class Empty(SummaryModel):
+        def generate(self, messages, **kwargs):
+            self.inputs.append(messages)
+            return LLMResult("", {}, [], None, 1)
+
+    model = Empty()
+    builder = ContextBuilder(
+        {"context": {"max_prompt_tokens": 24000, "compaction_trigger_ratio": 0.99}},
+        model,
+    )
+    user = task()
+    one, two, three = (
+        exchange(1, body="small"),
+        exchange(2, body="small"),
+        exchange(3, body="small"),
+    )
+    build(builder, [user, *one, *two], user)
+    result = build(builder, [user, *two, *three], user)
+    assert "receipt_only_checkpoint" in builder._history_summary
+    assert result[-1]["tool_call_id"] == "call-3"
