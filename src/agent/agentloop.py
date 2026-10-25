@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from src.agent.agentstate import AgentState
 from src.context.contextservice import ContextService
+from src.context.contextbuilder import ContextBudgetError
 from src.context.workingset import WorkingSet
 from src.engine.invoke import invoke
 from src.engine.errors import RecoverableGenerationError
@@ -418,20 +419,57 @@ class Loop:
         from src.tools.builtin.browser_use.integration import interaction_messages
 
         attachments = interaction_messages(self, names)
-        messages = self.context.get_context(
-            session_id=self.session_id,
-            user_task=user_task,
-            agent_state=self.agent_state,
-            working_set=state,
-            observation=self.working_set.observation_context(),
-            recent_actions=self.working_set.recent_actions_context(),
-            workspace_directory=workspace_directory,
-            recent_limit=self.recent_context_limit,
-            search_top_k=self.search_context_top_k,
-            available_tool_names=names,
-            include_plan=True,
-            attachments=attachments,
-        )
+
+        def build_messages():
+            return self.context.get_context(
+                session_id=self.session_id,
+                user_task=user_task,
+                agent_state=self.agent_state,
+                working_set=state,
+                observation=self.working_set.observation_context(),
+                recent_actions=self.working_set.recent_actions_context(),
+                workspace_directory=workspace_directory,
+                recent_limit=self.recent_context_limit,
+                search_top_k=self.search_context_top_k,
+                available_tool_names=names,
+                include_plan=True,
+                attachments=attachments,
+            )
+
+        try:
+            messages = build_messages()
+        except ContextBudgetError as exc:
+            # Retry context construction once with fewer complete tool schemas.
+            # Never discard the active UI tool, current screenshot or user task.
+            required = {getattr(self, "_active_ui_tool", None)} - {None}
+            if self.completion_protocol == "explicit":
+                required.add("task_finish")
+            if self._active_process_ids:
+                required.update({"process_poll", "process_stop"})
+            if self.tool.subagents.has_pending():
+                required.add("subagent")
+            reduced = self.tool.get_model_tools(
+                schema_token_budget=max(0, exc.details["schema_budget_tokens"] - 256),
+                chars_per_token=builder.tokenbudget.chars_per_token,
+                required_names=required,
+            )
+            if len(reduced) >= len(self.tool_definitions) or not any(
+                item["function"]["name"] == "tool_search" for item in reduced
+            ):
+                raise
+            before = len(self.tool_definitions)
+            self.tool_definitions = reduced
+            builder.tokenbudget.reserve_tools(reduced)
+            names = {item["function"]["name"] for item in reduced}
+            state["available_tools"] = sorted(names)
+            self._emit_event(
+                "context_tools_reduced",
+                previous_count=before,
+                active_count=len(reduced),
+                reason="schema_budget",
+                budget_details=exc.details,
+            )
+            messages = build_messages()
         estimated = builder.tokenbudget.estimate_request_tokens(messages)
         self.metrics.update(
             context_estimated_tokens=estimated,

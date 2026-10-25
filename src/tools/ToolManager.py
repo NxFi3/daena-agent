@@ -162,7 +162,10 @@ class ToolManager:
             name = str(function.get("name", "")).strip().lower()
             if not name or name not in allowed:
                 continue
-            if name in {"web_search", "web_fetch", "browser_use"} and not network_allowed:
+            if (
+                name in {"web_search", "web_fetch", "browser_use"}
+                and not network_allowed
+            ):
                 continue
             if name in {"skill_list", "skill_read"} and not self.skills.enabled:
                 continue
@@ -314,9 +317,13 @@ class ToolManager:
                 scored.append((score, definition))
 
         query_words = " " + " ".join(self._search_tokens(query)) + " "
+
         def explicit_name(definition):
             name = str(definition.get("function", {}).get("name", ""))
-            return " " + " ".join(self._search_tokens(name.replace("_", " "))) + " " in query_words
+            return (
+                " " + " ".join(self._search_tokens(name.replace("_", " "))) + " "
+                in query_words
+            )
 
         scored.sort(
             key=lambda item: (
@@ -363,7 +370,9 @@ class ToolManager:
         self._active_tool_names = []
         self._last_tool_search_query = ""
 
-    def get_model_tools(self) -> list[dict]:
+    def get_model_tools(
+        self, *, schema_token_budget=None, chars_per_token=4.0, required_names=()
+    ) -> list[dict]:
         """Expose core tools plus capabilities selected through tool_search."""
         visible = self.get_tools()
         by_name = {
@@ -410,13 +419,63 @@ class ToolManager:
         # Advertise every allowed capability even when its full schema is lazy.
         # This keeps small contexts viable without hiding browser/desktop tools.
         from copy import deepcopy
+
         catalog = [name for name in by_name if name not in emitted]
         if catalog:
             ordered = deepcopy(ordered)
             ordered[0]["function"]["description"] += (
-                " Available additional tools: " + ", ".join(sorted(catalog))
+                " Available additional tools: "
+                + ", ".join(sorted(catalog))
                 + ". Search a tool name to load its complete argument schema."
             )
+        if schema_token_budget is not None:
+            import json
+            import math
+            from copy import deepcopy
+
+            # Keep complete schemas. Less urgent capabilities remain discoverable;
+            # schema packing never rewrites a tool's argument contract.
+            required = {"tool_search", *required_names}
+            required.update(
+                name
+                for name in by_name
+                if str(
+                    getattr(self.toolregistry.get(name), "model_exposure", "")
+                ).lower()
+                == "always"
+            )
+
+            def render(names):
+                result = [deepcopy(by_name[name]) for name in names]
+                catalog = sorted(set(by_name) - set(names))
+                search = next(
+                    (d for d in result if d["function"]["name"] == "tool_search"), None
+                )
+                if search and catalog:
+                    search["function"]["description"] += (
+                        " Available additional tools: "
+                        + ", ".join(catalog)
+                        + ". Search a tool name to load its complete argument schema."
+                    )
+                return result
+
+            def fits(names):
+                return (
+                    math.ceil(
+                        len(json.dumps(render(names), ensure_ascii=False, default=str))
+                        / chars_per_token
+                    )
+                    <= schema_token_budget
+                )
+
+            selected = [name for name in by_name if name in required]
+            priority = list(self._active_tool_names) + [
+                d["function"]["name"] for d in ordered
+            ]
+            for name in priority:
+                if name in by_name and name not in selected and fits([*selected, name]):
+                    selected.append(name)
+            return render(selected)
         return ordered
 
     def _find_tool(self, name: str):

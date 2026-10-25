@@ -14,6 +14,23 @@ from src.context.payloads import fit_json, fit_tool_text
 from src.engine.LlmProviderManager import LlmProvider
 from src.models.ContextEvent import ContextEvent
 
+
+class ContextBudgetError(ValueError):
+    """A request cannot fit without losing mandatory instructions/evidence."""
+
+    def __init__(self, details):
+        self.details = details
+        super().__init__(
+            "Context cannot fit: "
+            f"estimated={details['estimated_tokens']}, budget={details['budget']}, "
+            f"tool_schemas={details['tool_schema_tokens']}, images={details['image_tokens']}, "
+            f"message_text={details['message_text_tokens']}, "
+            f"context_window={details['context_window']}, output_reserve={details['output_reserve']}. "
+            "Instructions and attached observations (including images) were preserved. Increase the context window "
+            "or reduce the output cap/reserve; inspect active tool schemas and observation size."
+        )
+
+
 DEFAULT_INSTRUCTION = (
     "You are Daena, an autonomous assistant and software engineering agent."
 )
@@ -1093,8 +1110,21 @@ class ContextBuilder:
                             function["arguments"] = json.dumps(arguments)
         result = self._sanitize_tool_protocol(render())
         if not self.tokenbudget.fits(result):
-            raise ValueError(
-                "Context budget is too small for user instructions, the latest tool exchange and attached observations. Increase the context window or reduce the configured image reserve/output cap."
+            budget = self.tokenbudget
+            message_tokens = budget.estimate_messages_tokens(result)
+            image_tokens = budget.image_tokens(result)
+            raise ContextBudgetError(
+                {
+                    "estimated_tokens": budget.estimate_request_tokens(result),
+                    "budget": budget.budget,
+                    "tool_schema_tokens": budget.tool_tokens,
+                    "image_tokens": image_tokens,
+                    "message_text_tokens": message_tokens - image_tokens,
+                    "schema_budget_tokens": max(0, budget.budget - message_tokens),
+                    "context_window": budget.context_length,
+                    "output_reserve": budget.output_reserve_tokens,
+                    "chars_per_token": budget.chars_per_token,
+                }
             )
         return [
             {key: value for key, value in message.items() if not key.startswith("_")}
