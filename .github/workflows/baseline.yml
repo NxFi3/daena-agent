@@ -124,13 +124,13 @@ jobs:
       - name: Install Qt system libraries
         run: sudo apt-get update && sudo apt-get install -y libegl1 libopengl0 libxcb-cursor0 libpulse0
       - name: Install optional local speech engines
-        run: python -m pip install -e '.[dev,desktop,voice]'
+        run: python -m pip install -e '.[dev,desktop,voice,voice-kokoro,voice-perception]'
       - name: Verify local speech packages without downloading weights
         run: |
-          python -c "from faster_whisper import WhisperModel; from piper import PiperVoice; import soxr, webrtcvad; print('LOCAL_SPEECH_IMPORTS_OK')"
+          python -c "from faster_whisper import WhisperModel; from piper import PiperVoice; from kokoro_onnx import Kokoro; import soxr, webrtcvad, sherpa_onnx; print('LOCAL_SPEECH_IMPORTS_OK')"
           python -m src.voice doctor
       - name: Voice lifecycle, audio conversion and UI regressions
-        run: python -m pytest -q tests/test_voice_session.py tests/test_voice_providers.py tests/test_voice_controller.py tests/test_voice_audio.py
+        run: python -m pytest -q tests/test_voice*.py
       - name: Build and exercise installed voice integration
         run: |
           python -m build

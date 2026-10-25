@@ -13,6 +13,8 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
+import tarfile
 import tempfile
 from urllib.parse import quote
 
@@ -29,9 +31,14 @@ class ModelSpec:
     revision: str
     files: tuple[str, ...]
     path_file: str = ""
+    source: str = "huggingface"
+    assets: tuple[tuple[str, int], ...] = ()
+    license_note: str = "Consult the downloaded model card/license before distribution or commercial use."
 
     @property
     def source_url(self):
+        if self.source == "github-release":
+            return f"https://github.com/{self.repo_id}/releases/tag/{self.revision}"
         return f"https://huggingface.co/{self.repo_id}/tree/{self.revision}"
 
 
@@ -82,6 +89,48 @@ _SPECS = (
         ),
         "en_US-lessac-high.onnx",
     ),
+    ModelSpec(
+        "kokoro-en",
+        "English · Kokoro v1.0 full precision",
+        "tts",
+        "en",
+        "thewh1teagle/kokoro-onnx",
+        "model-files-v1.1",
+        ("kokoro-v1.0.onnx", "voices-v1.0.bin"),
+        "kokoro-v1.0.onnx",
+        "github-release",
+        (("kokoro-v1.0.onnx", 520133700), ("voices-v1.0.bin", 520134664)),
+        "Kokoro model weights: Apache-2.0; kokoro-onnx engine: MIT. Persian is not supported by this model. See the upstream model card and dependency licenses.",
+    ),
+    ModelSpec(
+        "speaker-embedding",
+        "Anonymous speakers · WeSpeaker ResNet34",
+        "speaker",
+        "audio",
+        "k2-fsa/sherpa-onnx",
+        "speaker-recongition-models",
+        ("wespeaker_en_voxceleb_resnet34.onnx",),
+        "wespeaker_en_voxceleb_resnet34.onnx",
+        "github-release",
+        (("wespeaker_en_voxceleb_resnet34.onnx", 198883656),),
+        "Consult upstream WeSpeaker model/data terms; sherpa-onnx engine: Apache-2.0. This English VoxCeleb model provides anonymous voice similarity, not verified identity or authentication.",
+    ),
+    ModelSpec(
+        "audio-events",
+        "Environmental sounds · Zipformer small int8",
+        "sound",
+        "audio",
+        "k2-fsa/sherpa-onnx",
+        "audio-tagging-models",
+        (
+            "sherpa-onnx-zipformer-small-audio-tagging-2024-04-15/model.int8.onnx",
+            "sherpa-onnx-zipformer-small-audio-tagging-2024-04-15/class_labels_indices.csv",
+        ),
+        "model.int8.onnx",
+        "github-release",
+        (("sherpa-onnx-zipformer-small-audio-tagging-2024-04-15.tar.bz2", 162164735),),
+        "Consult upstream Zipformer/AudioSet model and data terms; sherpa-onnx engine: Apache-2.0. Closed-set predictions can be uncertain and do not identify every sound.",
+    ),
 )
 _SPEC_BY_KEY = {spec.key: spec for spec in _SPECS}
 
@@ -91,7 +140,11 @@ def model_catalog():
         asdict(spec)
         | {
             "source_url": spec.source_url,
-            "license_note": "Review the downloaded model card and license documents; Piper software is GPLv3 and individual voice/data licenses differ.",
+            "license_note": (
+                "Review the downloaded model card and license documents; Piper software is GPLv3 and individual voice/data licenses differ."
+                if spec.key.startswith("piper-")
+                else spec.license_note
+            ),
         }
         for spec in _SPECS
     ]
@@ -138,7 +191,21 @@ def installed_models(cache_dir=None, *, verify=False):
             path = _inside(root, root / record["relative_path"])
             if not path.exists():
                 continue
-            for row in record["files"]:
+            rows = record["files"]
+            if (
+                not isinstance(rows, list)
+                or not set(spec.files).issubset({row["source_path"] for row in rows})
+                or len({row["relative_path"] for row in rows}) != len(rows)
+            ):
+                continue
+            for row in rows:
+                if (
+                    not isinstance(row["size"], int)
+                    or isinstance(row["size"], bool)
+                    or row["size"] < 0
+                    or not re.fullmatch(r"[0-9a-f]{64}", row["sha256"])
+                ):
+                    raise ValueError("invalid model file metadata")
                 file = _inside(root, root / row["relative_path"])
                 if not file.is_file() or file.stat().st_size != row["size"]:
                     raise ValueError("missing or changed model file")
@@ -209,6 +276,238 @@ def _files_for(spec, siblings):
     return list(dict.fromkeys(files)), by_name
 
 
+_MAX_DOWNLOAD = 4 * 1024**3
+_MAX_ARCHIVE_OUTPUT = 512 * 1024**2
+
+
+def _github_assets(spec, client, stop_event):
+    """Resolve pinned asset IDs, never a mutable release filename alone."""
+    resolved = []
+    for name, asset_id in spec.assets:
+        _check_stop(stop_event)
+        url = f"https://api.github.com/repos/{spec.repo_id}/releases/assets/{asset_id}"
+        response = client.get(url, headers={"Accept": "application/vnd.github+json"})
+        response.raise_for_status()
+        metadata = response.json()
+        size = metadata.get("size")
+        if (
+            metadata.get("id") != asset_id
+            or metadata.get("name") != name
+            or not isinstance(size, int)
+            or isinstance(size, bool)
+            or not 0 < size <= _MAX_DOWNLOAD
+        ):
+            raise VoiceError(
+                "GitHub model asset identity or size did not match the catalog"
+            )
+        digest = metadata.get("digest")
+        if digest is not None and not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            raise VoiceError("GitHub returned an unsupported model asset digest")
+        resolved.append(
+            {
+                "name": name,
+                "id": asset_id,
+                "size": size,
+                "sha256": digest[7:] if digest else None,
+            }
+        )
+    return resolved
+
+
+def _download_github_asset(spec, asset, destination, client, stop_event, progress):
+    # Asset IDs survive release-tag changes, while replaced assets get new IDs.
+    # Never let remote metadata choose a URL or a filesystem path.
+    url = f"https://api.github.com/repos/{spec.repo_id}/releases/assets/{asset['id']}"
+    path = destination / asset["name"]
+    received = 0
+    digest = hashlib.sha256()
+    with path.open("xb") as output:
+        with client.stream(
+            "GET", url, headers={"Accept": "application/octet-stream"}
+        ) as data:
+            data.raise_for_status()
+            for block in data.iter_bytes(chunk_size=64 * 1024):
+                _check_stop(stop_event)
+                received += len(block)
+                if received > asset["size"]:
+                    raise VoiceError("Model download exceeded its declared size")
+                output.write(block)
+                digest.update(block)
+                if progress:
+                    progress(
+                        {
+                            "stage": "downloading",
+                            "model": spec.key,
+                            "file": asset["name"],
+                            "received": received,
+                            "total": asset["size"],
+                        }
+                    )
+        output.flush()
+        os.fsync(output.fileno())
+    _check_stop(stop_event)
+    if received != asset["size"]:
+        raise VoiceError(
+            "Model download was incomplete; the previous installation was preserved"
+        )
+    if asset["sha256"] and digest.hexdigest() != asset["sha256"]:
+        raise VoiceError(
+            "Model download checksum mismatch; the previous installation was preserved"
+        )
+    return path
+
+
+def _unpack_model_files(archive, spec, destination, stop_event):
+    """Copy only exact catalog members; no extractall, links or unbounded output."""
+    required = set(spec.files)
+    seen = set()
+    total = 0
+
+    class CheckedReader:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def read(self, size=-1):
+            _check_stop(stop_event)
+            return self.stream.read(size)
+
+    with (
+        archive.open("rb") as raw,
+        tarfile.open(fileobj=CheckedReader(raw), mode="r|bz2") as source,
+    ):
+        for index, member in enumerate(source):
+            _check_stop(stop_event)
+            parts = Path(member.name).parts
+            if (
+                index >= 128
+                or member.size < 0
+                or Path(member.name).is_absolute()
+                or ".." in parts
+                or member.issym()
+                or member.islnk()
+            ):
+                raise VoiceError(
+                    "Model archive contains an unsupported or unsafe member"
+                )
+            total += member.size
+            if total > _MAX_ARCHIVE_OUTPUT:
+                raise VoiceError("Model archive exceeded the extraction size limit")
+            if member.name not in required:
+                continue
+            if not member.isfile() or member.name in seen:
+                raise VoiceError(
+                    "Model archive contains a duplicate or non-regular required file"
+                )
+            stream = source.extractfile(member)
+            if stream is None:
+                raise VoiceError("Model archive could not provide its required file")
+            output_path = destination / Path(member.name).name
+            received = 0
+            with stream, output_path.open("xb") as output:
+                while block := stream.read(64 * 1024):
+                    _check_stop(stop_event)
+                    received += len(block)
+                    if received > member.size:
+                        raise VoiceError(
+                            "Model archive member exceeded its declared size"
+                        )
+                    output.write(block)
+                output.flush()
+                os.fsync(output.fileno())
+            if received != member.size:
+                raise VoiceError("Model archive member was truncated")
+            seen.add(member.name)
+    if required != seen:
+        raise VoiceError(
+            "Model archive is missing required files: "
+            + ", ".join(sorted(required - seen))
+        )
+    archive.unlink()
+
+
+def _download_github_model(spec, root, client, stop_event, progress):
+    assets = _github_assets(spec, client, stop_event)
+    # Existing manifests use a hexadecimal revision field. Here it fingerprints
+    # immutable GitHub asset identities, not a repository Git commit.
+    revision = hashlib.sha256(json.dumps(assets, sort_keys=True).encode()).hexdigest()
+    previous = installed_models(root).get(spec.key)
+    cached = (
+        previous
+        and previous.get("commit") == revision
+        and all(
+            _sha256(_inside(root, root / row["relative_path"]), stop_event)
+            == row["sha256"]
+            for row in previous["files"]
+        )
+    )
+    if cached:
+        if progress:
+            progress({"stage": "ready", "model": spec.key})
+        return previous
+    model_root = _inside(root, root / "models" / spec.key)
+    model_root.mkdir(parents=True, exist_ok=True)
+    # A separate immutable installation directory keeps even a corrupt previous
+    # installation untouched until the replacement is fully verified.
+    destination = Path(tempfile.mkdtemp(prefix=f"{revision[:12]}-", dir=model_root))
+    published = False
+    try:
+        for asset in assets:
+            path = _download_github_asset(
+                spec, asset, destination, client, stop_event, progress
+            )
+            if asset["name"].endswith(".tar.bz2"):
+                _unpack_model_files(path, spec, destination, stop_event)
+        source_record = {
+            "source_url": spec.source_url,
+            "source_type": spec.source,
+            "assets": assets,
+            "license_note": spec.license_note,
+        }
+        (destination / "SOURCE.json").write_text(
+            json.dumps(source_record, indent=2), encoding="utf-8"
+        )
+        rows = []
+        for remote in (*spec.files, "SOURCE.json"):
+            path = destination / Path(remote).name
+            if not path.is_file():
+                raise VoiceError("Model download is missing a required file: " + remote)
+            rows.append(
+                {
+                    "source_path": remote,
+                    "relative_path": str(path.relative_to(root)),
+                    "sha256": _sha256(path, stop_event),
+                    "size": path.stat().st_size,
+                    "source_sha256": next(
+                        (a["sha256"] for a in assets if a["name"] == remote), None
+                    ),
+                }
+            )
+        _check_stop(stop_event)
+        model_path = destination / spec.path_file
+        record = {
+            "schema_version": 1,
+            "key": spec.key,
+            "repo_id": spec.repo_id,
+            "requested_revision": spec.revision,
+            "commit": revision,
+            "source_type": spec.source,
+            "source_assets": assets,
+            "relative_path": str(model_path.relative_to(root)),
+            "files": rows,
+            "source_url": spec.source_url,
+            "license_note": spec.license_note,
+        }
+        manifest = _inside(root, root / "installed" / f"{spec.key}.json")
+        _publish_json(manifest, record)
+        published = True
+        if progress:
+            progress({"stage": "ready", "model": spec.key})
+        return {**record, "path": str(model_path)}
+    finally:
+        if not published:
+            shutil.rmtree(destination)
+
+
 def download_model(
     model_key, cache_dir=None, *, stop_event=None, progress=None, client=None
 ):
@@ -234,6 +533,8 @@ def download_model(
             follow_redirects=True, timeout=httpx.Timeout(15.0, connect=10.0)
         )
     try:
+        if spec.source == "github-release":
+            return _download_github_model(spec, root, client, stop_event, progress)
         url = f"https://huggingface.co/api/models/{spec.repo_id}/revision/{quote(spec.revision, safe='')}?blobs=true"
         response = client.get(url)
         response.raise_for_status()
@@ -348,7 +649,7 @@ def download_model(
         raise
     except Exception as exc:
         raise VoiceError(
-            "Local voice model download failed. Check network access to Hugging Face, free disk space and the source URL. "
+            "Local voice model download failed. Check network access to the model source, free disk space and the source URL. "
             + str(exc)
         ) from exc
     finally:

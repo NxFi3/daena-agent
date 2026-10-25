@@ -158,4 +158,4 @@ They do not measure the reasoning quality of a particular live model. Run the
 [benchmark harness](harness/README.md) against a configured model for that check.
 CI targets Python 3.11, 3.12 and 3.13.
 
-Optional local Persian/English Voice Mode: see [setup, model downloads and latency limits](docs/voice.md).
+Optional local Persian/English Voice Mode, Kokoro English, anonymous speaker grouping and acoustic sound events: see [setup, model downloads and latency limits](docs/voice.md).

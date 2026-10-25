@@ -29,6 +29,8 @@ desktop = ["PySide6>=6.8,<7"]
 computer-x11 = ["python-xlib>=0.33,<1"]
 browser = ["playwright>=1.56,<2"]
 voice = ["faster-whisper>=1.2,<2", "piper-tts>=1.3,<2", "webrtcvad-wheels>=2.0.14,<3", "soxr>=0.5,<2"]
+voice-kokoro = ["kokoro-onnx>=0.6.1,<0.7; python_version < '3.14'"]
+voice-perception = ["sherpa-onnx>=1.12,<2"]
 
 [project.scripts]
 daena = "cli.app:main"

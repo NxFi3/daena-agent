@@ -21,12 +21,14 @@ from src.voice.streaming import Utterance
 checkout = Path(sys.argv[1]).resolve()
 assert not Path(src.voice.session.__file__).resolve().is_relative_to(checkout)
 spoken = []
+prompts = []
 
 
 class Model:
     model = None
 
     def generate(self, messages, **kwargs):
+        prompts.append(messages)
         return LLMResult("سلام. Hello, I am Daena.", {}, [], None, 1)
 
 
@@ -39,6 +41,15 @@ class Synthesizer:
     def synthesize(self, text, *args, **kwargs):
         spoken.append(text)
         yield AudioChunk(16000, b"\0\0" * 1600)
+
+
+class Perception:
+    def analyze(self, pcm16, sample_rate=16000, **kwargs):
+        assert pcm16 and sample_rate == 16000
+        return {
+            "speaker": {"id": "speaker_1", "status": "new", "similarity": None},
+            "sounds": {"status": "unknown", "events": []},
+        }
 
 
 class Audio(QObject):
@@ -92,10 +103,13 @@ with TemporaryDirectory() as directory:
         window,
         audio_factory=Audio,
         provider_factory=lambda config: (Recognizer(), Synthesizer()),
+        perception_factory=lambda config: Perception(),
     )
     window.voice_controller = controller
     controller.dialog = VoiceDialog(parent=window)
-    controller.start({"language": "auto", "auto_send": True})
+    controller.start(
+        {"language": "auto", "auto_send": True, "perception_enabled": True}
+    )
     controller.session.submit_audio(Utterance(b"\0\0" * 1600))
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
@@ -106,6 +120,10 @@ with TemporaryDirectory() as directory:
     assert window._result and window._result["metrics"]["completed"], window._result
     assert "سلام داینا" in window.transcript.toPlainText()
     assert controller.audio.played and spoken
+    assert prompts and any(
+        "anonymous_session_label" in str(messages) and "speaker_1" in str(messages)
+        for messages in prompts
+    )
     assert window.agent is not None
     window.close()
     app.processEvents()

@@ -737,7 +737,9 @@ class StudioWindow(QMainWindow):
     def start_worker(self, prompt, blueprint=None):
         if self.busy:
             return
+        input_context = None
         if self.voice_controller is not None and blueprint is None:
+            input_context = self.voice_controller.context_for_prompt(prompt)
             self.voice_controller.begin_turn()
         self._automation_run = blueprint is not None
         if self._automation_run:
@@ -787,6 +789,7 @@ class StudioWindow(QMainWindow):
         self.automation.set_running(True)
         self.settings.setEnabled(False)
         config = self.store.runtime_config(self.config)
+        voice_options = {"input_context": input_context} if input_context else {}
         self.worker = RuntimeWorker(
             config,
             prompt,
@@ -794,6 +797,7 @@ class StudioWindow(QMainWindow):
             session_id=self.session_id,
             blueprint=blueprint,
             parent=self,
+            **voice_options,
         )
         if self.agent_factory is not None and blueprint is None and self.agent is None:
             # Dependency injection is used by offline end-to-end tests.

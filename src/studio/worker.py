@@ -23,11 +23,13 @@ class RuntimeWorker(QThread):
         agent=None,
         session_id=None,
         blueprint=None,
+        input_context=None,
         parent=None,
     ):
         super().__init__(parent)
         self.config, self.prompt = deepcopy(config), prompt
         self.agent, self.session_id, self.blueprint = agent, session_id, blueprint
+        self.input_context = deepcopy(input_context)
         self.stop = Event()
 
     def run(self):
@@ -51,9 +53,14 @@ class RuntimeWorker(QThread):
                 self.agent.session_id = self.session_id
                 self.agent.loop.session_id = self.session_id
             self.ready.emit(self.agent)
+            content = self.prompt
+            if self.input_context:
+                from src.voice.observations import observation_context
+
+                content += observation_context(self.input_context)
             result = self.agent.act(
                 ContextEvent(
-                    role=ContextRole.USER, type=ContextType.MESSAGE, content=self.prompt
+                    role=ContextRole.USER, type=ContextType.MESSAGE, content=content
                 ),
                 stop_event=self.stop,
                 on_event=self.event.emit,

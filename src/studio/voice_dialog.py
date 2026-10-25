@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -139,6 +140,13 @@ class VoiceDialog(QDialog):
             "Only committed assistant messages; model reasoning is never spoken"
         )
         chat.addWidget(self.speak_progress)
+        self.perception_summary = QLabel(
+            "Audio perception is optional · configure it in Perception"
+        )
+        self.perception_summary.setTextFormat(Qt.PlainText)
+        self.perception_summary.setObjectName("muted")
+        self.perception_summary.setWordWrap(True)
+        chat.addWidget(self.perception_summary)
         note = QLabel(
             "Microphone input pauses during playback to avoid hearing Daena’s own voice. Use Interrupt to stop speech and resume listening. This is not acoustic echo cancellation."
         )
@@ -178,6 +186,18 @@ class VoiceDialog(QDialog):
         row.addWidget(self.stt_device)
         row.addWidget(self.stt_compute_type)
         form.addRow("Device / precision", row)
+        recognition_tuning = QHBoxLayout()
+        self.stt_cpu_threads = QSpinBox()
+        self.stt_cpu_threads.setRange(1, 32)
+        self.stt_cpu_threads.setToolTip("CPU threads used by local speech recognition")
+        self.stt_beam_size = QSpinBox()
+        self.stt_beam_size.setRange(1, 5)
+        self.stt_beam_size.setToolTip(
+            "1 decodes faster; a wider beam may improve recognition but takes longer"
+        )
+        recognition_tuning.addWidget(self.stt_cpu_threads)
+        recognition_tuning.addWidget(self.stt_beam_size)
+        form.addRow("CPU threads / beam", recognition_tuning)
         self.tts_fa_model = QLineEdit()
         self.tts_fa_model.setPlaceholderText("Local Persian .onnx model")
         form.addRow("Persian voice", self._model_picker(self.tts_fa_model))
@@ -186,6 +206,10 @@ class VoiceDialog(QDialog):
             lambda: self.download_requested.emit("piper-fa")
         )
         form.addRow("", self.fa_download)
+        self.english_engine = QComboBox()
+        self.english_engine.addItem("Piper · lightweight", "piper")
+        self.english_engine.addItem("Kokoro · expressive English", "kokoro")
+        form.addRow("English engine", self.english_engine)
         self.tts_en_model = QLineEdit()
         self.tts_en_model.setPlaceholderText("Local English .onnx model")
         form.addRow("English voice", self._model_picker(self.tts_en_model))
@@ -194,6 +218,57 @@ class VoiceDialog(QDialog):
             lambda: self.download_requested.emit("piper-en")
         )
         form.addRow("", self.en_download)
+        self.kokoro_page = QWidget()
+        kokoro = QFormLayout(self.kokoro_page)
+        kokoro.setContentsMargins(0, 2, 0, 2)
+        kokoro.setVerticalSpacing(9)
+        self.kokoro_model_path = QLineEdit()
+        self.kokoro_model_path.setPlaceholderText("Local Kokoro .onnx model")
+        kokoro.addRow("Kokoro model", self._model_picker(self.kokoro_model_path))
+        self.kokoro_voices_path = QLineEdit()
+        self.kokoro_voices_path.setPlaceholderText("Local voices .bin file")
+        kokoro.addRow(
+            "Kokoro voices",
+            self._model_picker(
+                self.kokoro_voices_path, "Kokoro voices (*.bin);;All files (*)"
+            ),
+        )
+        self.kokoro_voice = QComboBox()
+        self.kokoro_voice.setEditable(True)
+        for label, value in (
+            ("Heart · American English", "af_heart"),
+            ("Bella · American English", "af_bella"),
+            ("Michael · American English", "am_michael"),
+            ("Emma · British English", "bf_emma"),
+            ("George · British English", "bm_george"),
+        ):
+            self.kokoro_voice.addItem(label, value)
+        kokoro.addRow("Speaking voice", self.kokoro_voice)
+        self.kokoro_cpu_threads = QSpinBox()
+        self.kokoro_cpu_threads.setRange(1, 16)
+        self.kokoro_cpu_threads.setToolTip(
+            "Kokoro inference threads; more threads can compete with the Agent and slow responses"
+        )
+        kokoro.addRow("Kokoro CPU threads", self.kokoro_cpu_threads)
+        self.kokoro_download = QPushButton("Download Kokoro English model + voices")
+        self.kokoro_download.clicked.connect(
+            lambda: self.download_requested.emit("kokoro-en")
+        )
+        kokoro.addRow("", self.kokoro_download)
+        kokoro_note = QLabel(
+            "Kokoro is used for English. Persian keeps its own Piper voice; Kokoro does not officially support Persian."
+        )
+        kokoro_note.setObjectName("muted")
+        kokoro_note.setWordWrap(True)
+        kokoro.addRow(kokoro_note)
+        form.addRow(self.kokoro_page)
+        self.speech_speed = QDoubleSpinBox()
+        self.speech_speed.setRange(0.7, 1.4)
+        self.speech_speed.setSingleStep(0.05)
+        self.speech_speed.setDecimals(2)
+        self.speech_speed.setSuffix(" ×")
+        self.speech_speed.setToolTip("1.00 is the voice’s natural speaking speed")
+        form.addRow("Speaking speed", self.speech_speed)
         download_note = QLabel(
             "Models are downloaded only when you select Download. Recognition and synthesis then run locally. Quality, RAM/VRAM use and first-response time depend on the selected model and your hardware."
         )
@@ -237,6 +312,94 @@ class VoiceDialog(QDialog):
         self.audio_scroll.setFrameShape(QFrame.NoFrame)
         self.audio_scroll.setWidget(self.audio_page)
         self.tabs.addTab(self.audio_scroll, "Audio")
+        self.perception_page = QWidget()
+        perception = QFormLayout(self.perception_page)
+        perception.setContentsMargins(14, 16, 14, 12)
+        perception.setVerticalSpacing(11)
+        self.perception_enabled = QCheckBox("Analyze voices and sounds locally")
+        self.perception_enabled.setToolTip(
+            "Uses optional learned models on microphone audio, independently of the transcript"
+        )
+        perception.addRow(self.perception_enabled)
+        perception_note = QLabel(
+            "Distinguish anonymous speakers within this voice session and show likely sound classes. "
+            "Models process the audio itself. Short or noisy samples can remain uncertain; this is not identity verification."
+        )
+        perception_note.setObjectName("muted")
+        perception_note.setWordWrap(True)
+        perception.addRow(perception_note)
+        self.speaker_model_path = QLineEdit()
+        self.speaker_model_path.setPlaceholderText(
+            "Optional local speaker-embedding .onnx model"
+        )
+        perception.addRow("Speaker model", self._model_picker(self.speaker_model_path))
+        self.speaker_download = QPushButton("Download speaker-embedding model")
+        self.speaker_download.clicked.connect(
+            lambda: self.download_requested.emit("speaker-embedding")
+        )
+        perception.addRow("", self.speaker_download)
+        self.speaker_threshold = QDoubleSpinBox()
+        self.speaker_threshold.setRange(0.5, 0.99)
+        self.speaker_threshold.setSingleStep(0.01)
+        self.speaker_threshold.setDecimals(2)
+        self.speaker_threshold.setToolTip(
+            "Minimum cosine similarity to match a session speaker; higher is stricter. This is not an identity probability."
+        )
+        perception.addRow("Speaker match threshold", self.speaker_threshold)
+        self.sound_model_path = QLineEdit()
+        self.sound_model_path.setPlaceholderText(
+            "Optional local audio-event .onnx model"
+        )
+        perception.addRow("Sound model", self._model_picker(self.sound_model_path))
+        self.sound_labels_path = QLineEdit()
+        self.sound_labels_path.setPlaceholderText("Matching class_labels_indices.csv")
+        perception.addRow(
+            "Sound labels",
+            self._model_picker(
+                self.sound_labels_path, "Class labels (*.csv);;All files (*)"
+            ),
+        )
+        self.sound_download = QPushButton("Download audio-event model + labels")
+        self.sound_download.clicked.connect(
+            lambda: self.download_requested.emit("audio-events")
+        )
+        perception.addRow("", self.sound_download)
+        self.sound_threshold = QDoubleSpinBox()
+        self.sound_threshold.setRange(0.05, 0.95)
+        self.sound_threshold.setSingleStep(0.05)
+        self.sound_threshold.setDecimals(2)
+        self.sound_threshold.setToolTip(
+            "Minimum model score to display a sound class; weaker detections remain unknown"
+        )
+        perception.addRow("Sound detection threshold", self.sound_threshold)
+        self.sound_events_enabled = QCheckBox(
+            "Also sample ambient sounds between speech"
+        )
+        self.sound_events_enabled.setToolTip(
+            "Adds local audio analysis while the microphone is listening; playback remains excluded"
+        )
+        perception.addRow(self.sound_events_enabled)
+        self.speaker_observation = QLabel("No speaker observation yet")
+        self.sound_observation = QLabel("No sound observation yet")
+        for label in (self.speaker_observation, self.sound_observation):
+            label.setWordWrap(True)
+            label.setTextFormat(Qt.PlainText)
+            label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        perception.addRow("Latest speaker", self.speaker_observation)
+        perception.addRow("Latest sounds", self.sound_observation)
+        uncertainty_note = QLabel(
+            "Speaker similarity is not a calibrated confidence score. “Unknown sound” means no supported sound class "
+            "passed the model threshold. Recent observations may accompany your next message as probabilistic sensor data."
+        )
+        uncertainty_note.setObjectName("muted")
+        uncertainty_note.setWordWrap(True)
+        perception.addRow(uncertainty_note)
+        perception.setSizeConstraint(QLayout.SetMinimumSize)
+        self.perception_scroll = QScrollArea()
+        self.perception_scroll.setWidgetResizable(True)
+        self.perception_scroll.setFrameShape(QFrame.NoFrame)
+        self.perception_scroll.setWidget(self.perception_page)
+        self.tabs.addTab(self.perception_scroll, "Perception")
         controls = QHBoxLayout()
         self.mute_button = QPushButton("Mute mic")
         self.mute_button.setCheckable(True)
@@ -268,20 +431,43 @@ class VoiceDialog(QDialog):
             self.stt_compute_type,
             self.input_device,
             self.output_device,
+            self.english_engine,
         ):
             widget.currentIndexChanged.connect(self._changed)
         self.stt_model.currentTextChanged.connect(self._changed)
-        for widget in (self.tts_fa_model, self.tts_en_model):
+        self.kokoro_voice.currentTextChanged.connect(self._changed)
+        self.english_engine.currentIndexChanged.connect(self._update_engine)
+        self._update_engine()
+        for widget in (
+            self.tts_fa_model,
+            self.tts_en_model,
+            self.kokoro_model_path,
+            self.kokoro_voices_path,
+            self.speaker_model_path,
+            self.sound_model_path,
+            self.sound_labels_path,
+        ):
             widget.textChanged.connect(self._changed)
-        for widget in (self.auto_send, self.speak_progress):
+        for widget in (
+            self.auto_send,
+            self.speak_progress,
+            self.perception_enabled,
+            self.sound_events_enabled,
+        ):
             widget.toggled.connect(self._changed)
         self.silence_ms.valueChanged.connect(self._changed)
         self.max_utterance_seconds.valueChanged.connect(self._changed)
+        self.speech_speed.valueChanged.connect(self._changed)
+        self.stt_cpu_threads.valueChanged.connect(self._changed)
+        self.stt_beam_size.valueChanged.connect(self._changed)
+        self.kokoro_cpu_threads.valueChanged.connect(self._changed)
+        self.speaker_threshold.valueChanged.connect(self._changed)
+        self.sound_threshold.valueChanged.connect(self._changed)
         self.transcript.textChanged.connect(self._review_ready)
         self.set_active(False)
         self._review_ready()
 
-    def _model_picker(self, field):
+    def _model_picker(self, field, file_filter="ONNX models (*.onnx);;All files (*)"):
         host = QWidget()
         row = QHBoxLayout(host)
         row.setContentsMargins(0, 0, 0, 0)
@@ -290,7 +476,7 @@ class VoiceDialog(QDialog):
 
         def choose():
             name, _ = QFileDialog.getOpenFileName(
-                self, "Select a local Piper model", field.text(), "Piper voice (*.onnx)"
+                self, "Select a local voice model file", field.text(), file_filter
             )
             if name:
                 field.setText(name)
@@ -315,8 +501,27 @@ class VoiceDialog(QDialog):
         self._select(self.stt_model, settings.get("stt_model", "large-v3-turbo"))
         self._select(self.stt_device, settings.get("stt_device", "cpu"))
         self._select(self.stt_compute_type, settings.get("stt_compute_type", "int8"))
+        self.stt_cpu_threads.setValue(int(settings.get("stt_cpu_threads", 4)))
+        self.stt_beam_size.setValue(int(settings.get("stt_beam_size", 3)))
         self.tts_fa_model.setText(settings.get("tts_fa_model", ""))
         self.tts_en_model.setText(settings.get("tts_en_model", ""))
+        self._select(self.english_engine, settings.get("english_engine", "piper"))
+        self.kokoro_model_path.setText(settings.get("kokoro_model_path", ""))
+        self.kokoro_voices_path.setText(settings.get("kokoro_voices_path", ""))
+        self._select(self.kokoro_voice, settings.get("kokoro_voice", "af_heart"))
+        self.kokoro_cpu_threads.setValue(int(settings.get("kokoro_cpu_threads", 2)))
+        self.speech_speed.setValue(float(settings.get("speech_speed", 1.0)))
+        self.perception_enabled.setChecked(
+            bool(settings.get("perception_enabled", False))
+        )
+        self.speaker_model_path.setText(settings.get("speaker_model_path", ""))
+        self.sound_model_path.setText(settings.get("sound_model_path", ""))
+        self.sound_labels_path.setText(settings.get("sound_labels_path", ""))
+        self.speaker_threshold.setValue(float(settings.get("speaker_threshold", 0.88)))
+        self.sound_threshold.setValue(float(settings.get("sound_threshold", 0.25)))
+        self.sound_events_enabled.setChecked(
+            bool(settings.get("sound_events_enabled", False))
+        )
         self._pending_device_ids = {
             self.input_device: settings.get("input_device_id", ""),
             self.output_device: settings.get("output_device_id", ""),
@@ -330,6 +535,21 @@ class VoiceDialog(QDialog):
             int(settings.get("max_utterance_seconds", 30))
         )
         self._populating = previous
+        self._update_engine()
+
+    def _update_engine(self, *args):
+        kokoro = self.english_engine.currentData() == "kokoro"
+        self.kokoro_page.setVisible(kokoro)
+        self.tts_en_model.setEnabled(not kokoro)
+        self.en_download.setEnabled(not kokoro)
+
+    def _speaking_voice(self):
+        index = self.kokoro_voice.currentIndex()
+        if index >= 0 and self.kokoro_voice.currentText() == self.kokoro_voice.itemText(
+            index
+        ):
+            return self.kokoro_voice.itemData(index)
+        return self.kokoro_voice.currentText().strip()
 
     def _speech_model(self):
         index = self.stt_model.currentIndex()
@@ -345,8 +565,23 @@ class VoiceDialog(QDialog):
             "stt_model": self._speech_model(),
             "stt_device": self.stt_device.currentText(),
             "stt_compute_type": self.stt_compute_type.currentText(),
+            "stt_cpu_threads": self.stt_cpu_threads.value(),
+            "stt_beam_size": self.stt_beam_size.value(),
             "tts_fa_model": self.tts_fa_model.text().strip(),
             "tts_en_model": self.tts_en_model.text().strip(),
+            "english_engine": self.english_engine.currentData(),
+            "kokoro_model_path": self.kokoro_model_path.text().strip(),
+            "kokoro_voices_path": self.kokoro_voices_path.text().strip(),
+            "kokoro_voice": self._speaking_voice(),
+            "kokoro_cpu_threads": self.kokoro_cpu_threads.value(),
+            "speech_speed": self.speech_speed.value(),
+            "perception_enabled": self.perception_enabled.isChecked(),
+            "speaker_model_path": self.speaker_model_path.text().strip(),
+            "sound_model_path": self.sound_model_path.text().strip(),
+            "sound_labels_path": self.sound_labels_path.text().strip(),
+            "speaker_threshold": self.speaker_threshold.value(),
+            "sound_threshold": self.sound_threshold.value(),
+            "sound_events_enabled": self.sound_events_enabled.isChecked(),
             "input_device_id": self.input_device.currentData() or "",
             "output_device_id": self.output_device.currentData() or "",
             "auto_send": self.auto_send.isChecked(),
@@ -416,6 +651,12 @@ class VoiceDialog(QDialog):
             parts.append(f"Recognition {float(values['stt_ms']):.0f} ms")
         if values.get("first_pcm_ms") is not None:
             parts.append(f"First PCM {float(values['first_pcm_ms']):.0f} ms")
+        if values.get("agent_ms") is not None:
+            parts.append(f"Agent response {float(values['agent_ms']):.0f} ms")
+        if values.get("first_playback_ms") is not None:
+            parts.append(
+                f"Playback dispatch {float(values['first_playback_ms']):.0f} ms"
+            )
         if values.get("queued_seconds") is not None:
             parts.append(f"Queued audio {float(values['queued_seconds']):.1f} s")
         if parts:
@@ -423,6 +664,63 @@ class VoiceDialog(QDialog):
 
     def set_state(self, text):
         self.status.setText(str(text))
+
+    def set_perception(self, evidence):
+        """Render bounded model evidence; anonymous IDs never imply a real identity."""
+        speaker = evidence.get("speaker") or {}
+        sounds = evidence.get("sounds") or {}
+        speaker_id = speaker.get("id")
+        status = str(speaker.get("status", "disabled"))
+        if speaker_id:
+            label = str(speaker_id).replace("speaker_", "Speaker ")[:80]
+            similarity = speaker.get("similarity")
+            if isinstance(similarity, (int, float)):
+                label += f" · cosine similarity {similarity:.2f}"
+            if status == "new":
+                label += " · new in this session"
+            self.speaker_observation.setText(label)
+        else:
+            labels = {
+                "uncertain": "Uncertain speaker · sample did not match reliably",
+                "too_short": "Speaker unknown · sample is too short",
+                "not_speech": "No speech sample for speaker comparison",
+                "silence": "No speech detected",
+                "disabled": "Speaker model is not enabled",
+            }
+            self.speaker_observation.setText(labels.get(status, "Speaker unknown"))
+        events = sounds.get("events", []) if isinstance(sounds, dict) else []
+        names = []
+        for event in events[:3]:
+            if not isinstance(event, dict):
+                continue
+            name = str(event.get("label", "Unknown"))[:100]
+            score = event.get("score")
+            if isinstance(score, (int, float)):
+                name += f" ({min(1.0, max(0.0, score)):.0%})"
+            names.append(name)
+        sound_status = sounds.get("status") if isinstance(sounds, dict) else "unknown"
+        if sound_status == "known" and names:
+            sound_label = ", ".join(names)
+        else:
+            sound_label = {
+                "unknown": "Unknown sound · no class passed the threshold",
+                "silence": "Silence or signal below the model input threshold",
+                "disabled": "Sound model is not enabled",
+            }.get(sound_status, "No sound observation yet")
+        self.sound_observation.setText(sound_label)
+        summary = []
+        if speaker_id:
+            summary.append(str(speaker_id).replace("speaker_", "Speaker ")[:80])
+        elif status in {"uncertain", "too_short"}:
+            summary.append("Speaker uncertain")
+        if sound_status == "known" and names:
+            summary.append("Sounds: " + ", ".join(names))
+        elif sound_status == "unknown":
+            summary.append("Unknown sound")
+        self.perception_summary.setText(
+            " · ".join(summary)
+            or "Audio perception is optional · configure it in Perception"
+        )
 
     def set_transcript(self, text):
         self.transcript.setPlainText(str(text))
@@ -439,6 +737,7 @@ class VoiceDialog(QDialog):
         self.finish_button.setEnabled(active)
         self.model_page.setEnabled(not active)
         self.audio_page.setEnabled(not active)
+        self.perception_page.setEnabled(not active)
         if not active:
             self.mute_button.setChecked(False)
             self.meter.set_level(0)
