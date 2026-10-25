@@ -157,6 +157,7 @@ class StudioWindow(QMainWindow):
         self.store = StudioStore(self.workspace)
         self.config = self.store.load_config(config)
         self.agent = None
+        self.voice_controller = None
         self.worker = None
         self.busy = False
         self.session_id = uuid4()
@@ -398,6 +399,14 @@ class StudioWindow(QMainWindow):
         self.tools_shortcut.setToolTip("Choose tools")
         self.tools_shortcut.clicked.connect(self.choose_tools)
         row.addWidget(self.tools_shortcut)
+        self.voice_button = QToolButton()
+        self.voice_button.setObjectName("voiceModeButton")
+        self.voice_button.setText("◉ Voice")
+        self.voice_button.setToolTip(
+            "Local Persian / English Voice Mode · microphone starts only when enabled"
+        )
+        self.voice_button.clicked.connect(self.open_voice)
+        row.addWidget(self.voice_button)
         reasoning_title = QLabel("Reasoning")
         reasoning_title.setObjectName("composerHint")
         row.addWidget(reasoning_title)
@@ -682,6 +691,13 @@ class StudioWindow(QMainWindow):
     def add_message(self, speaker, text):
         return self.transcript.add_message(speaker, text)
 
+    def open_voice(self):
+        if self.voice_controller is None:
+            from src.studio.voice_controller import VoiceController
+
+            self.voice_controller = VoiceController(self)
+        self.voice_controller.open()
+
     def _composer_action(self):
         if self.busy and not self._automation_run:
             self.stop()
@@ -703,6 +719,8 @@ class StudioWindow(QMainWindow):
             if self.busy_mode.currentIndex() == 1:
                 self.queued.append(text)
                 self.add_message("Queued", text)
+                if self.voice_controller is not None:
+                    self.voice_controller.acknowledge_submission()
                 return
             if self.agent is None:
                 self.error("The model is still initializing; try again shortly")
@@ -711,12 +729,16 @@ class StudioWindow(QMainWindow):
             self.agent.steer(text)
             self.add_message("You · steering", text)
             self.record({"type": "user_message", "text": text})
+            if self.voice_controller is not None:
+                self.voice_controller.acknowledge_submission()
             return
         self.start_worker(text)
 
     def start_worker(self, prompt, blueprint=None):
         if self.busy:
             return
+        if self.voice_controller is not None and blueprint is None:
+            self.voice_controller.begin_turn()
         self._automation_run = blueprint is not None
         if self._automation_run:
             self.automation_journal = []
@@ -812,6 +834,8 @@ class StudioWindow(QMainWindow):
             del journal[:100]
 
     def on_event(self, event):
+        if self.voice_controller is not None:
+            self.voice_controller.on_event(event)
         kind = event.get("type")
         self.record(event)
         if kind == "generation_start":
@@ -1020,6 +1044,8 @@ class StudioWindow(QMainWindow):
                 self.activity.appendPlainText("Automation archive error: " + str(exc))
             return
         self._result = result
+        if self.voice_controller is not None:
+            self.voice_controller.on_result(result)
         self.flush_stream()
         self.transcript.finish(
             result["text"],
@@ -1083,6 +1109,8 @@ class StudioWindow(QMainWindow):
             QTimer.singleShot(0, lambda: self.start_worker(text))
 
     def stop(self):
+        if self.voice_controller is not None:
+            self.voice_controller.cancel_speech()
         self.queued.clear()
         if self.worker:
             self.send_button.setEnabled(False)
@@ -1484,6 +1512,8 @@ class StudioWindow(QMainWindow):
                 self.error(str(exc))
 
     def closeEvent(self, event):
+        if self.voice_controller is not None:
+            self.voice_controller.close()
         if self.busy:
             self._closing = True
             self.stop()

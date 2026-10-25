@@ -92,6 +92,8 @@ QToolButton#sidebarToggle {font-size:18px;padding:6px 10px;}
 QPushButton#modelBadge {background:transparent;border:0;border-radius:10px;padding:7px 12px;font-size:16px;font-weight:600;color:$text;}
 QPushButton#modelBadge:hover {background:$hover;}
 QPushButton#modelBadge::menu-indicator {image:none;width:0;}
+QToolButton#voiceModeButton {background:transparent;border:0;border-radius:12px;font-size:12px;color:$muted;padding:5px 8px;}
+QToolButton#voiceModeButton:hover {background:$hover;color:$text;}
 QToolButton#composerAccessory {background:transparent;border:0;border-radius:16px;font-size:19px;color:$muted;padding:4px 9px;}
 QToolButton#composerAccessory:hover {background:$hover;color:$text;}
 QSlider#reasoningSlider::groove:horizontal {height:4px;background:$border;border-radius:2px;}

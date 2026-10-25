@@ -108,3 +108,33 @@ jobs:
           name: studio-previews
           path: .studio-previews/*.png
           include-hidden-files: true
+
+  voice:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install Qt system libraries
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libopengl0 libxcb-cursor0 libpulse0
+      - name: Install optional local speech engines
+        run: python -m pip install -e '.[dev,desktop,voice]'
+      - name: Verify local speech packages without downloading weights
+        run: |
+          python -c "from faster_whisper import WhisperModel; from piper import PiperVoice; import soxr, webrtcvad; print('LOCAL_SPEECH_IMPORTS_OK')"
+          python -m src.voice doctor
+      - name: Voice lifecycle, audio conversion and UI regressions
+        run: python -m pytest -q tests/test_voice_session.py tests/test_voice_providers.py tests/test_voice_controller.py tests/test_voice_audio.py
+      - name: Build and exercise installed voice integration
+        run: |
+          python -m build
+          python -m venv --system-site-packages "$RUNNER_TEMP/voice-wheel"
+          "$RUNNER_TEMP/voice-wheel/bin/python" -m pip install --ignore-installed --no-deps dist/daena_agent-0.6.0-py3-none-any.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/voice-wheel/bin/python" "$GITHUB_WORKSPACE/tests/smoke_voice_wheel.py" "$GITHUB_WORKSPACE"
