@@ -49,7 +49,10 @@ def build_action(request, snapshot, elements):
         coordinate = [position["x"], position["y"]]
         if target:
             if not target.bounds:
-                raise ComputerError("target_not_actionable", "Relative position requires observed bounds. Use an absolute screenshot coordinate instead.")
+                raise ComputerError(
+                    "target_not_actionable",
+                    "Relative position requires observed bounds. Use an absolute screenshot coordinate instead.",
+                )
             x, y = point(coordinate, target.bounds.width, target.bounds.height)
             coordinate = [target.bounds.x + x, target.bounds.y + y]
     if target and position is None:
@@ -113,16 +116,26 @@ def build_action(request, snapshot, elements):
             raise ComputerError(
                 "invalid_arguments", "drag requires from_coordinate and to_coordinate."
             )
-        args["from_x"], args["from_y"] = point(
-            request.get("from_coordinate"),
-            snapshot.get("width", 0),
-            snapshot.get("height", 0),
-        )
-        args["to_x"], args["to_y"] = point(
-            request.get("to_coordinate"),
-            snapshot.get("width", 0),
-            snapshot.get("height", 0),
-        )
+        path = request.get("path")
+        if path is not None:
+            args["path"] = [
+                list(point(p, snapshot.get("width", 0), snapshot.get("height", 0)))
+                for p in path
+            ]
+            start, end = args["path"][0], args["path"][-1]
+        else:
+            start = point(
+                request.get("from_coordinate"),
+                snapshot.get("width", 0),
+                snapshot.get("height", 0),
+            )
+            end = point(
+                request.get("to_coordinate"),
+                snapshot.get("width", 0),
+                snapshot.get("height", 0),
+            )
+        args["from_x"], args["from_y"] = start
+        args["to_x"], args["to_y"] = end
         args.update(
             coordinate_frame=snapshot["coordinate_frame"],
             duration_ms=request.get("duration_ms", 500),
@@ -147,6 +160,10 @@ def dispatch(backend, session, action, args):
         try:
             backend.dispatch(session, action, part)
         except ComputerError as exc:
+            if sent == 0 and exc.not_dispatched and not exc.dispatched:
+                # A refused first chunk is still zero delivery; no text may be
+                # called partial until a preceding chunk was acknowledged.
+                raise
             raise ComputerError(
                 exc.code,
                 f"Typing is partial: {sent}/{len(text)} characters acknowledged; the failing chunk may also have reached the app. {exc}",

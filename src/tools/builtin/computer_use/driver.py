@@ -9,6 +9,7 @@ import subprocess
 import threading
 import time
 import tempfile
+import sys
 
 from .runtime import ComputerError, checkpoint, pause
 from pathlib import Path
@@ -90,6 +91,29 @@ def response_error(message, *outputs):
             for p in (payload, details)
         )
         error = CuaDriverError(message, code=str(code), not_dispatched=refused)
+        # Preserve the driver's bounded recovery facts separately from its
+        # potentially verbose stdout/stderr. Never promote arbitrary text to
+        # proof that an input was not sent.
+        error.driver_details = {"code": str(code)}
+        detail = details.get("detail") or details.get("message")
+        if detail:
+            error.driver_details["detail"] = str(detail)[:800]
+        escalation = details.get("escalation") or payload.get("escalation")
+        if isinstance(escalation, dict):
+            error.driver_details["escalation"] = {
+                str(key): value
+                if isinstance(value, (bool, int, float))
+                else str(value)[:400]
+                for key, value in escalation.items()
+                if key
+                in {
+                    "reason",
+                    "delivery_mode",
+                    "required_delivery_mode",
+                    "required",
+                    "action",
+                }
+            }
         return error
     return CuaDriverError(message)
 
@@ -229,6 +253,10 @@ def _compose_desktop_environment(
 
 
 def _desktop_session_environment() -> dict[str, str]:
+    if sys.platform in {"win32", "darwin"}:
+        # Native Windows/macOS drivers use their logged-in user's desktop and
+        # permissions. DISPLAY, /proc and XDG_RUNTIME_DIR are Linux concepts.
+        return dict(os.environ)
     candidates = _read_process_environment()
     env = _compose_desktop_environment(os.environ, candidates)
     if not env.get("DISPLAY") and not env.get("WAYLAND_DISPLAY"):
@@ -249,12 +277,26 @@ def _kill_process_group(process: subprocess.Popen) -> None:
     # `cua-driver call` client (and anything it spawned), never the daemon,
     # the browser, or other user processes.
     try:
-        os.killpg(process.pid, 9)
-    except (ProcessLookupError, PermissionError, OSError):
-        try:
+        if sys.platform == "win32":
+            # This helper PID is ours, created for this invocation. /T also
+            # terminates its descendants, rather than unrelated desktop apps.
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=2,
+                check=False,
+            )
+        else:
+            os.killpg(process.pid, 9)
+    except (ProcessLookupError, PermissionError, OSError, subprocess.TimeoutExpired):
+        pass
+    try:
+        if process.poll() is None:
             process.kill()
-        except OSError:
-            pass
+    except OSError:
+        pass
 
 
 def _run_bounded(command: list[str], timeout: float) -> subprocess.CompletedProcess:
@@ -432,6 +474,7 @@ def _driver_refusal_detail(output: str) -> str | None:
     )
     if (
         is_error
+        or bool(payload.get("error"))
         or has_refusal
         or explicit_negative
         or status in {"refused", "error", "failed"}

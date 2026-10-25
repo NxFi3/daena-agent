@@ -1,6 +1,7 @@
 """Optional Linux/X11 adapter. Explicit foreground input, no silent Wayland fallback."""
 
 import os
+import math
 from contextlib import closing
 import shutil
 import subprocess
@@ -22,7 +23,9 @@ class X11Backend:
     @staticmethod
     def _wayland_session():
         session = os.environ.get("XDG_SESSION_TYPE", "").lower()
-        return session == "wayland" or (session not in {"x11", "tty"} and bool(os.environ.get("WAYLAND_DISPLAY")))
+        return session == "wayland" or (
+            session not in {"x11", "tty"} and bool(os.environ.get("WAYLAND_DISPLAY"))
+        )
 
     def empty_window_error(self):
         if self._wayland_session():
@@ -31,13 +34,46 @@ class X11Backend:
                 "This X11 backend cannot enumerate or control native Wayland windows. No eligible Xwayland windows were found; this does not mean the user's app is closed or uninstalled. Installing another app or retrying capture will not add native Wayland support. Use a supported native Wayland backend, or log out and select an X11/Xorg desktop session before restarting Daena. Setting DAENA_COMPUTER_BACKEND=x11 does not change the desktop session.",
             )
 
+    def capabilities(self, session=None, window=None):
+        return {
+            "backend": self.name,
+            "actions": [
+                "click",
+                "double_click",
+                "right_click",
+                "move",
+                "type_text",
+                "press_key",
+                "hotkey",
+                "scroll",
+                "drag",
+            ],
+            "coordinate_frames": ["window", "desktop"],
+            "delivery_modes": {"foreground": True, "background": False},
+            "preferred_delivery_mode": "foreground",
+            "accessibility": False,
+            "pointer_move": True,
+            "drag_path": True,
+            "window_scope": "Xwayland clients only"
+            if self._wayland_session()
+            else "X11 clients",
+            "native_wayland": False,
+            "known_delivery_routes": [],
+        }
+
     def preflight(self, action, arguments):
+        if action == "drag" and arguments.get("path") is not None:
+            self._validate_drag_path(arguments["path"])
         if not shutil.which("xdotool"):
-            raise ComputerError("dependency_missing", "Install xdotool for X11 input. Window discovery and screenshots remain available.")
+            raise ComputerError(
+                "dependency_missing",
+                "Install xdotool for X11 input. Window discovery and screenshots remain available.",
+            )
         if arguments.get("delivery_mode") != "foreground":
             raise ComputerError(
                 "background_unavailable",
                 "X11 requires explicit foreground delivery; no input was sent.",
+                not_dispatched=True,
             )
 
     def ready(self, session):
@@ -65,11 +101,12 @@ class X11Backend:
         """Ask XRes for identity when a client omits optional EWMH PID metadata."""
         try:
             from Xlib.ext import res
+
             if not display.has_extension("X-Resource"):
                 return None
-            reply = display.res_query_client_ids([
-                {"client": handle.id, "mask": res.LocalClientPIDMask}
-            ])
+            reply = display.res_query_client_ids(
+                [{"client": handle.id, "mask": res.LocalClientPIDMask}]
+            )
             for value in reply.ids:
                 if value.spec.mask & res.LocalClientPIDMask and value.value:
                     pid = int(value.value[0])
@@ -89,10 +126,18 @@ class X11Backend:
             listing = root.get_full_property(
                 display.intern_atom("_NET_CLIENT_LIST"), X.AnyPropertyType
             )
-            handles = [display.create_resource_object("window", int(i))
-                       for i in listing.value] if listing is not None else []
+            handles = (
+                [
+                    display.create_resource_object("window", int(i))
+                    for i in listing.value
+                ]
+                if listing is not None
+                else []
+            )
             self.window_diagnostics = {
-                "scope": "Xwayland clients only" if self._wayland_session() else "X11 clients",
+                "scope": "Xwayland clients only"
+                if self._wayland_session()
+                else "X11 clients",
                 "session_type": os.environ.get("XDG_SESSION_TYPE", "unknown"),
                 "wayland_display_configured": bool(os.environ.get("WAYLAND_DISPLAY")),
                 "missing_identity": 0,
@@ -112,7 +157,13 @@ class X11Backend:
                         attrs = handle.get_attributes()
                         if attrs.map_state != X.IsViewable or attrs.override_redirect:
                             continue
-                        if handle.get_wm_class() or handle.get_wm_name() or handle.get_full_property(display.intern_atom("WM_STATE"), X.AnyPropertyType):
+                        if (
+                            handle.get_wm_class()
+                            or handle.get_wm_name()
+                            or handle.get_full_property(
+                                display.intern_atom("WM_STATE"), X.AnyPropertyType
+                            )
+                        ):
                             handles.append(handle)
                         pending.extend(handle.query_tree().children)
                     except Exception:
@@ -133,7 +184,11 @@ class X11Backend:
                     pid = handle.get_full_property(
                         display.intern_atom("_NET_WM_PID"), X.AnyPropertyType
                     )
-                    process_id = int(pid.value[0]) if pid is not None and len(pid.value) else self._local_client_pid(display, handle)
+                    process_id = (
+                        int(pid.value[0])
+                        if pid is not None and len(pid.value)
+                        else self._local_client_pid(display, handle)
+                    )
                     if process_id is None or process_id <= 0:
                         self.window_diagnostics["missing_identity"] += 1
                         continue
@@ -247,6 +302,79 @@ class X11Backend:
             )
         return result.stdout
 
+    @staticmethod
+    def _validate_drag_path(path):
+        if (
+            not isinstance(path, list)
+            or not 2 <= len(path) <= 256
+            or any(
+                not isinstance(point, (list, tuple))
+                or len(point) != 2
+                or any(
+                    isinstance(v, bool)
+                    or not isinstance(v, (int, float))
+                    or not math.isfinite(v)
+                    for v in point
+                )
+                for point in path
+            )
+        ):
+            raise ComputerError(
+                "invalid_arguments",
+                "drag path needs 2–256 finite [x,y] points.",
+                not_dispatched=True,
+            )
+        return path
+
+    def _drag(self, args, move, button):
+        path = args.get("path")
+        if path is None:
+            path = [[args["from_x"], args["from_y"]], [args["to_x"], args["to_y"]]]
+        self._validate_drag_path(path)
+        duration = args["duration_ms"] / 1000
+        lengths = [math.dist(start, end) for start, end in zip(path, path[1:])]
+        total_length = sum(lengths)
+        move(*path[0])
+        try:
+            # A failed/timeout acknowledgement may still have pressed the
+            # button. Keep even that first dispatch inside cleanup coverage.
+            self._run(["mousedown", button])
+            for start, end, length in zip(path, path[1:], lengths):
+                segment_duration = (
+                    duration * length / total_length
+                    if total_length
+                    else duration / len(lengths)
+                )
+                steps = max(1, min(600, round(segment_duration * 60)))
+                for i in range(1, steps + 1):
+                    checkpoint()
+                    t = i / steps
+                    move(
+                        start[0] + (end[0] - start[0]) * t,
+                        start[1] + (end[1] - start[1]) * t,
+                    )
+                    time.sleep(segment_duration / steps)
+        finally:
+            # Releasing is mandatory even after cancellation. It is a new
+            # bounded cleanup helper, not an input retry or continuation.
+            executable = shutil.which("xdotool")
+            try:
+                released = subprocess.run(
+                    [executable, "mouseup", str(button)],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=2,
+                )
+                if getattr(released, "returncode", 0):
+                    raise OSError("xdotool rejected mouseup")
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise ComputerError(
+                    "button_release_failed",
+                    "Drag cleanup could not confirm mouseup; the button may still be held. Stop input and inspect the desktop before continuing.",
+                    dispatched=True,
+                ) from exc
+
     def dispatch(self, session, action, arguments):
         checkpoint()
         args = dict(arguments)
@@ -254,6 +382,7 @@ class X11Backend:
             raise ComputerError(
                 "background_unavailable",
                 "X11 input requires delivery_mode='foreground'; no input was sent.",
+                not_dispatched=True,
             )
         window = None
         if args.get("window_id") is not None:
@@ -293,6 +422,7 @@ class X11Backend:
             from Xlib import X
             from Xlib.display import Display
             from Xlib.ext import xtest
+
             with closing(Display()) as display:
                 xtest.fake_input(display, X.MotionNotify, x=round(x), y=round(y))
                 display.sync()
@@ -352,29 +482,7 @@ class X11Backend:
             button = {"up": 4, "down": 5, "left": 6, "right": 7}[args["direction"]]
             self._run(["click", "--repeat", args["amount"], "--delay", 50, button])
         elif action == "drag":
-            move(args["from_x"], args["from_y"])
-            self._run(["mousedown", button])
-            try:
-                duration = args["duration_ms"] / 1000
-                steps = max(2, min(120, round(duration * 60)))
-                for i in range(1, steps + 1):
-                    checkpoint()
-                    t = i / steps
-                    move(
-                        args["from_x"] + (args["to_x"] - args["from_x"]) * t,
-                        args["from_y"] + (args["to_y"] - args["from_y"]) * t,
-                    )
-                    time.sleep(duration / steps)
-            finally:
-                # Release even when the operation's cancellation/deadline is set.
-                executable = shutil.which("xdotool")
-                subprocess.run(
-                    [executable, "mouseup", str(button)],
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=2,
-                )
+            self._drag(args, move, button)
         else:
             raise ComputerError("unsupported", f"X11 action {action!r} is unsupported.")
         return {
@@ -390,11 +498,14 @@ class X11Backend:
             "display_configured": bool(os.environ.get("DISPLAY")),
             "native_desktop_supported": not self._wayland_session(),
             "whole_desktop_capture_supported": not self._wayland_session(),
-            "window_scope": "Xwayland clients only" if self._wayland_session() else "X11 clients",
+            "window_scope": "Xwayland clients only"
+            if self._wayland_session()
+            else "X11 clients",
             "changing_backend_changes_desktop_session": False,
             "accessibility": False,
             "background_input": False,
             "pointer_move": True,
+            "capabilities": self.capabilities(),
             "session_type": os.environ.get("XDG_SESSION_TYPE", "unknown"),
             "wayland_display_configured": bool(os.environ.get("WAYLAND_DISPLAY")),
             "window_diagnostics": getattr(self, "window_diagnostics", {}),

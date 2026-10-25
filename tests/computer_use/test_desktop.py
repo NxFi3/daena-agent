@@ -121,6 +121,20 @@ def test_real_pointer_keyboard_unicode_scroll_and_drag(tmp_path):
         if artifact:
             Path(artifact).mkdir(parents=True, exist_ok=True)
             shutil.copy2(r.content["observation"]["image_ref"], Path(artifact)/"house.png")
+        # A single path gesture holds the button across every corner, with no
+        # application-specific shape command or extra focus clicks.
+        r = tool.execute(
+            "drag", snapshot_id=r.content["observation"]["snapshot_id"],
+            path=[[x+70,y+80], [x+110,y+40], [x+150,y+80], [x+150,y+150], [x+70,y+150], [x+70,y+80]],
+            duration_ms=500,
+        )
+        assert r.success, r.content
+        deadline = time.monotonic() + 2
+        while state()["stroke_count"] < 8 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert state()["stroke_count"] == 8 and not state()["mouse_down"]
+        assert r.content["visual_delta"]["status"] == "changed"
+        assert tool.current_observation()["capabilities"]["drag_path"]
         # A browser-style address field uses real Ctrl+L, typing, Return events.
         r = tool.execute(
             "navigate",

@@ -1,6 +1,7 @@
 """Immutable raw screenshots, separately annotated previews and honest visual deltas."""
 
 import hashlib
+import json
 from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 from .runtime import ComputerError
@@ -120,4 +121,138 @@ def crop(path, region, scale, output):
         "scale_x": target_size[0] / (box[2] - box[0]),
         "scale_y": target_size[1] / (box[3] - box[1]),
         "mapping": "native_x = origin[0] + zoom_x/scale_x; native_y = origin[1] + zoom_y/scale_y",
+    }
+
+
+def _element_state(element):
+    """Internal identity/state, independent of per-capture public element IDs."""
+    from dataclasses import asdict, is_dataclass
+
+    row = asdict(element) if is_dataclass(element) else dict(element)
+    bounds = row.get("bounds")
+    if is_dataclass(bounds):
+        bounds = asdict(bounds)
+    identity = (
+        ("token", str(row["token"]))
+        if row.get("token")
+        else (
+            "geometry",
+            row.get("role"),
+            row.get("label"),
+            json.dumps(bounds, sort_keys=True),
+        )
+    )
+    return identity, row
+
+
+def observation_signature(snapshot):
+    """Compare observed pixels and AX state, never capture IDs, paths or timestamps.
+
+    Used only to decide when observation polling has stopped changing. A stable
+    signature does not establish application readiness or task completion.
+    """
+    window = snapshot.get("window") or {}
+    elements = []
+    for element in snapshot.get("elements", []):
+        identity, row = _element_state(element)
+        elements.append(
+            {
+                "identity": identity,
+                **{
+                    key: row.get(key)
+                    for key in (
+                        "role",
+                        "label",
+                        "bounds",
+                        "enabled",
+                        "value",
+                        "checked",
+                        "selected",
+                        "focused",
+                    )
+                },
+            }
+        )
+    elements.sort(key=lambda row: json.dumps(row["identity"], sort_keys=True))
+    state = {
+        "pixel_hash": snapshot.get("pixel_hash"),
+        "size": [snapshot.get("width"), snapshot.get("height")],
+        "window": {
+            key: window.get(key)
+            for key in ("pid", "window_id", "title", "bounds", "active")
+        },
+        "elements": elements,
+        "accessibility_complete": snapshot.get("complete"),
+    }
+    return hashlib.sha256(
+        json.dumps(state, sort_keys=True, ensure_ascii=False).encode()
+    ).hexdigest()
+
+
+def accessibility_delta(before_elements, after_elements, *, limit=12):
+    """Report matched accessible state changes without inferring workflow success.
+
+    Stable backend tokens are used internally; otherwise only uniquely matching
+    role/label/geometry combinations are compared. Missing rows mean no longer
+    observed, not proof that a control was deleted from the application.
+    """
+
+    def index(elements):
+        result = {}
+        for element in elements:
+            key, row = _element_state(element)
+            result.setdefault(key, []).append(row)
+        return result
+
+    before, after = index(before_elements), index(after_elements)
+    changes = []
+    count = compared = ambiguous = 0
+    for identity in sorted(before.keys() & after.keys(), key=repr):
+        old, new = before[identity], after[identity]
+        if len(old) != 1 or len(new) != 1:
+            ambiguous += 1
+            continue
+        old, new = old[0], new[0]
+        compared += 1
+        fields = {}
+        for field in ("enabled", "value", "checked", "selected", "focused"):
+            previous, current = old.get(field), new.get(field)
+            if previous != current:
+
+                def bounded(value):
+                    return value[:400] if isinstance(value, str) else value
+
+                fields[field] = {"before": bounded(previous), "after": bounded(current)}
+                if any(
+                    isinstance(value, str) and len(value) > 400
+                    for value in (previous, current)
+                ):
+                    fields[field]["truncated"] = True
+        if fields:
+            count += 1
+            if len(changes) < limit:
+                changes.append(
+                    {
+                        "element": new.get("id"),
+                        "label": str(new.get("label") or "")[:240],
+                        "role": str(new.get("role") or "")[:80],
+                        "fields": fields,
+                    }
+                )
+    added = sum(len(rows) for key, rows in after.items() if key not in before)
+    missing = sum(len(rows) for key, rows in before.items() if key not in after)
+    return {
+        "status": "changed"
+        if count or added or missing
+        else "unchanged"
+        if compared
+        else "unavailable",
+        "compared_controls": compared,
+        "changed_controls": count,
+        "newly_observed": added,
+        "no_longer_observed": missing,
+        "ambiguous_identities": ambiguous,
+        "changes": changes,
+        "truncated": count > len(changes),
+        "meaning": "Accessible state evidence only. No longer observed does not prove absence; state or pixel changes do not prove task completion.",
     }

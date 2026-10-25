@@ -434,7 +434,7 @@ class ToolDispatcher:
                 return (
                     f"Argument '{key}' must be one of: "
                     + ", ".join(repr(item) for item in enum)
-                    + "."
+                    + ". " + str(item_schema.get("description", ""))[:700]
                 )
 
             if isinstance(value, list):

@@ -113,11 +113,19 @@ POINT = {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems"
 SELECTOR = {
     "type": ["string", "object"],
     "description": "Exact visible label, exact label+role, or {id: observed element ID}. Unlabelled surfaces can be addressed using screenshot coordinates.",
-    "properties": {"label": {"type": "string"}, "role": {"type": "string"}, "id": {"type": "string"}},
+    "properties": {
+        "label": {"type": "string"},
+        "role": {"type": "string"},
+        "id": {"type": "string"},
+    },
     "oneOf": [
         {"type": "string"},
         {"type": "object", "required": ["label"], "not": {"required": ["id"]}},
-        {"type": "object", "required": ["id"], "not": {"anyOf": [{"required": ["label"]}, {"required": ["role"]}]}},
+        {
+            "type": "object",
+            "required": ["id"],
+            "not": {"anyOf": [{"required": ["label"]}, {"required": ["role"]}]},
+        },
     ],
     "additionalProperties": False,
 }
@@ -155,7 +163,7 @@ INPUT_ACTIONS = {
 }
 PROPERTIES = {
     "action": {
-        "description": "capture observes a window. inspect searches/pages controls in the same snapshot. navigate opens an exact URL in the selected browser using Ctrl+L, literal URL, Return; prefer this for browser navigation. type sends literal text to the focused field or explicit target. key sends a shortcut without a click. Input returns the next observation; use its snapshot_id.",
+        "description": "Use a named action, never interact. click uses coordinate/element/target; type requires text and sends to focused/selected field; key requires key or keys. drag uses endpoints or path. capture observes; inspect pages existing controls. Input returns the next snapshot_id: review focus/value/change feedback before deciding another action.",
         "enum": [
             "capture",
             "inspect",
@@ -187,15 +195,26 @@ PROPERTIES = {
         "description": "Opaque element ID from that snapshot; legacy numbered IDs require snapshot_id too.",
     },
     "target": SELECTOR,
-    "coordinate": {**POINT, "description": "Native screenshot pixels [x,y], origin at image top-left. Window captures use window-relative pixels, not desktop positions."},
+    "coordinate": {
+        **POINT,
+        "description": "Native screenshot pixels [x,y], origin at image top-left. Window captures use window-relative pixels, not desktop positions.",
+    },
     "position": {
         "type": "object",
         "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
-        "required": ["x", "y"], "additionalProperties": False,
-        "description": "Pointer point. Without target/element: native screenshot pixels. With target/element: offset inside that control's observed bounds. Never combine with coordinate."
+        "required": ["x", "y"],
+        "additionalProperties": False,
+        "description": "Pointer point. Without target/element: native screenshot pixels. With target/element: offset inside that control's observed bounds. Never combine with coordinate.",
     },
     "from_coordinate": POINT,
     "to_coordinate": POINT,
+    "path": {
+        "type": "array",
+        "items": POINT,
+        "minItems": 2,
+        "maxItems": 256,
+        "description": "drag only: ordered native screenshot points for one continuous held-button stroke. Do not combine with endpoints. Requires backend drag_path capability.",
+    },
     "text": {
         "type": "string",
         "maxLength": 100000,
@@ -215,7 +234,10 @@ PROPERTIES = {
     "app": {"type": "string"},
     "window_title": {"type": "string"},
     "pid": {"type": "integer", "minimum": 1},
-    "window_id": {"type": ["integer", "string"], "description": "Native window identifier from list_windows or window_ambiguous candidates. Pass it to capture, for example action=capture, window_id=76. Capture returns a new snapshot_id for subsequent input."},
+    "window_id": {
+        "type": ["integer", "string"],
+        "description": "Native window identifier from list_windows or window_ambiguous candidates. Pass it to capture, for example action=capture, window_id=76. Capture returns a new snapshot_id for subsequent input.",
+    },
     "query": {"type": "string", "maxLength": 200},
     "max_results": {"type": "integer", "minimum": 1, "maximum": 100},
     "offset": {
@@ -224,9 +246,15 @@ PROPERTIES = {
         "description": "Zero-based offset into filtered controls. Use inspect with query and next_offset without recapturing.",
     },
     "capture_after": {"type": "boolean"},
+    "settle_seconds": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 5,
+        "description": "Maximum automatic observation-only settling time after input; default 1.2s. seconds explicitly selects a single delay or expect polling deadline.",
+    },
     "delivery_mode": {
         "enum": ["background", "foreground"],
-        "description": "Explicit foreground uses the real focused desktop. This choice persists for the same session and window; omitted calls inherit it. A new target defaults to background. Background refusal never automatically escalates.",
+        "description": "Explicit foreground uses the real focused desktop. This choice persists for the same session and window; omitted calls inherit it. A new target selects the advertised backend preferred mode (normally foreground). Explicit background is never automatically escalated.",
     },
     "include_windows": {"type": "boolean"},
     "expect": EXPECT,
@@ -276,6 +304,49 @@ SCHEMA = {
 }
 
 
+# One authoritative contract per primitive. Reject ignored fields before input;
+# a stray coordinate on a keyboard request must not move the pointer.
+_COMMON = {"action", "request_id", "timeout"}
+_OBSERVE = {"mode", "max_results", "seconds", "expect", "settle_seconds"}
+_INPUT = {"snapshot_id", "delivery_mode", "capture_after"} | _OBSERVE
+_POINTER = {"element", "target", "coordinate", "position"}
+ACTION_FIELDS = {
+    "capture": {
+        "snapshot_id",
+        "scope",
+        "pid",
+        "window_id",
+        "app",
+        "window_title",
+        "mode",
+        "query",
+        "offset",
+        "max_results",
+        "include_windows",
+        "delivery_mode",
+    },
+    "inspect": {"snapshot_id", "query", "offset", "max_results"},
+    "click": _INPUT | _POINTER | {"button"},
+    "double_click": _INPUT | _POINTER,
+    "right_click": _INPUT | _POINTER,
+    "middle_click": _INPUT | _POINTER,
+    "move": _INPUT | _POINTER,
+    "type": _INPUT | {"element", "target", "coordinate", "text"},
+    "key": _INPUT | {"key", "keys"},
+    "scroll": _INPUT | _POINTER | {"direction", "amount"},
+    "drag": _INPUT
+    | {"from_coordinate", "to_coordinate", "path", "duration_ms", "button"},
+    "wait": {"snapshot_id"} | _OBSERVE,
+    "sequence": {"snapshot_id", "delivery_mode", "steps"},
+    "navigate": (_INPUT - {"capture_after"}) | {"url", "target"},
+    "launch": {"app"},
+    "list_windows": set(),
+    "list_apps": set(),
+    "doctor": set(),
+    "zoom": {"snapshot_id", "region", "scale"},
+}
+
+
 def validate_request(request, *, sequence_step=False):
     from jsonschema import Draft202012Validator
 
@@ -303,9 +374,22 @@ def validate_request(request, *, sequence_step=False):
 
     finite(request)
     action = request["action"]
-    if action == "capture" and request.get("snapshot_id") and not any(
-        request.get(k) is not None for k in ("window_id", "pid", "window_title", "app")
-    ) and request.get("scope") != "desktop":
+    irrelevant = set(request) - (_COMMON | ACTION_FIELDS[action])
+    if irrelevant:
+        raise ComputerError(
+            "invalid_arguments",
+            f"{action} does not accept {', '.join(sorted(irrelevant))}. "
+            f"Use only: {', '.join(sorted(_COMMON | ACTION_FIELDS[action]))}. No input was sent.",
+        )
+    if (
+        action == "capture"
+        and request.get("snapshot_id")
+        and not any(
+            request.get(k) is not None
+            for k in ("window_id", "pid", "window_title", "app")
+        )
+        and request.get("scope") != "desktop"
+    ):
         raise ComputerError(
             "invalid_arguments",
             "capture selects a window with window_id or pid, not snapshot_id. Use list_windows, then capture(window_id=<returned window ID>). A successful capture returns snapshot_id for later input.",
@@ -324,8 +408,18 @@ def validate_request(request, *, sequence_step=False):
             "stale_snapshot", "snapshot_id from the latest observation is required."
         )
     if "position" in request:
-        if "coordinate" in request or action not in {"click", "double_click", "right_click", "middle_click", "move", "scroll"}:
-            raise ComputerError("invalid_arguments", "position is for pointer actions and cannot be combined with coordinate.")
+        if "coordinate" in request or action not in {
+            "click",
+            "double_click",
+            "right_click",
+            "middle_click",
+            "move",
+            "scroll",
+        }:
+            raise ComputerError(
+                "invalid_arguments",
+                "position is for pointer actions and cannot be combined with coordinate.",
+            )
     if action in {
         "click",
         "double_click",
@@ -335,7 +429,12 @@ def validate_request(request, *, sequence_step=False):
         "scroll",
     }:
         if (
-            sum(request.get(k) is not None for k in ("target", "element", "coordinate")) + int("position" in request and request.get("target") is None and request.get("element") is None)
+            sum(request.get(k) is not None for k in ("target", "element", "coordinate"))
+            + int(
+                "position" in request
+                and request.get("target") is None
+                and request.get("element") is None
+            )
             != 1
         ):
             raise ComputerError(
@@ -354,10 +453,16 @@ def validate_request(request, *, sequence_step=False):
             raise ComputerError(
                 "invalid_arguments", "Provide either key or a nonempty keys chord."
             )
-    if action == "drag" and (
-        "from_coordinate" not in request or "to_coordinate" not in request
-    ):
-        raise ComputerError("invalid_arguments", "drag requires both endpoints.")
+    if action == "drag":
+        endpoints = "from_coordinate" in request or "to_coordinate" in request
+        if ("path" in request and endpoints) or (
+            "path" not in request
+            and not all(k in request for k in ("from_coordinate", "to_coordinate"))
+        ):
+            raise ComputerError(
+                "invalid_arguments",
+                "drag requires either path or both endpoints, never both forms.",
+            )
     if action == "scroll" and "direction" not in request:
         raise ComputerError("invalid_arguments", "scroll requires direction.")
     condition = request.get("expect")

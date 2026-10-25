@@ -29,6 +29,9 @@ class Backend(Protocol):
     ) -> Capture: ...
     def dispatch(self, session: str, action: str, arguments: dict) -> dict: ...
     def doctor(self) -> dict: ...
+    def capabilities(
+        self, session: str | None = None, window: Window | None = None
+    ) -> dict: ...
 
 
 def decode(raw):
@@ -38,14 +41,9 @@ def decode(raw):
         raise ComputerError(
             "invalid_driver_response", "Expected a complete JSON driver response."
         ) from exc
-    if isinstance(result, dict) and (
-        result.get("success") is False
-        or result.get("ok") is False
-        or result.get("isError") is True
-        or result.get("error")
-    ):
-        error = result.get("error")
-        raise driver.response_error(str(error or result)[:1000], raw)
+    refusal = driver._driver_refusal_detail(raw)
+    if refusal:
+        raise driver.response_error(refusal[:1000], raw)
     return result
 
 
@@ -77,7 +75,86 @@ def parse_window(row):
 class CuaBackend:
     name = "cua"
 
+    def __init__(self):
+        self._delivery_routes = {}
+
+    @staticmethod
+    def _route(session, action, arguments):
+        target_kind = (
+            "element"
+            if arguments.get("element_token")
+            else "coordinate"
+            if "x" in arguments or action == "drag"
+            else "focused"
+        )
+        return (
+            str(session),
+            arguments.get("pid"),
+            str(arguments.get("window_id")),
+            action,
+            target_kind,
+            arguments.get("delivery_mode", "background"),
+        )
+
+    def _remember_route(self, session, action, arguments, *, supported, code=None):
+        key = self._route(session, action, arguments)
+        self._delivery_routes[key] = {
+            "action": action,
+            "target_kind": key[-2],
+            "delivery_mode": key[-1],
+            "supported": supported,
+            **({"code": code} if code else {}),
+        }
+        while len(self._delivery_routes) > 64:
+            self._delivery_routes.pop(next(iter(self._delivery_routes)))
+
+    def capabilities(self, session=None, window=None):
+        # Declarations and observed transport routes are distinct. A success
+        # attests delivery support, not application progress or goal completion.
+        known = [
+            dict(value)
+            for key, value in self._delivery_routes.items()
+            if (session is None or key[0] == str(session))
+            and (
+                window is None
+                or (key[1] == window.pid and key[2] == str(window.window_id))
+            )
+        ]
+        return {
+            "backend": self.name,
+            "actions": sorted(
+                driver.DRIVER_TOOLS
+                - {
+                    "start_session",
+                    "get_desktop_state",
+                    "get_cursor_position",
+                    "get_window_state",
+                    "list_windows",
+                    "list_apps",
+                    "bring_to_front",
+                }
+            ),
+            "coordinate_frames": ["window", "desktop"],
+            "delivery_modes": {
+                "foreground": "driver-dependent",
+                "background": "driver-dependent",
+            },
+            "preferred_delivery_mode": "foreground",
+            "accessibility": True,
+            "pointer_move": False,
+            "drag_path": False,
+            "window_scope": "driver-dependent",
+            "native_wayland": "driver-dependent",
+            "known_delivery_routes": known[-8:],
+        }
+
     def preflight(self, action, arguments):
+        if action == "drag" and arguments.get("path") is not None:
+            raise ComputerError(
+                "unsupported",
+                "This Cua adapter supports endpoint drag only, not a continuous multi-point stroke. Choose a backend declaring drag_path support.",
+                not_dispatched=True,
+            )
         if action == "move":
             raise ComputerError(
                 "unsupported",
@@ -224,12 +301,28 @@ class CuaBackend:
             raise ComputerError(
                 "unsupported", "This Cua adapter has no documented pointer-move action."
             )
+        self.preflight(action, arguments)
         checkpoint()
         # No retry on background refusal, timeout, partial typing, or unknown errors.
-        raw = driver.call_driver(action, {"session": session, **arguments}, timeout=20)
-        if raw.lstrip().startswith(("{", "[")):
-            decode(raw)
-        return {"status": "dispatched", "backend": self.name}
+        try:
+            raw = driver.call_driver(
+                action, {"session": session, **arguments}, timeout=20
+            )
+            if raw.lstrip().startswith(("{", "[")):
+                decode(raw)
+        except ComputerError as exc:
+            if exc.code == "background_unavailable" and exc.not_dispatched:
+                self._remember_route(
+                    session, action, arguments, supported=False, code=exc.code
+                )
+            exc.backend_capabilities = self.capabilities(session)
+            raise
+        self._remember_route(session, action, arguments, supported=True)
+        return {
+            "status": "dispatched",
+            "backend": self.name,
+            "delivery_mode": arguments.get("delivery_mode", "background"),
+        }
 
     def doctor(self):
         try:
@@ -244,6 +337,7 @@ class CuaBackend:
                 "background_input": "driver-dependent",
                 "pointer_move": False,
                 "next_step": "cua-driver doctor",
+                "capabilities": self.capabilities(),
             }
         except ComputerError as exc:
             return {

@@ -1,6 +1,6 @@
 # Computer Use in Studio
 
-This branch bundles the desktop engine (implementation version 1.1.0) directly.
+This branch bundles the desktop engine (implementation version 1.2.0) directly.
 Do not run the old standalone installer over this checkout: runtime and provider
 integration are maintained here together.
 
@@ -16,7 +16,7 @@ python -c 'from src.tools.builtin.computer_use import __version__; print(__versi
 daena-studio
 ```
 
-The version check should print `1.1.0`. Existing workspace tool permissions still
+The version check should print `1.2.0`. Existing workspace tool permissions still
 apply: enable `computer_use` (and `tool_search` when using lazy tool discovery).
 The configured model must support image input. No model credentials are bundled.
 
@@ -49,8 +49,9 @@ tests cover mixed scripts/emoji across batches and exact keymap restoration.
 Capture the intended window from `list_windows`, then use its returned
 `snapshot_id` for input. Every delivered or uncertain input consumes that frame
 and normally returns the next observation. Use that next ID, rather than
-recapturing after every successful tool call. Explicit foreground/background mode
-persists for the same session/window. Timeouts and partial typing never replay.
+recapturing after every successful tool call. A new target with omitted delivery mode selects the backend’s advertised preferred
+mode (foreground for Cua and X11). An explicit choice persists for the same
+session/window. Timeouts and partial typing never replay.
 A structured zero-delivery refusal keeps the snapshot usable for a deliberately
 corrected call; it never automatically switches input mode.
 
@@ -182,3 +183,72 @@ Check `XDG_SESSION_TYPE` in that session. Alternatively use a native backend
 that explicitly supports your compositor; this update does not implement a
 Wayland RemoteDesktop portal backend. The model should report this limitation
 instead of installing replacement applications or inventing terminal commands.
+
+
+## 1.2 controller refactor
+
+The controller keeps model planning separate from validated native primitives:
+
+```mermaid
+flowchart LR
+  OS[Desktop backend] --> F[Snapshot + capabilities]
+  F --> M[Model chooses next action]
+  M --> V[Per-action validation]
+  V --> P[Capability and geometry preflight]
+  P --> I[Dispatch once]
+  I --> S[Bounded observation settling]
+  S --> R[Pixel + accessible state deltas]
+  R --> F
+```
+
+- **Action contracts:** `interact` is a category, not an executable action. Use
+  `click`, `type`, `key`, `drag`, etc. Fields unrelated to a primitive are rejected
+  before input, so a stray coordinate on a keyboard action cannot move the pointer.
+- **Capability selection:** capture advertises delivery modes, pointer support,
+  continuous-path support and platform scope. For a new target the omitted mode
+  uses the backend preference, normally foreground. An explicit background request
+  is honored or refused; refusal never triggers automatic foreground replay.
+- **Feedback:** the pinned receipt retains the prior input target, next snapshot
+  ID, pixel changes, and accessible focus/value/checked/selected changes. Typed
+  text is represented by character count in the target receipt; protected control
+  values remain redacted. Delivery and observable changes do not establish goals.
+- **Settling:** ordinary input now observes until the screen/AX state stays quiet
+  for a short interval, using a polling deadline of `settle_seconds` (default 1.2 seconds). Native
+  captures can take longer; the enclosing operation timeout also applies. Animation
+  returns the latest frame with a deadline marker. `seconds` selects an explicit
+  single delay; `expect` polls the requested accessible condition. None replays
+  the original input, and quietness does not establish application readiness.
+- **Drawing:** X11 supports `drag(path=[[x,y], ...], ...)`, two to 256 native
+  points forming one continuous held-button gesture. Every vertex is validated
+  first; cancellation and uncertain button presses attempt release in `finally`.
+  Release failure is reported explicitly. The current Cua adapter advertises only
+  endpoint drag and refuses paths before sending input.
+- **Image grounding:** full images and zoom crops carry a verified mapping to
+  native input coordinates. Budget reduction preserves fixed coordinate arrays,
+  frame identity, image references and essential receipt information.
+
+Example on a backend declaring `drag_path=true`:
+
+```json
+{"action":"drag","snapshot_id":"<observed ID>","path":[[80,100],[140,40],[200,100],[200,200],[80,200],[80,100]],"duration_ms":800}
+```
+
+Windows/macOS driver startup no longer imposes Linux DISPLAY/XDG requirements.
+Those code paths are tested with platform mocks, not live Windows/macOS desktops.
+Native Wayland support still depends on the installed Cua driver; the optional
+X11 adapter cannot control native Wayland windows.
+
+### Design references
+
+The review used primary implementations rather than an application-specific
+workflow script:
+
+- [OpenAI CUA sample loop](https://github.com/openai/openai-cua-sample-app/blob/main/python-app/app/responses_loop.py): correlated model/tool exchange and screenshots after execution.
+- [Anthropic computer tool](https://github.com/anthropics/anthropic-quickstarts/blob/main/computer-use-demo/computer_use_demo/tools/computer.py): explicit coordinate transforms, action primitives and observation delay.
+- [Microsoft UFO action execution](https://github.com/microsoft/UFO/blob/main/ufo/automator/action_execution.py) and [receivers](https://github.com/microsoft/UFO/blob/main/ufo/automator/puppeteer.py): backend separation, control identity and capability validation.
+- [Microsoft OmniParser](https://github.com/microsoft/OmniParser): visual grounding is a distinct optional model layer; it does not resolve OS input delivery limits and is not a required Daena dependency.
+
+The regression suite exercises delayed/animated observations, invalid actions,
+focus/value feedback, provider coordinate maps, negative driver replies,
+foreground selection, gesture cancellation/release and the real Qt/X11 canvas.
+It is not a live model benchmark or a guarantee of control over every application.
