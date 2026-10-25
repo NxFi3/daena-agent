@@ -173,6 +173,10 @@ def test_cancelled_asset_download_leaves_previous_installation_untouched(tmp_pat
     # Corrupt the old file to force a replacement download. Cancel while reading
     # the new asset; even the old (corrupt) installation is not partially rewritten.
     Path(original["path"]).write_bytes(b"changed")
+    # Also remove the verified transfer copy; otherwise a local repair needs no
+    # network at all and cannot exercise cancellation during a streamed block.
+    for cached in (tmp_path / "downloads").rglob("payload.complete"):
+        cached.unlink()
     cancel = Event()
     client, _ = fixture_client("speaker-embedding")
     with client, pytest.raises(VoiceCancelled):

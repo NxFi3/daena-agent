@@ -220,7 +220,7 @@ def model_fixture(*, commit="a" * 40, corrupt=False):
         path = request.url.path.split(f"/resolve/{commit}/", 1)[1]
         return httpx.Response(
             200,
-            content=b"wrong contents"
+            content=b"x" * len(files[path])
             if corrupt and path.endswith(".onnx")
             else files[path],
         )

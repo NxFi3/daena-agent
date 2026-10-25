@@ -812,9 +812,15 @@ class VoiceController(QObject):
                 if isinstance(total, (int, float))
                 else " MiB"
             )
+            stage = {
+                "resuming": "Resuming",
+                "retrying": "Retrying · partial saved",
+                "cached": "Using verified cache",
+                "connecting": "Connecting",
+            }.get(data.get("stage"), "Downloading")
             report(
                 "progress",
-                f"Downloading {data.get('file', 'model')}: {received:.1f}{suffix}",
+                f"{stage} {data.get('file', 'model')}: {received:.1f}{suffix}",
             )
 
         def run():

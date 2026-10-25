@@ -314,46 +314,28 @@ def _github_assets(spec, client, stop_event):
     return resolved
 
 
-def _download_github_asset(spec, asset, destination, client, stop_event, progress):
-    # Asset IDs survive release-tag changes, while replaced assets get new IDs.
-    # Never let remote metadata choose a URL or a filesystem path.
+def _download_github_asset(
+    spec, asset, destination, client, stop_event, progress, root
+):
+    from .downloads import transfer, materialize
+
     url = f"https://api.github.com/repos/{spec.repo_id}/releases/assets/{asset['id']}"
+    cached = transfer(
+        client,
+        url,
+        _inside(root, root / "downloads"),
+        size=asset["size"],
+        sha256=asset["sha256"],
+        headers={"Accept": "application/octet-stream"},
+        stop_event=stop_event,
+        progress=(
+            lambda event: progress({**event, "model": spec.key, "file": asset["name"]})
+        )
+        if progress
+        else None,
+    )
     path = destination / asset["name"]
-    received = 0
-    digest = hashlib.sha256()
-    with path.open("xb") as output:
-        with client.stream(
-            "GET", url, headers={"Accept": "application/octet-stream"}
-        ) as data:
-            data.raise_for_status()
-            for block in data.iter_bytes(chunk_size=64 * 1024):
-                _check_stop(stop_event)
-                received += len(block)
-                if received > asset["size"]:
-                    raise VoiceError("Model download exceeded its declared size")
-                output.write(block)
-                digest.update(block)
-                if progress:
-                    progress(
-                        {
-                            "stage": "downloading",
-                            "model": spec.key,
-                            "file": asset["name"],
-                            "received": received,
-                            "total": asset["size"],
-                        }
-                    )
-        output.flush()
-        os.fsync(output.fileno())
-    _check_stop(stop_event)
-    if received != asset["size"]:
-        raise VoiceError(
-            "Model download was incomplete; the previous installation was preserved"
-        )
-    if asset["sha256"] and digest.hexdigest() != asset["sha256"]:
-        raise VoiceError(
-            "Model download checksum mismatch; the previous installation was preserved"
-        )
+    materialize(cached, path)
     return path
 
 
@@ -453,7 +435,7 @@ def _download_github_model(spec, root, client, stop_event, progress):
     try:
         for asset in assets:
             path = _download_github_asset(
-                spec, asset, destination, client, stop_event, progress
+                spec, asset, destination, client, stop_event, progress, root
             )
             if asset["name"].endswith(".tar.bz2"):
                 _unpack_model_files(path, spec, destination, stop_event)
@@ -515,7 +497,8 @@ def download_model(
 
     ``progress`` receives dictionaries containing stage/file/received/total.
     Cancellation checks occur between streamed blocks and checksum blocks. A
-    stalled network read is bounded by a 15-second read timeout.
+    stalled network read is bounded by a 30-second read timeout. Partial bytes
+    survive cancellation/failure and are resumed with validated HTTP Range.
     """
     _check_stop(stop_event)
     spec = _SPEC_BY_KEY.get(str(model_key))
@@ -530,7 +513,7 @@ def download_model(
         import httpx
 
         client = httpx.Client(
-            follow_redirects=True, timeout=httpx.Timeout(15.0, connect=10.0)
+            follow_redirects=True, timeout=httpx.Timeout(30.0, connect=10.0)
         )
     try:
         if spec.source == "github-release":
@@ -565,56 +548,28 @@ def download_model(
                 path.is_file() and expected and _sha256(path, stop_event) == expected
             )
             if not cached:
-                fd, temporary = tempfile.mkstemp(
-                    prefix=".voice-download-", dir=destination
+                from .downloads import transfer, materialize
+
+                download_url = f"https://huggingface.co/{spec.repo_id}/resolve/{commit}/{quote(remote, safe='/')}"
+                payload = transfer(
+                    client,
+                    download_url,
+                    _inside(root, root / "downloads"),
+                    size=expected_size,
+                    sha256=expected,
+                    stop_event=stop_event,
+                    progress=(
+                        lambda event: progress(
+                            {**event, "model": spec.key, "file": remote}
+                        )
+                    )
+                    if progress
+                    else None,
                 )
-                received = 0
-                digest = hashlib.sha256()
-                try:
-                    download_url = f"https://huggingface.co/{spec.repo_id}/resolve/{commit}/{quote(remote, safe='/')}"
-                    with os.fdopen(fd, "wb") as output:
-                        with client.stream("GET", download_url) as data:
-                            data.raise_for_status()
-                            for block in data.iter_bytes(chunk_size=64 * 1024):
-                                _check_stop(stop_event)
-                                received += len(block)
-                                if received > 4 * 1024**3 or (
-                                    expected_size is not None
-                                    and received > expected_size
-                                ):
-                                    raise VoiceError(
-                                        "Model download exceeded its declared size"
-                                    )
-                                output.write(block)
-                                digest.update(block)
-                                if progress:
-                                    progress(
-                                        {
-                                            "stage": "downloading",
-                                            "model": spec.key,
-                                            "file": remote,
-                                            "received": received,
-                                            "total": expected_size,
-                                        }
-                                    )
-                        output.flush()
-                        os.fsync(output.fileno())
-                    _check_stop(stop_event)
-                    checksum = digest.hexdigest()
-                    if expected and checksum != expected:
-                        raise VoiceError(
-                            "Model download checksum mismatch; the previous installation was preserved"
-                        )
-                    if expected_size is not None and received != expected_size:
-                        raise VoiceError(
-                            "Model download was incomplete; the previous installation was preserved"
-                        )
-                    # JSON files must parse before being published.
-                    if remote.endswith(".json"):
-                        json.loads(Path(temporary).read_text(encoding="utf-8"))
-                    os.replace(temporary, path)
-                finally:
-                    Path(temporary).unlink(missing_ok=True)
+                _check_stop(stop_event)
+                if remote.endswith(".json"):
+                    json.loads(payload.read_text(encoding="utf-8"))
+                materialize(payload, path)
             checksum = _sha256(path, stop_event)
             rows.append(
                 {

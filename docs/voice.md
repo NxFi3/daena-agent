@@ -45,6 +45,20 @@ and sizes, records local SHA-256 manifests, and retains model cards/licenses.
 Downloads are cancellable between network blocks; a stalled read may take up to
 its network timeout to finish. Inference never downloads models implicitly.
 
+Interrupted downloads now retain partial bytes under the voice cache's
+`downloads/` directory. Retrying the same model, including after restarting
+Studio, uses HTTP Range to continue from the saved offset. Transient network
+errors get up to three attempts; each read has a 30-second timeout. Progress
+reports connecting, resuming, retrying and verified cache reuse. Completed files
+are verified before publication; a known checksum mismatch discards invalid
+bytes. A server that ignores Range or changes its validator is rejected while
+preserving the old prefix, rather than silently restarting a large transfer.
+Only immutable commit/asset URLs share partials; a different revision has a
+separate cache. Two processes cannot write the same transfer concurrently.
+Verified transfers are cached separately from the installed model files, so
+installation requires additional disk space. This cannot restore partial files
+already deleted by older Daena versions.
+
 Models live under the user's cache (`~/.cache/daena/voice` on typical Linux hosts;
 see `python -m src.voice models` for the actual paths). Per-workspace preferences
 are in `.daena/studio/voice.json`. No microphone recordings are written to disk by
