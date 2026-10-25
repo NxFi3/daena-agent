@@ -34,7 +34,11 @@ class VoiceSession:
         self.perception = perception
         self.acoustic_session_id = uuid4().hex
         self.sound_events_enabled = bool(sound_events_enabled and perception)
-        self.segmenter = SpeechSegmenter(silence_ms=silence_ms, max_seconds=max_seconds)
+        self.segmenter = (
+            SpeechSegmenter(silence_ms=silence_ms, max_seconds=max_seconds)
+            if recognizer is not None
+            else None
+        )
         self.recognition_ready = Event()
         self.events = Queue(maxsize=64)
         self.audio = Queue(maxsize=6)
@@ -54,10 +58,11 @@ class VoiceSession:
         self._lock = Lock()
         self.epoch = 0
         self._closed = False
-        self._threads = [
-            Thread(target=self._recognize, daemon=True, name="daena-stt"),
-            Thread(target=self._synthesize, daemon=True, name="daena-tts"),
-        ]
+        self._threads = [Thread(target=self._synthesize, daemon=True, name="daena-tts")]
+        if recognizer is not None:
+            self._threads.insert(
+                0, Thread(target=self._recognize, daemon=True, name="daena-stt")
+            )
         if self.perception is not None:
             self._threads.append(
                 Thread(target=self._perceive, daemon=True, name="daena-acoustics")
@@ -94,6 +99,8 @@ class VoiceSession:
             return
         if self.sound_events_enabled:
             self._feed_ambient(pcm16)
+        if self.segmenter is None:
+            return
         # A large local model may take seconds to warm. Do not queue commands
         # while it is unavailable and turn normal warmup into a queue overflow.
         if not self.recognition_ready.is_set():
@@ -103,6 +110,8 @@ class VoiceSession:
             self.submit_audio(utterance)
 
     def finish_utterance(self):
+        if self.segmenter is None:
+            return
         if self._closed or not self.recognition_ready.is_set():
             self.segmenter.reset()
             return
@@ -111,7 +120,7 @@ class VoiceSession:
             self.submit_audio(utterance)
 
     def submit_audio(self, utterance):
-        if self._closed:
+        if self._closed or self.recognizer is None:
             return
         self._utterance_id += 1
         utterance_id = self._utterance_id
@@ -172,7 +181,8 @@ class VoiceSession:
         This is nonblocking: ongoing native acoustic work is invalidated for
         ambient observations, while completed speech remains eligible for STT.
         """
-        self.segmenter.reset()
+        if self.segmenter is not None:
+            self.segmenter.reset()
         self._input_generation += 1
         self._ambient_buffer.clear()
         while True:

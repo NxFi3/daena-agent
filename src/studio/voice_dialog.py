@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from math import ceil
+from src.studio.widgets import Composer
 
 from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter
@@ -62,6 +63,15 @@ class VoiceMeter(QWidget):
             )
 
 
+class VoiceEditor(Composer):
+    """Enter performs the selected voice action; Shift+Enter keeps a new line."""
+
+    def _resize(self, *args):
+        self.setFixedHeight(
+            max(95, min(180, int(self.document().size().height()) + 19))
+        )
+
+
 class VoiceDialog(QDialog):
     start_requested = Signal(dict)
     stop_requested = Signal()
@@ -69,6 +79,7 @@ class VoiceDialog(QDialog):
     interrupt_requested = Signal()
     end_utterance_requested = Signal()
     send_requested = Signal(str)
+    speak_requested = Signal(str)
     download_requested = Signal(str)
     settings_changed = Signal(dict)
 
@@ -105,10 +116,17 @@ class VoiceDialog(QDialog):
         chat = QVBoxLayout(conversation)
         chat.setContentsMargins(14, 16, 14, 12)
         chat.setSpacing(10)
-        transcript_title = QLabel("Recognized speech")
-        transcript_title.setObjectName("sectionTitle")
-        chat.addWidget(transcript_title)
-        self.transcript = QPlainTextEdit()
+        input_row = QHBoxLayout()
+        input_row.addWidget(QLabel("Input"))
+        self.input_mode = QComboBox()
+        self.input_mode.addItem("Microphone · speech recognition", "microphone")
+        self.input_mode.addItem("Text only · no Whisper or microphone", "text")
+        input_row.addWidget(self.input_mode, 1)
+        chat.addLayout(input_row)
+        self.transcript_title = QLabel("Recognized speech")
+        self.transcript_title.setObjectName("sectionTitle")
+        chat.addWidget(self.transcript_title)
+        self.transcript = VoiceEditor()
         self.transcript.setPlaceholderText(
             "Your words appear here. Review or edit them before sending."
         )
@@ -121,6 +139,12 @@ class VoiceDialog(QDialog):
         )
         self.finish_button.clicked.connect(self.end_utterance_requested)
         review_row.addWidget(self.finish_button)
+        self.speak_button = QPushButton("Speak text")
+        self.speak_button.setToolTip(
+            "Read this text directly using the selected local voice; does not call the Agent"
+        )
+        self.speak_button.clicked.connect(self._speak_text)
+        review_row.addWidget(self.speak_button)
         review_row.addStretch()
         self.send_button = QPushButton("Send to Daena")
         self.send_button.setObjectName("primary")
@@ -147,12 +171,12 @@ class VoiceDialog(QDialog):
         self.perception_summary.setObjectName("muted")
         self.perception_summary.setWordWrap(True)
         chat.addWidget(self.perception_summary)
-        note = QLabel(
+        self.input_note = QLabel(
             "Microphone input pauses during playback to avoid hearing Daena’s own voice. Use Interrupt to stop speech and resume listening. This is not acoustic echo cancellation."
         )
-        note.setObjectName("muted")
-        note.setWordWrap(True)
-        chat.addWidget(note)
+        self.input_note.setObjectName("muted")
+        self.input_note.setWordWrap(True)
+        chat.addWidget(self.input_note)
         self.tabs.addTab(conversation, "Conversation")
         self.model_page = QWidget()
         form = QFormLayout(self.model_page)
@@ -432,12 +456,15 @@ class VoiceDialog(QDialog):
             self.input_device,
             self.output_device,
             self.english_engine,
+            self.input_mode,
         ):
             widget.currentIndexChanged.connect(self._changed)
         self.stt_model.currentTextChanged.connect(self._changed)
         self.kokoro_voice.currentTextChanged.connect(self._changed)
         self.english_engine.currentIndexChanged.connect(self._update_engine)
         self._update_engine()
+        self.input_mode.currentIndexChanged.connect(self._update_input_mode)
+        self.transcript.submitted.connect(self._editor_submitted)
         for widget in (
             self.tts_fa_model,
             self.tts_en_model,
@@ -466,6 +493,58 @@ class VoiceDialog(QDialog):
         self.transcript.textChanged.connect(self._review_ready)
         self.set_active(False)
         self._review_ready()
+
+    def _editor_submitted(self):
+        if self.input_mode.currentData() == "text":
+            self._speak_text()
+        else:
+            self._send_transcript()
+
+    def _speak_text(self):
+        text = self.transcript.toPlainText().strip()
+        if text:
+            self.speak_requested.emit(text)
+
+    def _update_input_mode(self, *args):
+        text_only = self.input_mode.currentData() == "text"
+        self.transcript_title.setText(
+            "Text to speak or send" if text_only else "Recognized speech"
+        )
+        self.transcript.setPlaceholderText(
+            "Type text · Enter speaks it · Shift+Enter adds a line. Send to Daena asks the Agent and reads its reply."
+            if text_only
+            else "Review recognized speech · Enter sends it to Daena · Shift+Enter adds a line."
+        )
+        self.input_note.setText(
+            "Text only: Whisper and microphone are off. Speak text reads your text directly; Send to Daena reads the Agent’s answer. Local voices must already be installed."
+            if text_only
+            else "Microphone input pauses during playback to avoid echo. Interrupt stops speech and resumes listening."
+        )
+        self.meter.setVisible(not text_only)
+        if not self._active:
+            self.start_button.setText(
+                "Start voice output" if text_only else "Start Voice"
+            )
+        self.perception_summary.setVisible(not text_only)
+        self.auto_send.setEnabled(not text_only)
+        self.auto_send.setVisible(not text_only)
+        self.mute_button.setVisible(not text_only)
+        self.finish_button.setVisible(not text_only)
+        self.finish_button.setEnabled(self._active and not text_only)
+        self.mute_button.setEnabled(self._active and not text_only)
+        for widget in (
+            self.stt_model,
+            self.stt_download,
+            self.stt_device,
+            self.stt_compute_type,
+            self.stt_cpu_threads,
+            self.stt_beam_size,
+            self.input_device,
+            self.silence_ms,
+            self.max_utterance_seconds,
+        ):
+            widget.setEnabled(not text_only)
+        self.perception_page.setEnabled(not self._active and not text_only)
 
     def _model_picker(self, field, file_filter="ONNX models (*.onnx);;All files (*)"):
         host = QWidget()
@@ -498,6 +577,7 @@ class VoiceDialog(QDialog):
     def populate(self, settings):
         previous, self._populating = self._populating, True
         self._select(self.language, settings.get("language", "auto"))
+        self._select(self.input_mode, settings.get("input_mode", "microphone"))
         self._select(self.stt_model, settings.get("stt_model", "large-v3-turbo"))
         self._select(self.stt_device, settings.get("stt_device", "cpu"))
         self._select(self.stt_compute_type, settings.get("stt_compute_type", "int8"))
@@ -536,6 +616,7 @@ class VoiceDialog(QDialog):
         )
         self._populating = previous
         self._update_engine()
+        self._update_input_mode()
 
     def _update_engine(self, *args):
         kokoro = self.english_engine.currentData() == "kokoro"
@@ -561,6 +642,7 @@ class VoiceDialog(QDialog):
 
     def values(self):
         return {
+            "input_mode": self.input_mode.currentData(),
             "language": self.language.currentData(),
             "stt_model": self._speech_model(),
             "stt_device": self.stt_device.currentText(),
@@ -620,7 +702,9 @@ class VoiceDialog(QDialog):
             self.send_requested.emit(text)
 
     def _review_ready(self):
-        self.send_button.setEnabled(bool(self.transcript.toPlainText().strip()))
+        ready = bool(self.transcript.toPlainText().strip())
+        self.send_button.setEnabled(ready)
+        self.speak_button.setEnabled(ready)
 
     def set_devices(self, inputs, outputs=None):
         if isinstance(inputs, dict):
@@ -731,6 +815,7 @@ class VoiceDialog(QDialog):
 
     def set_active(self, active):
         self._active = bool(active)
+        self.input_mode.setEnabled(not active)
         self.start_button.setText("End Voice" if active else "Start Voice")
         self.mute_button.setEnabled(active)
         self.interrupt_button.setEnabled(active)
@@ -741,6 +826,7 @@ class VoiceDialog(QDialog):
         if not active:
             self.mute_button.setChecked(False)
             self.meter.set_level(0)
+        self._update_input_mode()
 
     def show_error(self, message):
         self.error_label.setText(str(message))

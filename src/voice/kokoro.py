@@ -206,11 +206,14 @@ class BilingualSynthesizer:
     engine is an actionable error, never a silent language or cloud fallback.
     """
 
-    def __init__(self, english=None, persian=None, *, language="auto"):
+    def __init__(
+        self, english=None, persian=None, *, language="auto", require_all_languages=True
+    ):
         if language not in {"auto", "fa", "en"}:
             raise VoiceError("Speech language must be auto, fa or en")
         self.providers = {"en": english, "fa": persian}
         self.language = language
+        self.require_all_languages = bool(require_all_languages)
         self._lock = RLock()
 
     def _provider(self, language):
@@ -221,6 +224,12 @@ class BilingualSynthesizer:
 
     def prepare(self, stop_event=None):
         selected = ("fa", "en") if self.language == "auto" else (self.language,)
+        if self.language == "auto" and not self.require_all_languages:
+            selected = tuple(
+                code for code in selected if self.providers[code] is not None
+            )
+        if not selected:
+            raise VoiceError("Select a local output voice in Voice settings")
         with self._lock:
             for language in selected:
                 _check_stop(stop_event)

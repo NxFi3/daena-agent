@@ -127,4 +127,45 @@ with TemporaryDirectory() as directory:
     assert window.agent is not None
     window.close()
     app.processEvents()
+
+with TemporaryDirectory() as directory:
+    os.environ["XDG_DATA_HOME"] = str(Path(directory) / "data")
+    window = StudioWindow(
+        directory, agent_factory=lambda config: Agent(config, llm=Model())
+    )
+
+    class OutputOnlyAudio(Audio):
+        def start_capture(self, *args):
+            raise AssertionError("Text-only installed client accessed microphone")
+
+    controller = VoiceController(
+        window,
+        audio_factory=OutputOnlyAudio,
+        provider_factory=lambda config: (None, Synthesizer()),
+    )
+    window.voice_controller = controller
+    controller.dialog = VoiceDialog(
+        {"input_mode": "text", "language": "en"}, parent=window
+    )
+    controller.speak_text("Hello, this is a direct preview.")
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and not controller.audio.played:
+        app.processEvents()
+        time.sleep(0.01)
+    assert controller.audio.played and window.agent is None
+    assert (
+        controller.session.recognizer is None and controller.session.segmenter is None
+    )
+    controller.send_review("Please answer this typed request.")
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        app.processEvents()
+        if window._result and controller.audio.played and not window.busy:
+            break
+        time.sleep(0.01)
+    assert window._result and window._result["metrics"]["completed"]
+    assert controller.audio.played and window.agent is not None
+    assert "Please answer this typed request." in window.transcript.toPlainText()
+    window.close()
+    app.processEvents()
 print("INSTALLED_LOCAL_VOICE_WHEEL_OK")

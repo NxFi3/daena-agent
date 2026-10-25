@@ -27,6 +27,38 @@ explicitly selected and PipeWire configuration is missing, it uses the available
 PulseAudio backend. An explicit unusable PipeWire choice yields an error instead
 of changing the user's selection. This preflight runs only when Voice is opened.
 
+## Text only: use Voice without Whisper
+
+In **Conversation → Input**, choose **Text only · no Whisper or microphone**.
+If no configured Whisper model is installed and no input mode was previously
+selected, Voice offers this mode automatically. It needs only the selected local
+output voice files; it never loads Whisper/VAD, opens a microphone or runs acoustic
+perception. Output-device selection and the existing speech quality/speed controls
+remain available. Switching back to microphone input is explicit after stopping
+Voice.
+
+Type in the Conversation editor and choose **Speak text**, or press **Enter**.
+This starts voice output automatically and reads your text directly, without
+calling the Agent, modifying the chat composer or needing an LLM server. Press
+**Shift+Enter** for a newline. If Voice is off, Speak text selects text-only mode
+before starting, so a missing recognition model cannot block a voice preview.
+
+Choose **Send to Daena** to submit the text through the existing Agent and hear
+its committed response. Ordinary typed chat messages also get spoken responses
+while Voice is active. A new Agent turn interrupts any direct preview rather
+than waiting behind its audio. Interrupt clears audio immediately; models warm
+in a background worker and stay cached, and PCM streams through bounded queues.
+Playback begins as soon as the first synthesized chunk is available; actual
+latency depends on the voice, text length and CPU. Only committed replies are
+narrated; a slow Agent still adds its own response delay.
+
+With automatic language in text-only mode, only configured output voices are
+required. For example, **Kokoro model + voices** suffice to preview English
+without downloading a Persian voice. Persian still needs a Persian Piper voice;
+missing language voices give an explicit error, never an online fallback or
+pretend Persian pronunciation. Microphone mode retains its original recognition
+and language requirements.
+
 ## One-time model setup
 
 Choose **Download speech model**, **Download Persian voice**, and **Download

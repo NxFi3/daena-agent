@@ -61,6 +61,7 @@ class VoiceController(QObject):
         self._turn_started = None
         self._reply_started = None
         self._pending_transcript = None
+        self._previewing = False
         self._perception_failed = False
         self.timer = QTimer(self)
         self.timer.setInterval(25)
@@ -92,6 +93,17 @@ class VoiceController(QObject):
                 if not settings.get(field):
                     settings[field] = paths.get(language, "")
             self._installed_settings(settings)
+            if "input_mode" not in settings:
+                selected = settings.get("stt_model", "large-v3-turbo")
+                key = {"large-v3-turbo": "whisper-turbo", "small": "whisper-small"}.get(
+                    selected
+                )
+                available = (
+                    key in installed_models()
+                    if key
+                    else Path(selected).expanduser().is_dir()
+                )
+                settings["input_mode"] = "microphone" if available else "text"
             self.dialog = VoiceDialog(settings, self.window)
             self.dialog.start_requested.connect(self.start)
             self.dialog.stop_requested.connect(self.stop)
@@ -99,19 +111,30 @@ class VoiceController(QObject):
             self.dialog.interrupt_requested.connect(self.interrupt)
             self.dialog.end_utterance_requested.connect(self.finish_utterance)
             self.dialog.send_requested.connect(self.send_review)
+            self.dialog.speak_requested.connect(self.speak_text)
             self.dialog.download_requested.connect(self.download)
             self.dialog.settings_changed.connect(self.save_settings)
             self.dialog.finished.connect(self.release_models)
+            self.dialog.input_mode.currentIndexChanged.connect(self.refresh_devices)
+        self.refresh_devices()
+        self.dialog.show()
+        self.dialog.raise_()
+        self.dialog.activateWindow()
+
+    def refresh_devices(self, *args):
+        from src.studio.voice_audio import AudioDevices
+
+        if not self.dialog or self.session:
+            return
         try:
-            devices = AudioDevices.devices()
+            devices = AudioDevices.devices(
+                include_inputs=self.dialog.values().get("input_mode") != "text"
+            )
             self.dialog.set_devices(devices)
             if devices.get("error"):
                 self.error(devices["error"])
         except Exception as exc:
             self.dialog.show_error(f"Audio devices unavailable: {exc}")
-        self.dialog.show()
-        self.dialog.raise_()
-        self.dialog.activateWindow()
 
     def save_settings(self, settings):
         if self.session:
@@ -156,6 +179,7 @@ class VoiceController(QObject):
         signature = tuple(
             (key, str(settings.get(key, "")))
             for key in (
+                "input_mode",
                 "stt_model",
                 "stt_device",
                 "stt_compute_type",
@@ -175,14 +199,19 @@ class VoiceController(QObject):
         if self._cached_providers and self._cached_providers[0] == signature:
             return self._cached_providers[1]
         models = installed_models()
+        mode = settings.get("input_mode", "microphone")
+        if mode not in {"text", "microphone"}:
+            raise ValueError("Voice input must be text or microphone")
         selected = settings.get("stt_model", "large-v3-turbo")
         key = {"large-v3-turbo": "whisper-turbo", "small": "whisper-small"}.get(
             selected
         )
-        if key:
+        if mode == "text":
+            selected = None
+        elif key:
             if key not in models:
                 raise ValueError(
-                    "Download the selected speech model first, or choose its local directory. No model downloads happen on Start."
+                    "Whisper is not installed. Choose Text only under Conversation to speak typed text without Whisper, or select/download a local recognition model. No downloads happen on Start."
                 )
             selected = models[key]["path"]
         elif not Path(selected).expanduser().is_dir():
@@ -195,6 +224,25 @@ class VoiceController(QObject):
         english_engine = settings.get("english_engine", "piper")
         if english_engine not in {"piper", "kokoro"}:
             raise ValueError("Choose Piper or Kokoro as the English voice engine")
+        if mode == "text" and language == "auto":
+            # Output-only mode warms only voices the user actually configured.
+            # Missing languages report an explicit error if requested later.
+            required = tuple(
+                lang
+                for lang in required
+                if (
+                    bool(
+                        settings.get("kokoro_model_path")
+                        or settings.get("kokoro_voices_path")
+                    )
+                    if lang == "en" and english_engine == "kokoro"
+                    else bool(paths.get(lang))
+                )
+            )
+            if not required:
+                raise ValueError(
+                    "Select an installed local output voice in Models; text-only mode needs no Whisper"
+                )
         speed = float(settings.get("speech_speed", 1.0))
         if not 0.7 <= speed <= 1.4:
             raise ValueError("Speech speed must be between 0.7 and 1.4")
@@ -211,11 +259,11 @@ class VoiceController(QObject):
                 raise ValueError(
                     f"Select/download the {lang} Piper voice (.onnx plus .onnx.json). Auto language needs both voices."
                 )
-        piper_paths = (
-            {"fa": paths.get("fa", "")}
-            if english_engine == "kokoro" and "en" in required
-            else paths
-        )
+        piper_paths = {
+            lang: paths.get(lang, "")
+            for lang in required
+            if not (lang == "en" and english_engine == "kokoro")
+        }
         piper_language = (
             "fa" if english_engine == "kokoro" and "en" in required else language
         )
@@ -237,6 +285,7 @@ class VoiceController(QObject):
                 english=english,
                 persian=piper if "fa" in required else None,
                 language=language,
+                require_all_languages=mode != "text",
             )
         providers = (
             FasterWhisperProvider(
@@ -247,14 +296,18 @@ class VoiceController(QObject):
                 local_files_only=True,
                 cpu_threads=settings.get("stt_cpu_threads", 4),
                 beam_size=settings.get("stt_beam_size", 3),
-            ),
+            )
+            if mode != "text"
+            else None,
             synthesizer,
         )
         self._cached_providers = signature, providers
         return providers
 
     def _perception(self, settings):
-        if not settings.get("perception_enabled", False):
+        if settings.get("input_mode") == "text" or not settings.get(
+            "perception_enabled", False
+        ):
             return None
         signature = tuple(
             str(settings.get(key, ""))
@@ -314,7 +367,10 @@ class VoiceController(QObject):
             self.error("Stop automation before starting conversational Voice Mode.")
             return
         try:
+            text_only = settings.get("input_mode", "microphone") == "text"
             recognizer, synthesizer = self._providers(settings)
+            if text_only:
+                recognizer = None
             perception = self._perception(settings)
             if self._audio_factory is None:
                 from src.studio.voice_audio import AudioDevices
@@ -326,12 +382,12 @@ class VoiceController(QObject):
             self.audio.level.connect(self.dialog.set_level)
             self.audio.fault.connect(self.audio_fault)
             self.audio.playback_started.connect(self.playback_started)
-            self.audio.playback_stopped.connect(
-                lambda: self.dialog.set_state("Listening") if self.session else None
-            )
+            self.audio.playback_stopped.connect(self.output_idle)
             self.audio.set_output_device(settings.get("output_device_id", ""))
             audio = self.audio
-            if not audio.start_capture(settings.get("input_device_id", "")):
+            if not text_only and not audio.start_capture(
+                settings.get("input_device_id", "")
+            ):
                 if self.audio is audio:
                     audio.close()
                     audio.deleteLater()
@@ -359,9 +415,13 @@ class VoiceController(QObject):
             )
             self.dialog.set_active(True)
             if hasattr(self.window, "voice_button"):
-                self.window.voice_button.setText("◉ Live")
+                self.window.voice_button.setText(
+                    "◉ Voice output" if text_only else "◉ Live"
+                )
             self.dialog.set_state(
-                "Preparing local models · speech input starts when recognition is ready"
+                "Preparing local voice · text only; microphone off"
+                if text_only
+                else "Preparing local models · speech input starts when recognition is ready"
             )
             self.save_settings(settings)
         except Exception as exc:
@@ -371,6 +431,44 @@ class VoiceController(QObject):
     def audio_fault(self, message):
         self.stop()
         self.error(message)
+
+    def output_idle(self):
+        if self.session and self.dialog:
+            self.dialog.set_state(
+                "Ready · type text; microphone off"
+                if self._settings.get("input_mode") == "text"
+                else "Listening"
+            )
+
+    def speak_text(self, text):
+        text = str(text).strip()
+        if not text or self._closed:
+            return
+        if self.window.busy:
+            self.error(
+                "Finish or interrupt the active Agent turn before previewing text"
+            )
+            return
+        if self.session is None:
+            settings = self.dialog.values()
+            settings["input_mode"] = "text"
+            self.dialog.populate(settings)
+            self.start(settings)
+        if self.session is None:
+            return
+        self.dialog.error_label.hide()
+        self.cancel_speech()
+        self._turn_started = time.monotonic()
+        self._reply_started = None
+        for key in ("agent_ms", "first_pcm_ms", "first_playback_ms"):
+            self._metrics.pop(key, None)
+        self._previewing = True
+        self.dialog.set_state(
+            "Preparing speech · microphone off; text is not sent to the Agent"
+            if self._settings.get("input_mode") == "text"
+            else "Preparing direct read-aloud"
+        )
+        self.session.speak(text, self._settings.get("language", "auto"))
 
     def feed(self, pcm16):
         if self.session:
@@ -400,6 +498,8 @@ class VoiceController(QObject):
             self.dialog.set_transcript("")
 
     def begin_turn(self):
+        if self._previewing:
+            self.cancel_speech()
         self.acknowledge_submission()
         # Called synchronously when Studio starts an actual new agent turn.
         # Queued run_start events from a canceled turn cannot re-enable speech.
@@ -425,9 +525,14 @@ class VoiceController(QObject):
                 (time.monotonic() - self._turn_started) * 1000
             )
         if self.dialog:
-            self.dialog.set_state("Speaking · microphone paused to avoid echo")
+            self.dialog.set_state(
+                "Speaking · microphone off"
+                if self._settings.get("input_mode") == "text"
+                else "Speaking · microphone paused to avoid echo"
+            )
 
     def cancel_speech(self):
+        self._previewing = False
         self._speech_suppressed = True
         if self.session:
             self.session.interrupt()
@@ -439,7 +544,9 @@ class VoiceController(QObject):
             self.audio.stop_playback()
         if self.dialog:
             self.dialog.set_state(
-                "Interrupted · listening; unfinished agent work is stopping"
+                "Interrupted · microphone off; type text to continue"
+                if self._settings.get("input_mode") == "text"
+                else "Interrupted · listening; unfinished agent work is stopping"
             )
 
     def interrupt(self):
@@ -449,6 +556,7 @@ class VoiceController(QObject):
             self.cancel_speech()
 
     def stop(self):
+        self._previewing = False
         self._download_stop.set()
         session, self.session = self.session, None
         if session:
@@ -473,6 +581,10 @@ class VoiceController(QObject):
         text = str(text).strip()
         if not text:
             return
+        if self.session is None and self.dialog.values().get("input_mode") == "text":
+            self.start(self.dialog.values())
+            if self.session is None:
+                return
         if self._pending_transcript:
             self._review_utterance_id = self._pending_transcript[0].get("utterance_id")
             self._pending_transcript = None
@@ -712,7 +824,9 @@ class VoiceController(QObject):
                         event.data
                         if event.kind == "state"
                         else (
-                            "Listening · recognition ready"
+                            "Voice output ready · type text; microphone off"
+                            if self._settings.get("input_mode") == "text"
+                            else "Listening · recognition ready"
                             if getattr(self.session, "recognition_ready", None)
                             is not None
                             and self.session.recognition_ready.is_set()

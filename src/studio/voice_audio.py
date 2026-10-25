@@ -272,7 +272,7 @@ class AudioDevices(QObject):
         resource.deleteLater()
 
     @staticmethod
-    def devices():
+    def devices(*, include_inputs=True):
         try:
             _, _, _, _, media = _qt_audio()
 
@@ -287,7 +287,9 @@ class AudioDevices(QObject):
                 ]
 
             return {
-                "inputs": rows(media.audioInputs(), media.defaultAudioInput()),
+                "inputs": rows(media.audioInputs(), media.defaultAudioInput())
+                if include_inputs
+                else [],
                 "outputs": rows(media.audioOutputs(), media.defaultAudioOutput()),
             }
         except (ImportError, OSError, RuntimeError) as exc:
