@@ -225,6 +225,9 @@ def validate_config(config):
         raise ValueError("browser must be an object")
     if type(config.get("headless", False)) is not bool:
         raise ValueError("browser.headless must be a boolean")
+    scope = config.get("profile_scope", "workspace")
+    if scope not in {"workspace", "conversation"}:
+        raise ValueError("browser.profile_scope must be workspace or conversation")
     for key in ("executable_path", "cdp_url"):
         if key in config and not isinstance(config[key], str):
             raise ValueError(f"browser.{key} must be a string")
