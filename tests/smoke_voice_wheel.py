@@ -156,7 +156,9 @@ with TemporaryDirectory() as directory:
     assert (
         controller.session.recognizer is None and controller.session.segmenter is None
     )
-    controller.send_review("Please answer this typed request.")
+    controller.open()
+    controller.screen.composer.setPlainText("Please answer this typed request.")
+    controller.screen.send_button.click()
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         app.processEvents()

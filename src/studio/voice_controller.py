@@ -36,6 +36,13 @@ class VoiceController(QObject):
         super().__init__(window)
         self.window = window
         self.dialog = None
+        self.screen = None
+        self._restart_settings = None
+        self._restart_state = None
+        self._pending_replies = deque(maxlen=8)
+        self._test_audio = None
+        self._test_mute = None
+        self._muted = False
         self.audio = None
         self.session = None
         self._audio_factory = audio_factory
@@ -74,7 +81,7 @@ class VoiceController(QObject):
     def _settings_path(self):
         return self.window.store.root / "voice.json"
 
-    def open(self):
+    def ensure_dialog(self):
         from src.studio.voice_audio import AudioDevices
         from src.studio.voice_dialog import VoiceDialog
 
@@ -115,16 +122,184 @@ class VoiceController(QObject):
             self.dialog.download_requested.connect(self.download)
             self.dialog.settings_changed.connect(self.save_settings)
             self.dialog.finished.connect(self.release_models)
+            self.dialog.apply_requested.connect(self.apply_settings)
+            self.dialog.open_requested.connect(self.open)
+            self.dialog.test_output_requested.connect(self.test_output)
+            self.dialog.refresh_requested.connect(self.refresh_devices)
             self.dialog.input_mode.currentIndexChanged.connect(self.refresh_devices)
+        return self.dialog
+
+    def open(self):
+        from src.studio.voice_screen import VoiceScreen
+
+        self.ensure_dialog()
+        if self._closed:
+            return
+        if self.screen is None:
+            self.screen = VoiceScreen(parent=self.window)
+            self.screen.send_requested.connect(self.send_review)
+            self.screen.stop_requested.connect(self.release_models)
+            self.screen.interrupt_requested.connect(self.interrupt)
+            self.screen.mute_changed.connect(self.mute)
+            self.screen.input_mode_requested.connect(self.switch_input_mode)
+            self.screen.settings_requested.connect(self.show_settings)
+            self.screen.start_requested.connect(
+                lambda: self.start(self.dialog.values())
+            )
+            self.dialog.state_changed.connect(self.screen.set_state)
+            self.dialog.active_changed.connect(self.screen.set_active)
+            self.dialog.level_changed.connect(self.screen.set_level)
+            self.dialog.transcript_changed.connect(self.screen.set_transcript)
+            self.dialog.metrics_changed.connect(self.screen.set_metrics)
+            self.dialog.error_raised.connect(self.screen.show_error)
+        self.screen.set_input_mode(
+            self._settings.get("input_mode", self.dialog.values()["input_mode"])
+            if self.session
+            else self.dialog.values()["input_mode"]
+        )
+        self.screen.set_busy(self.window.busy)
+        self.screen.set_active(self.session is not None)
+        self.screen.show()
+        self.screen.raise_()
+        self.screen.activateWindow()
+        if self.session is None and self._restart_settings is None:
+            self.start(self.dialog.values())
+
+    def mount_settings(self):
+        self.ensure_dialog()
+        self.window.settings.mount_voice_settings(self.dialog.configuration_widget())
         self.refresh_devices()
-        self.dialog.show()
-        self.dialog.raise_()
-        self.dialog.activateWindow()
+
+    def show_settings(self):
+        self.mount_settings()
+        if self.screen:
+            self.screen.hide()  # Hiding settings navigation must not stop audio.
+        self.window.nav.setCurrentRow(4)
+        self.window.settings.show_voice()
+
+    def apply_settings(self, settings):
+        settings = dict(settings)
+        if self.screen and not self.session:
+            self.screen.set_input_mode(settings.get("input_mode", "text"))
+        if not self.session:
+            self.save_settings(settings)
+            self.dialog.set_state("Voice settings saved · open Voice to begin")
+            return
+        try:
+            self._providers(settings)
+            self._perception(settings)
+        except Exception as exc:
+            self.error(
+                f"Voice settings were not applied: {exc}. Current Voice remains active."
+            )
+            return
+        self.save_settings(settings, force=True)
+        self._restart_state = (self._speech_suppressed, list(self._spoken))
+        self._restart_settings = settings
+        self.stop(restart=True, cancel_download=False)
+        self.dialog.set_state(
+            "Applying voice settings · waiting for previous audio work to finish; Agent continues"
+        )
+        self._resume_settings()
+
+    def _resume_settings(self):
+        if (
+            self._restart_settings is not None
+            and self._context is not None
+            and self._signature() != self._context
+        ):
+            self.stop()
+            return
+        if self._restart_settings is None or self._retiring or self._closed:
+            return
+        settings, self._restart_settings = self._restart_settings, None
+        state, self._restart_state = self._restart_state, None
+        self.start(settings)
+        if not self.session:
+            self._pending_replies.clear()
+            return
+        if state:
+            self._speech_suppressed, spoken = state
+            self._spoken.extend(spoken)
+        queued, self._pending_replies = self._pending_replies, deque(maxlen=8)
+        for event in queued:
+            self.on_event(event)
+
+    def switch_input_mode(self, mode):
+        self.ensure_dialog()
+        settings = self.dialog.values()
+        settings["input_mode"] = mode
+        self.dialog.populate(settings)
+        if self.session:
+            self.apply_settings(settings)
+            if self.screen:
+                self.screen.set_input_mode(
+                    mode
+                    if self._restart_settings is not None
+                    else self._settings.get("input_mode", mode)
+                )
+        else:
+            self.save_settings(settings)
+            self.start(settings)
+
+    def agent_idle(self):
+        if self.screen:
+            self.screen.set_busy(False)
+
+    def test_output(self):
+        from src.studio.voice_audio import AudioDevices
+        import numpy as np
+
+        self.ensure_dialog()
+        self._close_test_audio()
+        try:
+            audio = (
+                self._audio_factory(self) if self._audio_factory else AudioDevices(self)
+            )
+            self._test_audio = audio
+            audio.fault.connect(self.error)
+            audio.set_output_device(self.dialog.values().get("output_device_id", ""))
+            details = audio.prepare_output() if hasattr(audio, "prepare_output") else {}
+            if (
+                self.session
+                and self._settings.get("input_mode", "microphone") == "microphone"
+            ):
+                self._test_mute = (self.session, self._muted)
+                self.mute(True)  # Never transcribe the diagnostic speaker tone.
+            samples = np.arange(16000 // 2)
+            envelope = np.minimum(
+                1, np.minimum(samples / 320, (len(samples) - samples) / 320)
+            )
+            pcm = (
+                (np.sin(samples * (2 * np.pi * 440 / 16000)) * envelope * 10000)
+                .astype("<i2")
+                .tobytes()
+            )
+            if not audio.play_pcm(pcm, 16000):
+                raise RuntimeError("Selected speaker could not start playback")
+            self.dialog.set_state(
+                "Speaker test sent to "
+                + details.get("name", "selected output")
+                + " · check system volume if inaudible"
+            )
+            QTimer.singleShot(1500, lambda owner=audio: self._close_test_audio(owner))
+        except Exception as exc:
+            self._close_test_audio()
+            self.error(f"Speaker test failed: {exc}")
+
+    def _close_test_audio(self, owner=None, *, restore=True):
+        if self._test_audio and (owner is None or owner is self._test_audio):
+            self._test_audio.close()
+            self._test_audio.deleteLater()
+            self._test_audio = None
+            previous, self._test_mute = self._test_mute, None
+            if restore and previous and self.session is previous[0]:
+                self.mute(previous[1])
 
     def refresh_devices(self, *args):
         from src.studio.voice_audio import AudioDevices
 
-        if not self.dialog or self.session:
+        if not self.dialog:
             return
         try:
             devices = AudioDevices.devices(
@@ -136,11 +311,12 @@ class VoiceController(QObject):
         except Exception as exc:
             self.dialog.show_error(f"Audio devices unavailable: {exc}")
 
-    def save_settings(self, settings):
-        if self.session:
+    def save_settings(self, settings, *, force=False):
+        if self.session and not force:
             for key in ("auto_send", "speak_progress"):
                 if key in settings:
                     self._settings[key] = bool(settings[key])
+            settings = dict(self._settings)
         try:
             write_json(self._settings_path(), settings)
         except (OSError, ValueError) as exc:
@@ -367,6 +543,7 @@ class VoiceController(QObject):
             self.error("Stop automation before starting conversational Voice Mode.")
             return
         try:
+            self._close_test_audio()
             text_only = settings.get("input_mode", "microphone") == "text"
             recognizer, synthesizer = self._providers(settings)
             if text_only:
@@ -385,6 +562,10 @@ class VoiceController(QObject):
             self.audio.playback_stopped.connect(self.output_idle)
             self.audio.set_output_device(settings.get("output_device_id", ""))
             audio = self.audio
+            output = {}
+            if hasattr(audio, "prepare_output"):
+                output = audio.prepare_output()
+                self._metrics["output_device"] = output.get("name", "Selected output")
             if not text_only and not audio.start_capture(
                 settings.get("input_device_id", "")
             ):
@@ -400,6 +581,8 @@ class VoiceController(QObject):
             self._spoken.clear()
             self._speech_suppressed = False
             self._metrics.clear()
+            if output:
+                self._metrics["output_device"] = output.get("name", "Selected output")
             self._turn_started = self._reply_started = None
             self._perception_failed = False
             self._acoustic.clear()
@@ -414,6 +597,11 @@ class VoiceController(QObject):
                 sound_events_enabled=bool(settings.get("sound_events_enabled", False)),
             )
             self.dialog.set_active(True)
+            self.dialog.error_label.hide()
+            if self.screen:
+                self.screen.error_label.hide()
+                self.screen.set_input_mode(settings.get("input_mode", "microphone"))
+                self.screen.set_busy(self.window.busy)
             if hasattr(self.window, "voice_button"):
                 self.window.voice_button.setText(
                     "◉ Voice output" if text_only else "◉ Live"
@@ -444,11 +632,7 @@ class VoiceController(QObject):
         text = str(text).strip()
         if not text or self._closed:
             return
-        if self.window.busy:
-            self.error(
-                "Finish or interrupt the active Agent turn before previewing text"
-            )
-            return
+        was_suppressed = self._speech_suppressed
         if self.session is None:
             settings = self.dialog.values()
             settings["input_mode"] = "text"
@@ -458,6 +642,8 @@ class VoiceController(QObject):
             return
         self.dialog.error_label.hide()
         self.cancel_speech()
+        if self.window.busy:
+            self._speech_suppressed = was_suppressed
         self._turn_started = time.monotonic()
         self._reply_started = None
         for key in ("agent_ms", "first_pcm_ms", "first_playback_ms"):
@@ -475,11 +661,21 @@ class VoiceController(QObject):
             self.session.feed(pcm16)
 
     def mute(self, muted):
+        self._muted = bool(muted)
         if self.audio:
             self.audio.set_muted(muted)
         if self.session:
             self.reset_input()
         if self.dialog:
+            for button in (
+                self.dialog.mute_button,
+                self.screen.mute_button if self.screen else None,
+            ):
+                if button is not None:
+                    button.blockSignals(True)
+                    button.setChecked(bool(muted))
+                    button.setText("Unmute" if muted else "Mute mic")
+                    button.blockSignals(False)
             self.dialog.set_state("Microphone muted" if muted else "Listening")
 
     def finish_utterance(self):
@@ -505,8 +701,14 @@ class VoiceController(QObject):
         # Queued run_start events from a canceled turn cannot re-enable speech.
         self._speech_suppressed = False
         self._spoken.clear()
+        self._pending_replies.clear()
+        if self._restart_state is not None:
+            self._restart_state = (False, [])
         self._turn_started = time.monotonic()
         self._reply_started = None
+        if self.screen:
+            self.screen.set_busy(True)
+            self.dialog.set_state("Thinking · your message is with Daena")
         for key in ("agent_ms", "first_pcm_ms", "first_playback_ms"):
             self._metrics.pop(key, None)
 
@@ -555,9 +757,15 @@ class VoiceController(QObject):
         else:
             self.cancel_speech()
 
-    def stop(self):
+    def stop(self, *, restart=False, cancel_download=False):
         self._previewing = False
-        self._download_stop.set()
+        self._close_test_audio(restore=False)
+        self._muted = False
+        if cancel_download:
+            self._download_stop.set()
+        if not restart:
+            self._restart_settings = self._restart_state = None
+            self._pending_replies.clear()
         session, self.session = self.session, None
         if session:
             session.close()
@@ -581,22 +789,26 @@ class VoiceController(QObject):
         text = str(text).strip()
         if not text:
             return
-        if self.session is None and self.dialog.values().get("input_mode") == "text":
-            self.start(self.dialog.values())
+        self.ensure_dialog()
+        if self.session is None and self._restart_settings is None:
+            settings = self.dialog.values()
+            settings["input_mode"] = "text"
+            self.dialog.populate(settings)
+            self.start(settings)
             if self.session is None:
                 return
         if self._pending_transcript:
             self._review_utterance_id = self._pending_transcript[0].get("utterance_id")
             self._pending_transcript = None
         current = self.window.input.toPlainText().strip()
+        preserved_draft = None
         if self._review_inserted and current == self._review_inserted[0]:
             base = self._review_inserted[1]
             self.window.input.setPlainText(base + "\n" + text if base else text)
         elif current and current != text:
-            self.error(
-                "The chat composer has changed. Review and send it there to preserve your draft."
-            )
-            return
+            preserved_draft = self.window.input.toPlainText()
+            self.window.input.setPlainText(text)
+            self._review_inserted = (text, "")
         else:
             self.window.input.setPlainText(text)
             self._review_inserted = (text, "")
@@ -605,13 +817,20 @@ class VoiceController(QObject):
                 self.window.input.toPlainText().strip(),
                 self._review_inserted[1],
             )
-        if not self.window.busy:
-            self.window.send()
+        submitted = self.window.input.toPlainText().strip()
+        self.window.send()  # Preserve Studio's steering/queue/initialization rules.
+        accepted = not self.window.input.toPlainText().strip()
+        if preserved_draft is not None:
+            self.window.input.setPlainText(preserved_draft)
+        if accepted:
             self.dialog.set_transcript("")
             self._review_inserted = None
+            if self.screen:
+                self.screen.acknowledge_submission(text)
+                self.screen.set_busy(self.window.busy)
         else:
             self.dialog.set_state(
-                "Agent busy · transcript is ready in the chat composer"
+                "Message is not sent yet · review the Voice editor or the chat composer"
             )
 
     def _deliver(self, text, *, auto=False, truncated=False, utterance_id=None):
@@ -667,7 +886,7 @@ class VoiceController(QObject):
             self._deliver_transcript(data)
 
     def on_event(self, event):
-        if not self.session or getattr(self.window, "_automation_run", False):
+        if getattr(self.window, "_automation_run", False):
             return
         kind = event.get("type")
         if self._speech_suppressed:
@@ -676,9 +895,19 @@ class VoiceController(QObject):
             kind == "assistant_message" and self._settings.get("speak_progress", False)
         ):
             return
+        if not self.session:
+            if self._restart_settings is not None and not self._speech_suppressed:
+                self._pending_replies.append(dict(event))
+            return
         text = str(event.get("text") or "").strip()
         if not text or text in self._spoken:
             return
+        if self._previewing:
+            self.cancel_speech()
+            self._speech_suppressed = False
+        if self.screen:
+            self.screen.set_reply(text)
+        self.dialog.set_state("Preparing Daena’s spoken reply")
         self._spoken.append(text)
         if self._reply_started is None:
             self._reply_started = time.monotonic()
@@ -734,9 +963,14 @@ class VoiceController(QObject):
         # A stopped/failed turn is not silently narrated as a successful reply.
         if (result.get("metrics") or {}).get("completed"):
             self.on_event({"type": "final_response", "text": result.get("text", "")})
+        elif self.session and not self._spoken:
+            self.dialog.set_state(
+                "Agent stopped before completing its answer · review the conversation"
+            )
 
     def poll(self):
         self._retiring = [s for s in self._retiring if not s.retired]
+        self._resume_settings()
         if self.session:
             if self._signature() != self._context:
                 self.stop()
@@ -887,16 +1121,17 @@ class VoiceController(QObject):
                     )
                 self.dialog.populate(values)
                 self.save_settings(values)
-                self.dialog.set_state("Model downloaded · choose Start when ready")
+                self.dialog.set_state(
+                    "Model downloaded · Apply voice settings to use it"
+                )
             elif self.dialog:
                 self.dialog.set_state(str(data))
 
     def download(self, key):
         if self._download and self._download.is_alive():
-            self.error("A model download is already running. Closing Voice cancels it.")
-            return
-        if self.session:
-            self.error("Stop Voice before changing model files.")
+            self.error(
+                "A model download is already running; closing Studio cancels it and keeps partial bytes."
+            )
             return
         self._download_stop = Event()
         cancel = self._download_stop

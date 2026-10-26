@@ -17,37 +17,68 @@ python -m src.voice doctor
 python -m src.studio
 ```
 
-Click **Voice** beside the composer. The dialog has Conversation, Models, Perception and Audio
-controls, device selection, a microphone meter and measured recognition/first-PCM
-latencies. Opening the dialog enumerates devices; recording starts only after
-**Start Voice**. Closing Voice or Studio stops capture and queued playback.
-Microphone permission and a working system audio service are required. On Linux,
-Voice checks Qt's PipeWire configuration before enumeration; when no backend was
-explicitly selected and PipeWire configuration is missing, it uses the available
-PulseAudio backend. An explicit unusable PipeWire choice yields an error instead
-of changing the user's selection. This preflight runs only when Voice is opened.
+Open **Settings → Voice** to choose output voices, microphone recognition,
+devices and optional acoustic perception. Settings are created lazily and opening
+them never starts recording or a speech model. Choose **Apply voice settings** to
+save the selected configuration; changes to an active Voice session are validated
+before it restarts. Voice preferences are separate
+from the Agent profile and remain editable while the Agent works; runtime profile
+controls stay locked until its turn finishes.
+
+Click **Voice** beside the main chat composer to open the conversation screen.
+Its central animated circle shows listening, thinking and speaking activity.
+Opening this screen starts the selected Voice configuration when its local files
+are ready. Microphone input requires microphone permission; text-only input does
+not. **End Voice** or closing the conversation screen stops capture and queued
+speech. The screen's **Voice settings** button opens the main Settings page
+without ending the active Voice session.
+
+Changing models or devices with **Apply voice settings** restarts Voice only,
+without canceling the Agent's active turn. The current speech/input epoch is
+replaced and late recognition from it is discarded; a pending committed Agent
+reply is retained. Native inference may need to finish before restart can
+complete. Model downloads continue when Voice ends; closing Studio cancels its
+transfers while retaining resumable partial bytes.
+
+A working system audio service is required. On Linux, Voice checks Qt's PipeWire
+configuration before device access; when no backend was explicitly selected and
+PipeWire configuration is missing, it uses the available PulseAudio backend. An
+explicit unusable PipeWire choice yields an error instead of changing the user's
+selection. Ordinary Studio use does not run this audio preflight.
 
 ## Text only: use Voice without Whisper
 
-In **Conversation → Input**, choose **Text only · no Whisper or microphone**.
+In microphone mode, tap the central circle or choose **Type instead** to reveal the text composer
+and switch away from microphone input. **Enter** or **Send** submits your message
+to the existing Agent and its committed answer is spoken. **Shift+Enter** inserts
+a newline. The main chat remains the complete conversation history; the Voice
+screen shows the current interaction. Typed input stays usable while the Agent
+works and follows the existing busy-turn handling instead of starting a second
+Agent run.
+
+You can also select **Settings → Voice → Conversation → Input → Text only · no
+Whisper or microphone** and apply it as the preferred mode.
 If no configured Whisper model is installed and no input mode was previously
 selected, Voice offers this mode automatically. It needs only the selected local
 output voice files; it never loads Whisper/VAD, opens a microphone or runs acoustic
 perception. Output-device selection and the existing speech quality/speed controls
-remain available. Switching back to microphone input is explicit after stopping
-Voice.
+remain available. **Use microphone** explicitly switches back to speech input;
+this requires a configured recognition model. A mode change replaces the Voice
+input epoch so recognition from the old microphone session cannot arrive later
+as a new typed message.
 
-Type in the Conversation editor and choose **Speak text**, or press **Enter**.
-This starts voice output automatically and reads your text directly, without
-calling the Agent, modifying the chat composer or needing an LLM server. Press
-**Shift+Enter** for a newline. If Voice is off, Speak text selects text-only mode
-before starting, so a missing recognition model cannot block a voice preview.
+For a direct voice audition, use the separate text editor in **Settings → Voice
+→ Conversation** and choose **Speak text**, or press **Enter** there. This reads
+the literal text without calling the Agent, changing the main chat composer or
+needing an LLM server. **Shift+Enter** inserts a newline. This preview remains
+available while the Agent works. If Voice is off, Speak text starts output-only
+Voice, so a missing recognition model cannot block an audition. A committed
+Agent reply can interrupt a preview so the answer is not lost behind it.
 
-Choose **Send to Daena** to submit the text through the existing Agent and hear
-its committed response. Ordinary typed chat messages also get spoken responses
-while Voice is active. A new Agent turn interrupts any direct preview rather
-than waiting behind its audio. Interrupt clears audio immediately; models warm
-in a background worker and stay cached, and PCM streams through bounded queues.
+Ordinary typed messages in the main chat also get spoken responses while Voice
+is active. A new Agent turn interrupts any direct preview rather than waiting
+behind its audio. Models warm in a background worker and stay cached, and PCM
+streams through bounded queues.
 Playback begins as soon as the first synthesized chunk is available; actual
 latency depends on the voice, text length and CPU. Only committed replies are
 narrated; a slow Agent still adds its own response delay.
@@ -61,8 +92,9 @@ and language requirements.
 
 ## One-time model setup
 
-Choose **Download speech model**, **Download Persian voice**, and **Download
-English voice**, or run explicit commands:
+In **Settings → Voice → Models**, choose **Download selected speech model**,
+**Download Persian voice**, and **Download English voice** as needed, or run
+explicit commands:
 
 ```bash
 python -m src.voice download whisper-turbo
@@ -98,7 +130,7 @@ Voice Mode. Recognized text becomes ordinary chat history when submitted.
 
 If Hugging Face is unavailable or returns403 in your location, download the same
 model files through an accessible connection and choose their local paths in
-Models. A Whisper CTranslate2 directory needs `model.bin`, `config.json`, tokenizer
+**Settings → Voice → Models**. A Whisper CTranslate2 directory needs `model.bin`, `config.json`, tokenizer
 and vocabulary files. Each Piper voice needs the `.onnx` file and matching
 `.onnx.json`. No private access token is required by this implementation.
 
@@ -129,7 +161,7 @@ separately; Studio resamples them automatically for the selected output device.
 
 ## Optional Kokoro English
 
-Install `.[voice-kokoro]`, then choose **Kokoro** under Models and download its
+Install `.[voice-kokoro]`, then choose **Kokoro** under **Settings → Voice → Models** and download its
 model plus voices. The catalog offers the full-precision v1.0 ONNX model (~326MB)
 and matching voices archive (~28MB) from the official Kokoro ONNX release. You
 can also select these files from disk. Start never downloads anything.
@@ -155,7 +187,7 @@ still apply.
 
 ## Acoustic perception: speakers and surrounding sounds
 
-Install `.[voice-perception]`, open **Perception**, and explicitly enable local
+Install `.[voice-perception]`, open **Settings → Voice → Perception**, and explicitly enable local
 audio perception. Download the speaker model (~26.5MB) and/or the sound-event
 model. The sound archive is ~111MB; only its int8 model (~26MB) and labels are
 installed. Background sound monitoring is a separate option. These are local
@@ -208,19 +240,19 @@ the same local files works without API access or credentials.
 
 ## Turn-taking and interruption
 
-- Recognized speech appears in the dialog and composer. Review it and press
-  **Send to Daena** or Enter in chat. **Auto-send** is explicit and only submits a
+- Recognized speech appears in the Voice screen and composer. Review it and press
+  **Send** or Enter in chat. **Auto-send** is explicit and only submits a
   complete utterance when the agent is idle and the composer has no other draft.
   Busy-agent speech remains for review rather than silently steering active work.
 - Endpointing uses20ms frames, short pre-roll and configurable silence detection.
   WebRTC VAD is installed by the voice extra; an adaptive energy fallback is
   available. A duration cap marks a partial utterance for review and suppresses
-  its continuing tail until actual silence. **Finish speaking** supplies an
-  explicit endpoint when needed.
+  its continuing tail until actual silence. Silence duration and utterance limits
+  are configured under **Settings → Voice → Audio**.
 - During model warmup, live speech is not queued until recognition is ready.
   Wait for **Listening** before talking; the meter can be active while models
   prepare. This prevents normal startup from filling the speech queue.
-- **Interrupt** immediately clears buffered speech, invalidates late STT/TTS
+- **Stop reply** immediately clears buffered speech, invalidates late STT/TTS
   results and requests cancellation of the active conversational agent turn.
   Native inference itself may finish later; it is not forcibly killed, and its
   canceled audio/text cannot be submitted. Restart waits for old native work to
@@ -228,12 +260,33 @@ the same local files works without API access or credentials.
 - During speaker playback, microphone PCM is gated before recognition; a short
   tail gate prevents echo retriggering. This is half-duplex turn-taking, not
   hardware acoustic echo cancellation or automatic speaker-safe full duplex.
-  Use Interrupt to resume talking immediately. Manual mute also suspends capture.
+  Use Stop reply to resume talking immediately. Manual mute also suspends capture.
 - Only committed final responses are spoken by default. Optional progress speech
   uses committed assistant messages. Raw drafts, reasoning, tool receipts and
   discarded retries are never narrated. Markdown is prepared for speech; fenced
   code and URL targets are omitted. Read-aloud is bounded to8000 characters;
   the complete answer stays in chat.
+
+## No sound: test the output path
+
+Open **Settings → Voice → Audio**, choose the intended speakers/headphones and
+apply the selection. **Refresh devices** updates the available device list;
+it does not start microphone capture. **Test speaker** sends a short diagnostic
+tone without loading Whisper or a TTS model. These controls remain available
+while the Agent runs.
+
+If the tone is inaudible, check the selected system output, application volume,
+mute state and your desktop audio service before changing voice model files.
+If the tone is audible but a text preview fails, inspect the error in Voice
+settings and check the selected engine, matching local model/voice files and
+supported language. The preview text is not sent to the Agent.
+
+The playback state/error handling supports current Qt/PySide6 audio enums; output
+errors are surfaced rather than treating queued PCM as successful playback. A
+software message that a tone was sent cannot prove a physical speaker was heard.
+Native tests can capture known Qt output through a PulseAudio null-sink monitor
+to verify the application-to-audio-server path; they do not replace a listening
+test on your actual device.
 
 ## Latency and resource limits
 
@@ -252,11 +305,12 @@ wait; lower its reasoning level in existing Studio controls if appropriate.
 Whisper beam search and CPU threads are now exposed: beam1 trades some search
 quality for speed; beam3 remains the default. Shorter endpoint silence reduces
 turn delay but can split a hesitant utterance. The playback dispatch metric is
-the first Qt playback notification after an agent turn, not acoustic loopback.
+the first Qt playback notification after an agent turn, not physical speaker latency.
 
 Verification includes scripted STT/TTS, real PCM/resampling, cancellation and
 backpressure, Qt offscreen interaction, installed-wheel integration, plus actual
-local Kokoro and speaker/sound ONNX inference. Example CPU measurements on this
+local Kokoro and speaker/sound ONNX inference, and a native Qt/PulseAudio monitor
+loopback check. Example CPU measurements on this
 build host: 2.84 seconds of Kokoro speech took 1.51 seconds with two threads;
 combined speaker/sound analysis on speech fixtures took roughly 112–231ms;
 laughter/finger-snap fixtures took roughly 96–108ms. These are fixtures, not

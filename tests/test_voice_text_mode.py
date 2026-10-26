@@ -220,6 +220,8 @@ def test_open_without_whisper_offers_text_and_only_enumerates_speakers(
     )
     c.open()
     assert c.dialog.values()["input_mode"] == "text"
+    assert not seen  # The focused screen does not enumerate configuration devices.
+    c.refresh_devices()
     assert seen == [{"include_inputs": False}]
     c.dialog._select(c.dialog.input_mode, "microphone")
     assert seen[-1] == {"include_inputs": True}

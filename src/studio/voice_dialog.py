@@ -82,6 +82,16 @@ class VoiceDialog(QDialog):
     speak_requested = Signal(str)
     download_requested = Signal(str)
     settings_changed = Signal(dict)
+    apply_requested = Signal(dict)
+    open_requested = Signal()
+    test_output_requested = Signal()
+    refresh_requested = Signal()
+    state_changed = Signal(str)
+    active_changed = Signal(bool)
+    level_changed = Signal(float)
+    transcript_changed = Signal(str)
+    metrics_changed = Signal(dict)
+    error_raised = Signal(str)
 
     def __init__(self, settings=None, parent=None):
         super().__init__(parent)
@@ -89,6 +99,7 @@ class VoiceDialog(QDialog):
         self.resize(710, 690)
         self.setMinimumSize(550, 560)
         self._active = False
+        self._configuration = None
         self._populating = True
         outer = QVBoxLayout(self)
         outer.setContentsMargins(24, 22, 24, 20)
@@ -544,7 +555,59 @@ class VoiceDialog(QDialog):
             self.max_utterance_seconds,
         ):
             widget.setEnabled(not text_only)
-        self.perception_page.setEnabled(not self._active and not text_only)
+        self.perception_page.setEnabled(not text_only)
+
+    def configuration_widget(self):
+        """Move the canonical controls into Settings; do not duplicate state."""
+        if self._configuration is not None:
+            return self._configuration
+        host = QWidget()
+        layout = QVBoxLayout(host)
+        layout.setContentsMargins(0, 0, 0, 0)
+        hint = QLabel(
+            "Voice settings are separate from the Agent profile. Apply model/device changes to save and restart Voice only; the Agent keeps working."
+        )
+        hint.setWordWrap(True)
+        hint.setObjectName("muted")
+        layout.addWidget(hint)
+        layout.addWidget(self.status)
+        self.tabs.removeTab(0)
+        preferences = QWidget()
+        form = QVBoxLayout(preferences)
+        form.addWidget(QLabel("Voice input"))
+        form.addWidget(self.input_mode)
+        form.addWidget(self.auto_send)
+        form.addWidget(self.speak_progress)
+        form.addWidget(QLabel("Test a voice directly without sending to the Agent"))
+        form.addWidget(self.transcript)
+        form.addWidget(self.speak_button)
+        form.addWidget(self.input_note)
+        form.addStretch()
+        self.tabs.insertTab(0, preferences, "Conversation")
+        self.tabs.setCurrentIndex(1)
+        layout.addWidget(self.tabs, 1)
+        layout.addWidget(self.metrics)
+        layout.addWidget(self.error_label)
+        row = QHBoxLayout()
+        self.output_test_button = QPushButton("Test speaker")
+        self.output_test_button.clicked.connect(self.test_output_requested)
+        row.addWidget(self.output_test_button)
+        refresh = QPushButton("Refresh devices")
+        refresh.clicked.connect(self.refresh_requested)
+        row.addWidget(refresh)
+        row.addStretch()
+        back = QPushButton("Open Voice")
+        back.clicked.connect(self.open_requested)
+        row.addWidget(back)
+        self.apply_button = QPushButton("Apply voice settings")
+        self.apply_button.setObjectName("primary")
+        self.apply_button.clicked.connect(
+            lambda: self.apply_requested.emit(self.values())
+        )
+        row.addWidget(self.apply_button)
+        layout.addLayout(row)
+        self._configuration = host
+        return host
 
     def _model_picker(self, field, file_filter="ONNX models (*.onnx);;All files (*)"):
         host = QWidget()
@@ -555,7 +618,10 @@ class VoiceDialog(QDialog):
 
         def choose():
             name, _ = QFileDialog.getOpenFileName(
-                self, "Select a local voice model file", field.text(), file_filter
+                self._configuration or self,
+                "Select a local voice model file",
+                field.text(),
+                file_filter,
             )
             if name:
                 field.setText(name)
@@ -730,7 +796,10 @@ class VoiceDialog(QDialog):
             combo.blockSignals(False)
 
     def set_metrics(self, values):
+        self.metrics_changed.emit(dict(values))
         parts = []
+        if values.get("output_device"):
+            parts.append("Output: " + str(values["output_device"]))
         if values.get("stt_ms") is not None:
             parts.append(f"Recognition {float(values['stt_ms']):.0f} ms")
         if values.get("first_pcm_ms") is not None:
@@ -748,6 +817,7 @@ class VoiceDialog(QDialog):
 
     def set_state(self, text):
         self.status.setText(str(text))
+        self.state_changed.emit(str(text))
 
     def set_perception(self, evidence):
         """Render bounded model evidence; anonymous IDs never imply a real identity."""
@@ -809,28 +879,32 @@ class VoiceDialog(QDialog):
     def set_transcript(self, text):
         self.transcript.setPlainText(str(text))
         self._review_ready()
+        self.transcript_changed.emit(str(text))
 
     def set_level(self, value):
         self.meter.set_level(value)
+        self.level_changed.emit(float(value))
 
     def set_active(self, active):
         self._active = bool(active)
-        self.input_mode.setEnabled(not active)
+        self.input_mode.setEnabled(True)
         self.start_button.setText("End Voice" if active else "Start Voice")
         self.mute_button.setEnabled(active)
         self.interrupt_button.setEnabled(active)
         self.finish_button.setEnabled(active)
-        self.model_page.setEnabled(not active)
-        self.audio_page.setEnabled(not active)
-        self.perception_page.setEnabled(not active)
+        self.model_page.setEnabled(True)
+        self.audio_page.setEnabled(True)
+        self.perception_page.setEnabled(True)
         if not active:
             self.mute_button.setChecked(False)
             self.meter.set_level(0)
         self._update_input_mode()
+        self.active_changed.emit(bool(active))
 
     def show_error(self, message):
         self.error_label.setText(str(message))
         self.error_label.show()
+        self.error_raised.emit(str(message))
 
     def reject(self):
         self.stop_requested.emit()

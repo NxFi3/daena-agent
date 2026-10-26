@@ -291,6 +291,7 @@ class StudioWindow(QMainWindow):
         self.settings = SettingsPanel(self.config)
         self.settings.applied.connect(self.apply_config)
         self.settings.error.connect(self.error)
+        self.settings.voice_requested.connect(self.mount_voice_settings)
         self.pages.addWidget(self.settings)
         self.nav.currentRowChanged.connect(self.page_changed)
         self.nav.setCurrentRow(0)
@@ -698,6 +699,13 @@ class StudioWindow(QMainWindow):
             self.voice_controller = VoiceController(self)
         self.voice_controller.open()
 
+    def mount_voice_settings(self):
+        if self.voice_controller is None:
+            from src.studio.voice_controller import VoiceController
+
+            self.voice_controller = VoiceController(self)
+        self.voice_controller.mount_settings()
+
     def _composer_action(self):
         if self.busy and not self._automation_run:
             self.stop()
@@ -787,7 +795,7 @@ class StudioWindow(QMainWindow):
         if not self._automation_run:
             self.busy_mode.show()
         self.automation.set_running(True)
-        self.settings.setEnabled(False)
+        self.settings.set_runtime_busy(True)
         config = self.store.runtime_config(self.config)
         voice_options = {"input_context": input_context} if input_context else {}
         self.worker = RuntimeWorker(
@@ -1077,6 +1085,8 @@ class StudioWindow(QMainWindow):
 
     def worker_finished(self):
         self.busy = False
+        if self.voice_controller is not None:
+            self.voice_controller.agent_idle()
         self.stop_button.setEnabled(False)
         self.send_button.setText("↑")
         self.send_button.setEnabled(True)
@@ -1087,7 +1097,7 @@ class StudioWindow(QMainWindow):
         if not self._automation_run:
             self.transcript.end_turn()
         self.automation.set_running(False)
-        self.settings.setEnabled(True)
+        self.settings.set_runtime_busy(False)
         metrics = (
             self._automation_result if self._automation_run else self._result
         ) or {}

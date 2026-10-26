@@ -269,7 +269,7 @@ def test_voice_dialog_controls_do_not_start_devices_or_download_models(qt_app):
     dialog.start_button.click()
     assert len(starts) == 1
     dialog.set_active(True)
-    assert not dialog.model_page.isEnabled()
+    assert dialog.model_page.isEnabled()  # Live settings use explicit Apply.
     assert dialog.interrupt_button.isEnabled()
     dialog.set_transcript("سلام Daena")
     dialog.send_button.click()

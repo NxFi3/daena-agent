@@ -10,6 +10,7 @@ import time
 from uuid import uuid4
 
 from .streaming import SpeechSegmenter, speech_segments
+from .providers import AudioChunk, VoiceError
 
 
 @dataclass(frozen=True)
@@ -400,11 +401,18 @@ class VoiceSession:
                 for sentence in speech_segments(text):
                     if cancel.is_set() or self._stop.is_set():
                         break
+                    sentence_has_audio = False
                     for chunk in self.synthesizer.synthesize(
                         sentence, language, stop_event=cancel
                     ):
                         if cancel.is_set() or epoch != self.epoch:
                             break
+                        # Empty native chunks are not playback and must not
+                        # report a first-audio latency or successful speech.
+                        chunk = AudioChunk(chunk.sample_rate, chunk.pcm16)
+                        if not chunk.pcm16:
+                            continue
+                        sentence_has_audio = True
                         if first:
                             self.emit(
                                 "latency",
@@ -420,7 +428,7 @@ class VoiceSession:
                         # bounded memory, quick playback start, immediate interruption.
                         size = max(2, int(chunk.sample_rate * 0.1) * 2)
                         for offset in range(0, len(chunk.pcm16), size):
-                            part = type(chunk)(
+                            part = AudioChunk(
                                 sample_rate=chunk.sample_rate,
                                 pcm16=chunk.pcm16[offset : offset + size],
                             )
@@ -432,6 +440,15 @@ class VoiceSession:
                                     continue
                             if cancel.is_set() or self._stop.is_set():
                                 break
+                    if (
+                        not sentence_has_audio
+                        and not cancel.is_set()
+                        and not self._stop.is_set()
+                    ):
+                        raise VoiceError(
+                            "The local speech engine produced no audio for this passage. "
+                            "Check the selected output voice, language and model files, then try the voice preview."
+                        )
                 while not cancel.is_set() and not self._stop.is_set():
                     try:
                         self.audio.put((epoch, None), timeout=0.05)

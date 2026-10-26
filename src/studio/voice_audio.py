@@ -178,6 +178,22 @@ def _qt_audio():
     return QAudio, QAudioFormat, QAudioSink, QAudioSource, QMediaDevices
 
 
+def _audio_enum_is(value, expected):
+    """Match Qt audio enum aliases across PySide versions.
+
+    Qt exposes the same C++ enums through QAudio and QtAudio. Some PySide builds
+    wrap those aliases as different Python Enum classes: identical repr/value,
+    but inequality. Sink/source state() and error() can return either wrapper.
+    Keep the enum member name as well as its numeric value to avoid mixing
+    unrelated state/error members, while retaining injected integer test APIs.
+    """
+    return value == expected or (
+        getattr(value, "name", None) is not None
+        and value.name == getattr(expected, "name", None)
+        and value.value == getattr(expected, "value", None)
+    )
+
+
 class _PlaybackBuffer(QIODevice):
     """Thread-safe sequential pull buffer consumed by Qt's audio backend."""
 
@@ -366,7 +382,9 @@ class AudioDevices(QObject):
         if owner is not self._source:
             return
         audio, _, _, _, _ = _qt_audio()
-        if state == audio.StoppedState and owner.error() != audio.NoError:
+        if _audio_enum_is(state, audio.StoppedState) and not _audio_enum_is(
+            owner.error(), audio.NoError
+        ):
             self.fault.emit(
                 "Microphone stopped unexpectedly; check permissions or reconnect the device"
             )
@@ -476,6 +494,23 @@ class AudioDevices(QObject):
         if device_id != self._output_id:
             self.stop_playback()
             self._output_id = str(device_id)
+
+    def prepare_output(self):
+        """Validate the selected speaker without opening or inspecting a microphone.
+
+        This is a main-thread preflight, not proof of audible sound. Playback's
+        ActiveState and an explicit user output test provide separate evidence.
+        Native device failures deliberately raise for the client to present.
+        """
+        device = self._device(self._output_id, output=True)
+        fmt = device.preferredFormat()
+        return {
+            "id": bytes(device.id()).hex(),
+            "name": device.description(),
+            "sample_rate": fmt.sampleRate(),
+            "channels": fmt.channelCount(),
+            "volume": float(self._sink.volume()) if self._sink is not None else 1.0,
+        }
 
     def _encode_output(self, pcm16, sample_rate):
         fmt = self._output_format
@@ -591,28 +626,43 @@ class AudioDevices(QObject):
         self._echo_blocked = True
         self._capture_needs_reset = True
         self._input_pending.clear()
-        if not self._playing:
-            self._playing = True
-            self.playback_started.emit()
-        if self._sink.state() in {audio.StoppedState, audio.IdleState}:
+        state = self._sink.state()
+        if _audio_enum_is(state, audio.StoppedState) or _audio_enum_is(
+            state, audio.IdleState
+        ):
             # resume() is defined for SuspendedState, not underrun/IdleState.
             # If readyRead did not already wake the pull backend, restart
             # against the same still-queued buffer; Active audio is untouched.
             self._sink.start(self._playback)
-        elif self._sink.state() == audio.SuspendedState:
+        elif _audio_enum_is(state, audio.SuspendedState):
             self._sink.resume()
+        # Backends may emit ActiveState synchronously from start()/resume(), or
+        # later after native setup. A queued PCM block alone is not playback.
+        if self._sink is not None and _audio_enum_is(
+            self._sink.state(), audio.ActiveState
+        ):
+            self._mark_playing()
+
+    def _mark_playing(self):
+        if not self._playing:
+            self._playing = True
+            self.playback_started.emit()
 
     def _playback_state(self, owner, state):
         if owner is not self._sink:
             return
         audio, _, _, _, _ = _qt_audio()
-        if state == audio.StoppedState and owner.error() != audio.NoError:
+        if _audio_enum_is(state, audio.ActiveState):
+            self._mark_playing()
+        elif _audio_enum_is(state, audio.StoppedState) and not _audio_enum_is(
+            owner.error(), audio.NoError
+        ):
             self.stop_playback()
             self.fault.emit(
                 "Audio output stopped unexpectedly; check the selected speaker device"
             )
         elif (
-            state == audio.IdleState
+            _audio_enum_is(state, audio.IdleState)
             and self._playback
             and not self._playback.bytesAvailable()
         ):

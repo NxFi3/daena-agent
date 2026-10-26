@@ -3,7 +3,7 @@
 from __future__ import annotations
 from copy import deepcopy
 import json
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -36,11 +36,14 @@ from src.studio.profiles import (
 class SettingsPanel(QWidget):
     applied = Signal(dict)
     error = Signal(str)
+    voice_requested = Signal()
 
     def __init__(self, config):
         super().__init__()
         self.config = deepcopy(config)
         self._syncing = False
+        self._runtime_busy = False
+        self._voice_widget = None
         root = QVBoxLayout(self)
         root.setSpacing(16)
         title = QLabel("Workspace settings")
@@ -61,6 +64,7 @@ class SettingsPanel(QWidget):
                 "Delegation & skills",
                 "Tool permissions",
                 "Advanced profile",
+                "Voice",
             ]
         )
         self.sections.setFixedWidth(210)
@@ -249,15 +253,41 @@ class SettingsPanel(QWidget):
         row.addWidget(use)
         a.addLayout(row)
         self.pages.addWidget(advanced)
+        # Voice preferences belong to a separate client configuration, not the
+        # Agent profile. Construct its model/device controls only on demand.
+        self.voice_index = self.pages.count()
+        self.voice_page = QWidget()
+        self.voice_layout = QVBoxLayout(self.voice_page)
+        self.voice_layout.setContentsMargins(24, 10, 24, 24)
+        self.voice_layout.setSpacing(16)
+        voice_title = QLabel("Voice settings")
+        voice_title.setObjectName("sectionTitle")
+        self.voice_layout.addWidget(voice_title)
+        self.voice_hint = QLabel(
+            "Choose local speech models, voices, audio devices and acoustic perception. "
+            "Voice preferences save separately for this workspace and remain available while the Agent works."
+        )
+        self.voice_hint.setWordWrap(True)
+        self.voice_hint.setObjectName("muted")
+        self.voice_layout.addWidget(self.voice_hint)
+        self.voice_placeholder = QWidget()
+        placeholder = QVBoxLayout(self.voice_placeholder)
+        placeholder.setContentsMargins(0, 0, 0, 0)
+        self.open_voice_button = QPushButton("Open voice settings")
+        self.open_voice_button.clicked.connect(self.voice_requested)
+        placeholder.addWidget(self.open_voice_button)
+        placeholder.addStretch()
+        self.voice_layout.addWidget(self.voice_placeholder, 1)
+        self.pages.addWidget(self.voice_page)
         bottom = QHBoxLayout()
         self.notice = QLabel("Changes apply on the next turn.")
         self.notice.setObjectName("muted")
         bottom.addWidget(self.notice)
         bottom.addStretch()
-        apply = QPushButton("Save workspace settings")
-        apply.setObjectName("primary")
-        apply.clicked.connect(self.apply_form)
-        bottom.addWidget(apply)
+        self.apply_button = QPushButton("Save workspace settings")
+        self.apply_button.setObjectName("primary")
+        self.apply_button.clicked.connect(self.apply_form)
+        bottom.addWidget(self.apply_button)
         root.addLayout(bottom)
         self.provider.currentTextChanged.connect(self.change_provider)
         self.generation.textChanged.connect(self.sync_generation_controls)
@@ -269,6 +299,7 @@ class SettingsPanel(QWidget):
         ):
             signal.connect(self.update_generation)
         self.populate(config)
+        self.sections.currentRowChanged.connect(self._section_changed)
         self.sections.setCurrentRow(0)
 
     def page(self, title, description):
@@ -298,6 +329,61 @@ class SettingsPanel(QWidget):
 
     def show_section(self, index):
         self.sections.setCurrentRow(index)
+
+    def show_voice(self):
+        """Navigate without constructing audio devices or speech models here."""
+        if self.sections.currentRow() == self.voice_index:
+            self._request_voice()
+        else:
+            self.show_section(self.voice_index)
+
+    def _request_voice(self):
+        if self._voice_widget is None:
+            self.voice_requested.emit()
+
+    def _section_changed(self, index):
+        voice = index == self.voice_index
+        self.apply_button.setVisible(not voice)
+        if voice:
+            self.notice.setText(
+                "Voice preferences save separately from the Agent profile."
+            )
+            self._request_voice()
+        else:
+            self.notice.setText(
+                "Agent running · workspace controls are locked; Voice settings remain available."
+                if self._runtime_busy
+                else "Changes apply on the next turn."
+            )
+
+    def mount_voice_settings(self, widget):
+        """Host the controller's canonical configuration widget, without copying it.
+
+        The owner retains configuration/lifecycle responsibility. Repeated calls
+        with the same widget are harmless; replacing a widget detaches the old
+        one rather than deleting a live controller-owned client.
+        """
+        if widget is self._voice_widget:
+            return
+        if not isinstance(widget, QWidget):
+            raise TypeError("Voice settings must be a QWidget")
+        if self._voice_widget is not None:
+            self.voice_layout.removeWidget(self._voice_widget)
+            self._voice_widget.hide()
+            self._voice_widget.setParent(None)
+        self.voice_placeholder.hide()
+        widget.setParent(self.voice_page, Qt.Widget)
+        self.voice_layout.addWidget(widget, 1)
+        self._voice_widget = widget
+        widget.show()
+
+    def set_runtime_busy(self, busy):
+        """Lock runtime mutation without disabling navigation or Voice controls."""
+        self._runtime_busy = bool(busy)
+        for index in range(self.voice_index):
+            self.pages.widget(index).setEnabled(not busy)
+        self.apply_button.setEnabled(not busy)
+        self._section_changed(self.sections.currentRow())
 
     def change_provider(self, provider):
         if self._syncing:
@@ -470,6 +556,11 @@ class SettingsPanel(QWidget):
         return validate_config(result)
 
     def apply_form(self):
+        if self._runtime_busy:
+            self.error.emit(
+                "Wait for the Agent to finish before changing its workspace profile."
+            )
+            return
         try:
             self.applied.emit(self.value())
             self.notice.setText("Workspace settings saved.")
@@ -485,6 +576,11 @@ class SettingsPanel(QWidget):
             self.error.emit(str(exc))
 
     def apply_advanced(self):
+        if self._runtime_busy:
+            self.error.emit(
+                "Wait for the Agent to finish before changing its workspace profile."
+            )
+            return
         try:
             value = validate_config(json.loads(self.advanced.toPlainText()))
             self.populate(value)

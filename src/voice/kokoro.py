@@ -131,7 +131,10 @@ class KokoroProvider:
         text = str(text).strip()
         if not text:
             return
-        if language == "auto" and any(code == "fa" for code, _ in language_runs(text)):
+        # Selecting English explicitly does not make unsupported Persian text
+        # pronounceable. Check letters, including mixed-script words, before
+        # loading the engine rather than letting its phonemizer guess.
+        if any(text_language(char, "en") == "fa" for char in text):
             raise VoiceError(
                 "Persian text requires the configured Persian voice; Kokoro has no official Persian model"
             )
