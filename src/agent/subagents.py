@@ -534,10 +534,10 @@ class SubagentManager:
                 self.parent_message_sink(self._steering_text(record))
             if sender in self.tasks:
                 self._event(self.tasks[sender], dict(type="message_sent",
-                    message_id=record["id"], recipient=recipient))
+                    message_id=record["id"], recipient=recipient, text=record["text"]))
             if recipient in self.tasks:
                 self._event(self.tasks[recipient], dict(type="message_received",
-                    message_id=record["id"], sender=sender))
+                    message_id=record["id"], sender=sender, text=record["text"]))
             return dict(message_id=record["id"], recipient=recipient,
                         delivery="queued" if recipient != "parent" else "inbox")
 
