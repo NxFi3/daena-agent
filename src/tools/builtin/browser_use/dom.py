@@ -21,10 +21,11 @@ COLLECT = r"""(limit) => {
       e.getAttribute('title') || ((e.type === 'submit' || e.type === 'button') ? e.value : ''));
   };
   let total = 0;
+  const CONTROL_SELECTOR = 'a[href],button,input,textarea,select,summary,[role],[contenteditable=true],[tabindex]';
   function walk(root) {
-    for (const e of root.querySelectorAll('*')) {
-      if (e.shadowRoot) walk(e.shadowRoot);
-      if (!e.matches('a[href],button,input,textarea,select,summary,[role],[contenteditable=true],[tabindex]')) continue;
+    // Query actionable nodes directly rather than checking matches() for every
+    // decorative DOM node. Shadow hosts still need a separate traversal.
+    for (const e of root.querySelectorAll(CONTROL_SELECTOR)) {
       const shown = visible(e);
       if (!shown && !(e.tagName === 'INPUT' && e.type === 'file')) continue;
       total++;
@@ -48,6 +49,10 @@ COLLECT = r"""(limit) => {
       if (e.href) record.href = e.href.slice(0, 500);
       if (e.tagName === 'SELECT') record.options = Array.from(e.options).slice(0,40).map(o=>({value:o.value,label:tidy(o.label),selected:o.selected}));
       records.push(record);
+    }
+    // Open shadow roots need a separate scan, including non-interactive hosts.
+    for (const host of root.querySelectorAll('*')) {
+      if (host.shadowRoot) walk(host.shadowRoot);
     }
   }
   walk(document);
