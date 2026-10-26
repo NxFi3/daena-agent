@@ -111,12 +111,17 @@ class StdioMCPServer:
     def list_tools(self) -> list[dict]:
         self.start()
         items, cursor = [], None
-        while True:
+        seen_cursors = set()
+        for _page in range(32):
             result = self.request("tools/list", {"cursor": cursor} if cursor else {})
             items.extend(result.get("tools", []))
             cursor = result.get("nextCursor")
             if not cursor:
                 return items
+            if cursor in seen_cursors or len(items) > 512:
+                raise MCPTransportError("MCP tool catalog pagination exceeded bounds")
+            seen_cursors.add(cursor)
+        raise MCPTransportError("MCP tool catalog exceeded 32 pages")
 
     def call(self, name: str, args: dict):
         self.start()
@@ -151,7 +156,8 @@ class MCPTool(Tool):
         original_name = remote["name"]
         self.remote_name = original_name
         self.server = server
-        self.name = f"mcp_{server.name}_{original_name}"
+        safe_name = re.sub(r"[^a-zA-Z0-9_]", "_", original_name)
+        self.name = f"mcp_{server.name}_{safe_name}"
         self.description = str(remote.get("description", ""))[:2000]
         definition = normalize_tool_definition({
             "name": self.name, "description": self.description,
