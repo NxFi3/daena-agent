@@ -319,8 +319,10 @@ class SubagentManager:
             allowed = allowed & set(child.allowed_tools)
             if (config.get("runtime") or {}).get("completion_protocol") == "explicit":
                 allowed = allowed | {"task_finish"}
+        parent_scope = (self.config.get("security") or {}).get("allowed_tools")
         messaging_allowed = (
             "subagent" in policy.allowed_tools
+            and (parent_scope is None or "agent_message" in policy.allowed_tools)
             and (child.allowed_tools is None or "agent_message" in child.allowed_tools)
         )
         if messaging_allowed:
