@@ -64,6 +64,7 @@ class Loop:
         self._stop_event = None
         self._run_started_at = None
         self._steering_queue = queue.Queue()
+        self._coordination_queue = queue.Queue()
         self.agent_state = AgentState()
         self.working_set = WorkingSet()
         self.recent_context_limit = self.context.default_recent_limit
@@ -74,6 +75,7 @@ class Loop:
             0, min(5, int(runtime_config.get("generation_retries", 2)))
         )
         self.tool_definitions = self.tool.get_model_tools()
+        self.tool.subagents.parent_message_sink = self.receive_agent_message
         self.tool.subagents.event_sink = lambda event: self._emit_event(
             "subagent_event", child_event=event
         )
@@ -135,7 +137,19 @@ class Loop:
         if str(text).strip():
             self._steering_queue.put(str(text).strip())
 
+    def receive_agent_message(self, text):
+        """Accept untrusted child information, not elevated user steering."""
+        if str(text).strip():
+            self._coordination_queue.put(str(text).strip())
+
     def _consume_steering(self):
+        while True:
+            try:
+                text = self._coordination_queue.get_nowait()
+            except queue.Empty:
+                break
+            self._store_nudge(text)
+            self._emit_event("agent_message", text=text)
         while True:
             try:
                 text = self._steering_queue.get_nowait()
