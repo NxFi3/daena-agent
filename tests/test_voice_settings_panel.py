@@ -85,7 +85,7 @@ def test_unconnected_voice_placeholder_is_actionable(qt_app):
     assert requests == [1]
     panel.open_voice_button.click()
     assert requests == [1, 1]
-    assert panel.voice_index == 5
+    assert panel.voice_index == panel.sections.count() - 1
     panel.close()
 
 
