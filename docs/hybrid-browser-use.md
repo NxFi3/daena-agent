@@ -46,3 +46,30 @@ https://playwright.dev/mcp/snapshots for general references.
 Run `DAENA_TEST_BROWSER=1 python -m pytest -q tests/browser_use` with
 Playwright Chromium installed. Inspect CI before deploying to schools or
 other production environments.
+
+## Persistent sign-in profiles
+
+Managed Chromium uses a **persistent workspace profile** by default.
+Sessions stored in the same Daena workspace share browser login cookies
+and local storage even when Studio opens a new conversation or restarts.
+The browser does not reuse the user's personal Chrome profile.
+
+`browser.profile_scope` can be set to `"conversation"` to isolate each
+conversation and restore the old behaviour. The default is `"workspace"`.
+The profile is stored under `.daena/browser_use/<workspace-derived-id>/profile`;
+keep that directory private. Never commit it, copy it into public repos,
+or share it with strangers: the Chrome profile can contain login credentials
+and authentication cookies. Use a separate workspace for sites/accounts that
+should not share sign-in state.
+
+**Migration:** the new workspace profile is separate from older
+conversation-specific profiles. You may need to sign in once after upgrading.
+Subsequent conversations in the same workspace reuse the new profile.
+Signing out from a site, expired cookies, server-side session revocation,
+explicit browser-data deletion, or opening an unrelated workspace can
+still require authentication again. Connected CDP sessions use the
+external browser's context and are not affected by this profile setting.
+
+Do not run two managed Daena Chromium instances with the same workspace
+profile simultaneously: Chromium enforces a single active process per
+profile. Stop the previous run/browser first.
