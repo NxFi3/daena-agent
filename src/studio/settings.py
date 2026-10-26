@@ -63,6 +63,7 @@ class SettingsPanel(QWidget):
                 "Context & memory",
                 "Delegation & skills",
                 "Tool permissions",
+                "MCP Servers",
                 "Advanced profile",
                 "Voice",
             ]
@@ -231,6 +232,26 @@ class SettingsPanel(QWidget):
         browser_note.setObjectName("muted")
         t.addWidget(browser_note)
         self.pages.addWidget(tools)
+
+        _, mcp_form = self.page(
+            "MCP Servers",
+            "Configure trusted, already-installed MCP stdio servers. "
+            "Each enabled command runs with your OS user permissions. "
+            "Save settings and restart Daena to discover its tools."
+        )
+        self.mcp_servers = QPlainTextEdit()
+        self.mcp_servers.setPlaceholderText(
+            '{"example": {"enabled": false, "command": ["python", "-m", "server"]}}'
+        )
+        self.mcp_servers.setMinimumHeight(260)
+        mcp_form.addRow("Servers · JSON", self.mcp_servers)
+        mcp_notice = QLabel(
+            "Only enable commands you installed and trust. "
+            "MCP tools use the normal tool search catalog. "
+            "Network permissions apply. Editing does not install packages."
+        )
+        mcp_notice.setWordWrap(True)
+        mcp_form.addRow(mcp_notice)
 
         advanced = QWidget()
         a = QVBoxLayout(advanced)
@@ -441,6 +462,7 @@ class SettingsPanel(QWidget):
         self.browser_headless.setChecked(browser.get("headless", False))
         self.browser_executable.setText(browser.get("executable_path", ""))
         self.browser_cdp.setText(browser.get("cdp_url", ""))
+        self.mcp_servers.setPlainText(json.dumps(config.get("mcp", {}).get("servers", {}), indent=2))
         self._syncing = False
         self.sync_generation_controls()
 
@@ -553,6 +575,21 @@ class SettingsPanel(QWidget):
             executable_path=self.browser_executable.text().strip(),
             cdp_url=self.browser_cdp.text().strip(),
         )
+        servers = json.loads(self.mcp_servers.toPlainText() or "{}")
+        if not isinstance(servers, dict):
+            raise ValueError("MCP Servers must be a JSON object")
+        from src.tools.mcp_stdio import configured_servers
+        configured_servers({"mcp": {"servers": servers}})
+        result.setdefault("mcp", {})["servers"] = servers
+        # Studio saves an explicit tool scope. Enable only the MCP namespaces
+        # for servers that the user explicitly opted into.
+        scope = set(result["security"]["allowed_tools"])
+        scope = {name for name in scope if not name.startswith("mcp_")}
+        scope.update(
+            f"mcp_{name}_*" for name, server in servers.items()
+            if isinstance(server, dict) and server.get("enabled", False)
+        )
+        result["security"]["allowed_tools"] = sorted(scope)
         return validate_config(result)
 
     def apply_form(self):
