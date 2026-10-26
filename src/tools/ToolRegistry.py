@@ -6,6 +6,7 @@ from pathlib import Path
 from types import ModuleType
 
 from src.tools.Tool import Tool
+from src.tools.contract import validate_catalog
 from src.utils.logger import get_logger
 
 
@@ -225,4 +226,4 @@ class ToolRegistry:
         return self.tools.get(toolname.strip().lower())
 
     def get_definitions(self):
-        return [tool.get_definition() for tool in self.tools.values()]
+        return validate_catalog([tool.get_definition() for tool in self.tools.values()])
