@@ -63,7 +63,8 @@ class ToolManager:
                         self.toolregistry.tools[tool.name] = tool
                         # Enabled MCP servers are explicitly trusted in local config.
                         # This does not override the network-tools host policy.
-                        if (self.config.get("security") or {}).get("allowed_tools") is None:
+                        explicit_scope = (self.config.get("security") or {}).get("allowed_tools")
+                        if explicit_scope is None or f"mcp_{server.name}_*" in self.security.policy.allowed_tools:
                             self.security.policy.allowed_tools.add(tool.name)
                     except (TypeError, ValueError, KeyError) as exc:
                         self.logger.warning('Skipping invalid MCP tool: %s', exc)
