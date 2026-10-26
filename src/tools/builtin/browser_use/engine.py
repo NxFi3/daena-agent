@@ -17,7 +17,13 @@ from .executable import resolve_executable
 class BrowserSession:
     def __init__(self, workspace, session, config):
         self.workspace = Path(workspace).resolve()
-        key = hashlib.sha256(str(session).encode()).hexdigest()[:24]
+        # A fresh Agent/Studio conversation must not create an empty Chrome
+        # profile and silently log the user out of every website. The profile
+        # is workspace-scoped by default; explicit conversation scope retains
+        # the previous per-session isolation behaviour.
+        scope = config.get("profile_scope", "workspace")
+        identity = str(session) if scope == "conversation" else "workspace:" + str(self.workspace)
+        key = hashlib.sha256(identity.encode()).hexdigest()[:24]
         self.root = self.workspace / ".daena" / "browser_use" / key
         self.config = config
         self.pw = self.browser = self.context = self.page = None
