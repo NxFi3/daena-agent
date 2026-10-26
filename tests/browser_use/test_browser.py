@@ -369,3 +369,27 @@ def test_visual_canvas_click_and_drag(browser, website):
     newer = ok(browser, "screenshot")["observation"]
     ok(browser, "drag_at", snapshot_id=newer["snapshot_id"],
        from_coordinate=[x, y], to_coordinate=[x + 5, y + 5])
+
+
+def test_browser_profile_persists_across_agent_conversations(tmp_path):
+    """New Agent instances in one workspace reuse a Chrome profile directory."""
+    from src.tools.builtin.browser_use.engine import BrowserSession
+    first = BrowserSession(tmp_path, "conversation-a", {})
+    second = BrowserSession(tmp_path, "conversation-b", {})
+    assert first.root == second.root
+    assert first.root.parent == (tmp_path / ".daena" / "browser_use")
+    isolated = BrowserSession(tmp_path, "conversation-a", {"profile_scope": "conversation"})
+    other = BrowserSession(tmp_path, "conversation-b", {"profile_scope": "conversation"})
+    assert isolated.root != other.root
+    assert isolated.root != first.root
+    different_workspace = BrowserSession(tmp_path / "other", "conversation-a", {})
+    assert different_workspace.root != first.root
+
+
+def test_browser_profile_scope_rejects_unknown_value():
+    import pytest
+    from src.tools.builtin.browser_use.contracts import validate_config
+    assert validate_config({}) == {}
+    assert validate_config({"profile_scope": "conversation"})["profile_scope"] == "conversation"
+    with pytest.raises(ValueError, match="profile_scope"):
+        validate_config({"profile_scope": "temporary"})
