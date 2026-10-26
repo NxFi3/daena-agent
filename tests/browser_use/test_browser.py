@@ -361,7 +361,7 @@ def test_visual_canvas_click_and_drag(browser, website):
     # Canvas event offsets truncate fractional layout coordinates. A one-pixel
     # difference is expected when the element bounds have fractional origins.
     import re
-    match = re.search(r"Canvas (\\d+),(\\d+)", updated["text"])
+    match = re.search(r"Canvas (\d+),(\d+)", updated["text"])
     assert match, updated["text"]
     actual_x, actual_y = map(int, match.groups())
     assert abs(actual_x - 30) <= 1
