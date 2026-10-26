@@ -237,7 +237,7 @@ class SettingsPanel(QWidget):
             "MCP Servers",
             "Configure trusted, already-installed MCP stdio servers. "
             "Each enabled command runs with your OS user permissions. "
-            "Save settings and restart Daena to discover its tools."
+            "Save settings and restart Daena to discover its tools.",
         )
         self.mcp_servers = QPlainTextEdit()
         self.mcp_servers.setPlaceholderText(
