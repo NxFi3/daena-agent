@@ -162,6 +162,7 @@ class BrowserSession:
             )
 
     async def observe(self, request):
+        observed_start = time.perf_counter()
         page = await self.select_page()
         tab = self.tab_id(page)
         self.latest = None
@@ -284,6 +285,12 @@ class BrowserSession:
         )
         if errors:
             observation["frame_errors"] = errors
+        observation["observation_metrics"] = {
+            "duration_ms": round((time.perf_counter() - observed_start) * 1000, 1),
+            "element_handles": len(self.refs),
+            "scanned_controls": observation["total_controls"],
+            "returned_controls": len(elements),
+        }
         self.latest = observation
         return observation
 
