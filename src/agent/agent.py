@@ -114,6 +114,10 @@ class Agent:
         """Queue guidance for the currently running task."""
         self.loop.steer(text)
 
+    def receive_agent_message(self, text: str) -> None:
+        """Queue untrusted coordination data for the active runtime turn."""
+        self.loop.receive_agent_message(text)
+
     def approve_background_command(
         self,
         command: list[str],
