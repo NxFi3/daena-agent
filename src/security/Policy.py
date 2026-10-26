@@ -163,7 +163,7 @@ class SecurityPolicy:
         if name == "command_exec":
             return self._check_command(args, sandbox)
 
-        if name in {"web_search", "web_fetch", "browser_use"}:
+        if name in {"web_search", "web_fetch", "browser_use"} or name.startswith("mcp_"):
             if not self.allow_network_tools:
                 return SecurityDecision(
                     False,
