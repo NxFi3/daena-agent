@@ -11,6 +11,7 @@ from src.skills import SkillRegistry
 from src.security.securityService import SecurityService
 from src.tools.ToolDispatcher import ToolDispatcher
 from src.tools.ToolRegistry import ToolRegistry
+from src.tools.mcp_stdio import MCPTool, configured_servers
 from src.tools.builtin.command_exec.process_manager import ProcessManager
 from src.utils.logger import get_logger
 
@@ -41,6 +42,34 @@ class ToolManager:
         self._session_id_provider = None
         self._active_tool_names: list[str] = []
         self._last_tool_search_query = ""
+        self._mcp_loaded = False
+        self._mcp_servers = []
+
+    def _load_mcp_tools(self) -> None:
+        if self._mcp_loaded:
+            return
+        self._mcp_loaded = True
+        if not self.toolregistry.tools:
+            self.toolregistry.discover()
+        for server in configured_servers(self.config):
+            try:
+                remote_tools = server.list_tools()
+                for remote in remote_tools:
+                    try:
+                        tool = MCPTool(server, remote)
+                        if tool.name in self.toolregistry.tools:
+                            self.logger.warning('MCP tool name collision: %s', tool.name)
+                            continue
+                        self.toolregistry.tools[tool.name] = tool
+                        # Enabled MCP servers are explicitly trusted in local config.
+                        # This does not override the network-tools host policy.
+                        self.security.policy.allowed_tools.add(tool.name)
+                    except (TypeError, ValueError, KeyError) as exc:
+                        self.logger.warning('Skipping invalid MCP tool: %s', exc)
+                self._mcp_servers.append(server)
+            except Exception as exc:
+                self.logger.warning('MCP server %s unavailable: %s', server.name, exc)
+                server.close()
 
     def set_llm_provider(self, llm_provider) -> None:
         self._llm_provider = llm_provider
@@ -77,6 +106,8 @@ class ToolManager:
             self.finish_run()
         finally:
             self.process_manager.close(discard_output=True)
+            for server in self._mcp_servers:
+                server.close()
             for tool in self.toolregistry.tools.values():
                 closer = getattr(tool, "close", None)
                 if callable(closer):
@@ -142,6 +173,7 @@ class ToolManager:
                 search_setter(self._search_and_activate_tools)
 
     def get_tools(self) -> list[dict]:
+        self._load_mcp_tools()
         if self._definitions is None:
             if not self.toolregistry.tools:
                 self.toolregistry.discover()
@@ -163,7 +195,7 @@ class ToolManager:
             if not name or name not in allowed:
                 continue
             if (
-                name in {"web_search", "web_fetch", "browser_use"}
+                (name in {"web_search", "web_fetch", "browser_use"} or name.startswith("mcp_"))
                 and not network_allowed
             ):
                 continue
@@ -482,6 +514,7 @@ class ToolManager:
         return self.toolregistry.get(str(name).strip().lower())
 
     def get_tool(self, name: str):
+        self._load_mcp_tools()
         if not self.toolregistry.tools:
             self.toolregistry.discover()
         self._bind_runtime_services()
