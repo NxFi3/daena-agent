@@ -18,6 +18,9 @@ ACTIONS = [
     "read",
     "screenshot",
     "click",
+    "click_at",
+    "move_at",
+    "drag_at",
     "fill",
     "press",
     "select",
@@ -68,6 +71,10 @@ SCHEMA = {
         "new_tab": {"type": "boolean", "default": False},
         "target": TARGET,
         "destination": TARGET,
+        "snapshot_id": {"type": "string", "description": "Current screenshot observation ID for pixel actions."},
+        "coordinate": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2, "description": "Point [x,y] in CSS screenshot pixels."},
+        "from_coordinate": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
+        "to_coordinate": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
         "button": {
             "type": "string",
             "enum": ["left", "right", "middle"],
@@ -152,6 +159,9 @@ def validate(request):
         "select_tab": ("tab_id",),
         "close_tab": ("tab_id",),
         "click": ("target",),
+        "click_at": ("snapshot_id", "coordinate"),
+        "move_at": ("snapshot_id", "coordinate"),
+        "drag_at": ("snapshot_id", "from_coordinate", "to_coordinate"),
         "fill": ("target", "text"),
         "press": ("text",),
         "select": ("target", "values"),
@@ -201,6 +211,11 @@ def validate(request):
             )
         if "name" in target and "role" not in target:
             raise BrowserError("invalid_arguments", "name requires role.")
+    if action in {"click_at", "move_at", "drag_at"}:
+        if "target" in request or "destination" in request or "position" in request:
+            raise BrowserError("invalid_arguments", "Visual actions accept screenshot coordinates, not element targets.")
+        if not request["snapshot_id"].strip():
+            raise BrowserError("invalid_arguments", "Visual actions require a nonempty snapshot_id.")
     if action == "upload" and not request["paths"]:
         raise BrowserError("invalid_arguments", "upload requires at least one file.")
 
