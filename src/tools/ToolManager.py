@@ -51,7 +51,12 @@ class ToolManager:
         self._mcp_loaded = True
         if not self.toolregistry.tools:
             self.toolregistry.discover()
+        if not self.security.policy.allow_network_tools:
+            return
         for server in configured_servers(self.config):
+            explicit_scope = (self.config.get("security") or {}).get("allowed_tools")
+            if explicit_scope is not None and f"mcp_{server.name}_*" not in self.security.policy.allowed_tools:
+                continue
             try:
                 remote_tools = server.list_tools()
                 for remote in remote_tools:
