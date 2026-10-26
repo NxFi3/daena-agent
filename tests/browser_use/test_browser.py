@@ -325,3 +325,40 @@ def test_browser_lazy_element_handles_preserve_paginated_refs(browser, website):
     async def read_selected():
         return await browser._session.page.evaluate("document.body.dataset.selectedEntry")
     assert asyncio.run_coroutine_threadsafe(read_selected(), browser._loop).result(5) == "160"
+
+
+def test_screenshot_grounded_pixel_actions_and_stale_rejection(browser, website):
+    """Vision input operates on browser screenshot coordinates, never desktop."""
+    ok(browser, "open", url=website)
+    observation = ok(browser, "screenshot")["observation"]
+    snapshot = observation["snapshot_id"]
+    assert observation["screenshot_size"]["width"] > 0
+    assert observation["screenshot_size"]["height"] > 0
+    invalid = browser.execute(
+        "click_at", snapshot_id=snapshot, coordinate=[100000, 100000]
+    )
+    assert not invalid.success
+    assert invalid.content["error"]["code"] == "outside_capture"
+    # The rejection does not invalidate the original screenshot.
+    x = min(10, observation["screenshot_size"]["width"] - 1)
+    y = min(10, observation["screenshot_size"]["height"] - 1)
+    ok(browser, "move_at", snapshot_id=snapshot, coordinate=[x, y])
+    # A follow-up observation has invalidated the visual capture.
+    stale = browser.execute("click_at", snapshot_id=snapshot, coordinate=[x, y])
+    assert not stale.success
+    assert stale.content["error"]["code"] == "stale_snapshot"
+
+
+def test_visual_canvas_click_and_drag(browser, website):
+    ok(browser, "open", url=website)
+    async def bounds():
+        return await browser._session.page.locator("#drawing").bounding_box()
+    rect = asyncio.run_coroutine_threadsafe(bounds(), browser._loop).result(3)
+    shot = ok(browser, "screenshot")["observation"]
+    x, y = rect["x"] + 30, rect["y"] + 20
+    updated = ok(browser, "click_at", snapshot_id=shot["snapshot_id"],
+                 coordinate=[x, y])["observation"]
+    assert "Canvas 30,20" in updated["text"]
+    newer = ok(browser, "screenshot")["observation"]
+    ok(browser, "drag_at", snapshot_id=newer["snapshot_id"],
+       from_coordinate=[x, y], to_coordinate=[x + 5, y + 5])
