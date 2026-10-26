@@ -191,6 +191,7 @@ class BrowserSession:
             self.latest = observation
             return observation
         records, errors = [], []
+        collections = {}
         for index, frame in enumerate(page.frames):
             frame_id = "frame_" + str(index)
             self.frames[frame_id] = frame
@@ -213,9 +214,10 @@ class BrowserSession:
                 data = await collection.evaluate(
                     "(x) => ({records:x.records,total:x.total,text:x.text,ready_state:x.ready_state})"
                 )
-                nodes = await collection.get_property("nodes")
-                handles = await nodes.get_properties()
-                await nodes.dispose()
+                # Keep a single collection handle per frame. Materialize
+                # individual element handles only after filtering/pagination;
+                # most pages display 40 of up to 1200 collected controls.
+                collections[frame_id] = collection
                 observation["total_controls"] += data["total"]
                 observation["frames"][-1].update(
                     total_controls=data["total"],
@@ -226,14 +228,13 @@ class BrowserSession:
                     observation["text"] = data["text"][:4000]
                     observation["ready_state"] = data["ready_state"]
                 for n, record in enumerate(data["records"]):
-                    handle = handles[str(n)].as_element()
-                    ref = observation["snapshot_id"] + "_" + str(len(records))
-                    self.refs[ref] = (handle, page)
-                    records.append(dict(ref=ref, frame_id=frame_id, **record))
+                    records.append(dict(_node_index=n, frame_id=frame_id, **record))
             except Exception as exc:
                 errors.append(dict(frame_id=frame_id, error=str(exc)[:180]))
             finally:
-                if collection:
+                # Retained collections are disposed after the visible refs
+                # have been created below.
+                if collection and frame_id not in collections:
                     await collection.dispose()
         # Interleave frames before pagination so a large main document cannot
         # hide embedded forms. Within each frame put exposed controls first.
@@ -251,8 +252,30 @@ class BrowserSession:
             if not query or query in json.dumps(r, ensure_ascii=False).casefold()
         ]
         offset, limit = request.get("offset", 0), request.get("limit", 40)
+        visible_records = matches[offset : offset + limit]
+        elements = []
+        try:
+            for record in visible_records:
+                frame_id = record["frame_id"]
+                source = collections[frame_id]
+                handle = (await source.evaluate_handle(
+                    "(x, index) => x.nodes[index]", record["_node_index"]
+                )).as_element()
+                if handle is None:
+                    continue
+                ref = observation["snapshot_id"] + "_" + str(len(elements))
+                self.refs[ref] = (handle, page)
+                elements.append({
+                    **{k: v for k, v in record.items() if k != "_node_index"},
+                    "ref": ref,
+                })
+        finally:
+            await asyncio.gather(
+                *(item.dispose() for item in collections.values()),
+                return_exceptions=True,
+            )
         observation.update(
-            elements=matches[offset : offset + limit],
+            elements=elements,
             offset=offset,
             matched_count=len(matches),
             collected_count=len(records),
