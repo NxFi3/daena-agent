@@ -293,3 +293,35 @@ def test_embedded_modal_controls_survive_busy_parent_and_context_budget(browser,
     assert any('Phone' in f.get('text','') for f in observation['frames'])
     after = ok(browser,'fill',target={'ref':phone['ref']},text='09120000000')['observation']
     assert any(e.get('value')=='09120000000' for e in after['elements'])
+
+
+def test_browser_lazy_element_handles_preserve_paginated_refs(browser, website):
+    """Large DOMs only expose refs for returned controls, including later pages."""
+    ok(browser, "open", url=website)
+    async def create_many():
+        await browser._session.page.evaluate("""() => {
+            const host = document.createElement('section');
+            for (let i = 0; i < 180; i++) {
+                const btn = document.createElement('button');
+                btn.textContent = 'Paged entry ' + i;
+                btn.addEventListener('click', () => {
+                    document.body.dataset.selectedEntry = String(i);
+                });
+                host.appendChild(btn);
+            }
+            document.body.appendChild(host);
+        }""")
+    asyncio.run_coroutine_threadsafe(create_many(), browser._loop).result(5)
+    first = ok(browser, "observe", query="Paged entry", limit=8)["observation"]
+    assert len(first["elements"]) == 8
+    assert len(browser._session.refs) == 8
+    last = ok(browser, "observe", query="Paged entry", offset=160, limit=8)["observation"]
+    assert len(last["elements"]) == 8
+    assert len(browser._session.refs) == 8
+    assert not browser.execute("click", target={"ref": first["elements"][0]["ref"]}).success
+    selected = last["elements"][0]
+    assert selected["name"] == "Paged entry 160"
+    ok(browser, "click", target={"ref": selected["ref"]})
+    async def read_selected():
+        return await browser._session.page.evaluate("document.body.dataset.selectedEntry")
+    assert asyncio.run_coroutine_threadsafe(read_selected(), browser._loop).result(5) == "160"
