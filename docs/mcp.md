@@ -34,11 +34,13 @@ the tool catalog is first requested; Daena initializes MCP, requests tools/list
 and registers each tool under `mcp_<server>_<tool>`. The tool becomes
 discoverable through `tool_search`; it does not automatically run.
 The existing `security.allow_network_tools` control must be true. Explicit
-`security.allowed_tools` lists must include the discovered names; custom
-allowlists are NOT expanded automatically by the host.
+`security.allowed_tools` lists must include `mcp_<server>_*` to authorize that server namespace;
+Daena Studio adds this opt-in when an enabled server is saved. The wildcard
+is resolved to known tool names at discovery, not used for arbitrary calls.
 
-This implementation supports **stdio transport only**. Streamable HTTP,
-Studio install/uninstall UI, live reconfiguration, OAuth, roots, sampling,
+This implementation supports **stdio transport only**. Daena Studio offers a
+JSON configuration editor, not a package installer. Streamable HTTP,
+package install/uninstall UI, live reconfiguration, OAuth, roots, sampling,
 elicitation, server-initiated tools/list changes, and full protocol lifecycle
 coverage are **not implemented**. Stdio processes are terminated on agent
 shutdown. A server crash is reported as a tool error, not masked as success.
