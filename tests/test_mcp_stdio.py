@@ -53,3 +53,41 @@ def test_bad_mcp_names_are_rejected():
     with pytest.raises(ValueError):
         configured_servers({"mcp": {"servers": {"bad/name": {
             "enabled": True, "command": [sys.executable]}}}})
+
+
+def test_mcp_tools_join_agent_catalog_and_dispatch(tmp_path):
+    from src.tools.ToolManager import ToolManager
+    config = {"mcp": {"servers": {"mock": {
+        "enabled": True, "command": [sys.executable, "-u", "-c", MOCK],
+        "timeout_seconds": 3,
+    }}}, "security": {
+        "allowed_tools": ["tool_search", "mcp_mock_*"],
+        "allow_network_tools": True,
+    }}
+    manager = ToolManager(config)
+    try:
+        manager.set_workspace(str(tmp_path))
+        names = {d["function"]["name"] for d in manager.get_tools()}
+        assert "mcp_mock_echo" in names
+        calls = manager.dispatcher.dispatch([
+            {"id": "mcp1", "type": "function",
+             "function": {"name": "mcp_mock_echo", "arguments": '{"value":"ok"}'}}
+        ])
+        response = manager.execute(calls)
+        assert response["results"][0].success
+        assert response["results"][0].content["result"]["content"][0]["text"] == "ok"
+    finally:
+        manager.close()
+
+
+def test_network_policy_prevents_starting_mcp_servers():
+    from src.tools.ToolManager import ToolManager
+    manager = ToolManager({"mcp": {"servers": {"mock": {
+        "enabled": True, "command": ["non-existent-command"]}}},
+        "security": {"allow_network_tools": False}})
+    try:
+        assert not any(n.startswith("mcp_") for n in
+                       (d["function"]["name"] for d in manager.get_tools()))
+        assert manager._mcp_servers == []
+    finally:
+        manager.close()
