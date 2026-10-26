@@ -322,7 +322,7 @@ class SubagentManager:
             allowed = set(allowed) | {"agent_message"}
         config["security"] = {
             **(config.get("security") or {}),
-            "allowed_tools": sorted(policy.allowed_tools & allowed),
+            "allowed_tools": sorted((policy.allowed_tools & allowed) | ({"agent_message"} if "agent_message" in allowed else set())),
             "workspace_only": True,
             "allow_background": child.mode == "worker" and policy.allow_background,
             "force_approve": False,
