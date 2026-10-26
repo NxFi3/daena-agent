@@ -318,11 +318,15 @@ class SubagentManager:
             allowed = allowed & set(child.allowed_tools)
             if (config.get("runtime") or {}).get("completion_protocol") == "explicit":
                 allowed = allowed | {"task_finish"}
-        if child.allowed_tools is None or "agent_message" in child.allowed_tools:
+        messaging_allowed = (
+            "subagent" in policy.allowed_tools
+            and (child.allowed_tools is None or "agent_message" in child.allowed_tools)
+        )
+        if messaging_allowed:
             allowed = set(allowed) | {"agent_message"}
         config["security"] = {
             **(config.get("security") or {}),
-            "allowed_tools": sorted((policy.allowed_tools & allowed) | ({"agent_message"} if "agent_message" in allowed else set())),
+            "allowed_tools": sorted((policy.allowed_tools & allowed) | ({"agent_message"} if messaging_allowed else set())),
             "workspace_only": True,
             "allow_background": child.mode == "worker" and policy.allow_background,
             "force_approve": False,
