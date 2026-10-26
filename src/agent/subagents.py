@@ -122,6 +122,7 @@ class SubagentManager:
         self.tasks: dict[str, ChildTask] = {}
         self.lock = threading.RLock()
         self.event_sink = None
+        self.parent_message_sink = None
         self._messages = deque(maxlen=1000)
         self._message_seq = 0
         self._inbox_offsets: dict[str, int] = {}
@@ -400,7 +401,7 @@ class SubagentManager:
                     child.agent = agent
                     for message in self._messages:
                         if message["recipient"] == child.id:
-                            agent.steer(self._steering_text(message))
+                            agent.receive_agent_message(self._steering_text(message))
                 supports_events = "on_event" in signature(agent.act).parameters or any(
                     p.kind == Parameter.VAR_KEYWORD
                     for p in signature(agent.act).parameters.values()
@@ -528,7 +529,9 @@ class SubagentManager:
             if recipient != "parent":
                 child = self.tasks[recipient]
                 if child.agent is not None:
-                    child.agent.steer(self._steering_text(record))
+                    child.agent.receive_agent_message(self._steering_text(record))
+            if recipient == "parent" and callable(self.parent_message_sink):
+                self.parent_message_sink(self._steering_text(record))
             if sender in self.tasks:
                 self._event(self.tasks[sender], dict(type="message_sent",
                     message_id=record["id"], recipient=recipient))
