@@ -111,12 +111,13 @@ Playback begins as soon as the first synthesized chunk is available; actual
 latency depends on the voice, text length and CPU. Only committed replies are
 narrated; a slow Agent still adds its own response delay.
 
-With automatic language in text-only mode, only configured output voices are
-required. For example, **Kokoro model + voices** suffice to preview English
-without downloading a Persian voice. Persian still needs a Persian Piper voice;
-missing language voices give an explicit error, never an online fallback or
-pretend Persian pronunciation. Microphone mode retains its original recognition
-and language requirements.
+With automatic language, only available output voices are loaded in both text
+and microphone modes. For example, **Kokoro model + voices** can speak English
+without a Persian or English Piper voice. Microphone mode still needs a local
+speech-recognition model. Persian output needs a Persian Piper voice; if a later
+answer contains Persian without one, Voice reports the missing voice for that
+answer and stays active. It never downloads or substitutes a different language
+silently. Selecting Persian explicitly requires its voice before Voice starts.
 
 ## One-time model setup
 
@@ -199,9 +200,9 @@ python -m src.voice download kokoro-en
 python -m src.voice synthesize --engine kokoro --language en --voice af_heart --text 'Hello, I am Daena. How can I help?' --output daena-kokoro.wav
 ```
 
-Kokoro officially has **no Persian voice**. Persian stays on the selected Persian
-Piper model, including mixed-script replies. Unused English Piper files are not
-loaded when Kokoro handles English. Choose a bundled English voice or enter its
+Kokoro officially has **no Persian voice**. A configured Persian Piper model
+handles Persian, including mixed-script replies. Old or missing Piper paths do
+not block Kokoro's English output. Choose a bundled English voice or enter its
 exact ID from your voices archive; British voices use the British phonemizer.
 Speaking speed changes the engine's duration controls, rather than changing the
 playback sample rate and pitch.

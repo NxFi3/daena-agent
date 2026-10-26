@@ -222,7 +222,11 @@ class BilingualSynthesizer:
     def _provider(self, language):
         provider = self.providers.get(language)
         if provider is None:
-            raise VoiceError(f"Select a local {language} voice in Voice settings")
+            from .providers import VoiceLanguageUnavailable
+
+            raise VoiceLanguageUnavailable(
+                f"Select a local {language} voice in Voice settings; Kokoro speaks English only"
+            )
         return provider
 
     def prepare(self, stop_event=None):

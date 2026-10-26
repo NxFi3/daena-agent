@@ -513,30 +513,40 @@ class VoiceController(QObject):
                 "Select an installed local Whisper directory or download a catalog model."
             )
         language = settings.get("language", "auto")
+        if language not in {"auto", "fa", "en"}:
+            raise ValueError("Voice language must be Automatic, Persian or English")
         paths = {lang: settings.get(f"tts_{lang}_model", "") for lang in ("fa", "en")}
-        required = ("fa", "en") if language == "auto" else (language,)
         english_engine = settings.get("english_engine", "piper")
         if english_engine not in {"piper", "kokoro"}:
             raise ValueError("Choose Piper or Kokoro as the English voice engine")
-        if mode == "text" and language == "auto":
-            # Output-only mode warms only voices the user actually configured.
-            # Missing languages report an explicit error if requested later.
+
+        # Automatic language follows the voices actually available. A stale
+        # unused Piper path must not prevent switching to Kokoro. If speech
+        # later needs an unconfigured language, the router reports it then.
+        def valid_piper(lang):
+            path = Path(paths.get(lang) or "").expanduser()
+            return (
+                bool(paths.get(lang))
+                and path.is_file()
+                and Path(str(path) + ".json").is_file()
+            )
+
+        if language == "auto":
             required = tuple(
                 lang
-                for lang in required
+                for lang in ("fa", "en")
                 if (
-                    bool(
-                        settings.get("kokoro_model_path")
-                        or settings.get("kokoro_voices_path")
-                    )
-                    if lang == "en" and english_engine == "kokoro"
-                    else bool(paths.get(lang))
+                    valid_piper("fa")
+                    if lang == "fa"
+                    else english_engine == "kokoro" or valid_piper("en")
                 )
             )
             if not required:
                 raise ValueError(
-                    "Select an installed local output voice in Models; text-only mode needs no Whisper"
+                    "Select an installed local output voice in Models; Automatic language uses configured voices"
                 )
+        else:
+            required = (language,)
         speed = float(settings.get("speech_speed", 1.0))
         if not 0.7 <= speed <= 1.4:
             raise ValueError("Speech speed must be between 0.7 and 1.4")
@@ -551,7 +561,7 @@ class VoiceController(QObject):
             path = Path(paths.get(lang) or "").expanduser()
             if not path.is_file() or not Path(str(path) + ".json").is_file():
                 raise ValueError(
-                    f"Select/download the {lang} Piper voice (.onnx plus .onnx.json). Auto language needs both voices."
+                    f"Select/download the {lang} Piper voice (.onnx plus .onnx.json)."
                 )
         piper_paths = {
             lang: paths.get(lang, "")
@@ -561,8 +571,12 @@ class VoiceController(QObject):
         piper_language = (
             "fa" if english_engine == "kokoro" and "en" in required else language
         )
-        piper = PiperProvider(
-            piper_paths, language=piper_language, length_scale=1.0 / speed
+        piper = (
+            PiperProvider(
+                piper_paths, language=piper_language, length_scale=1.0 / speed
+            )
+            if piper_paths
+            else None
         )
         synthesizer = piper
         if english_engine == "kokoro" and "en" in required:
@@ -579,7 +593,7 @@ class VoiceController(QObject):
                 english=english,
                 persian=piper if "fa" in required else None,
                 language=language,
-                require_all_languages=mode != "text",
+                require_all_languages=language != "auto",
             )
         providers = (
             FasterWhisperProvider(
@@ -1209,6 +1223,12 @@ class VoiceController(QObject):
                     self.stop()
                     self.error(event.data)
                     return
+                elif event.kind == "speech_unavailable":
+                    self._speech_pending = False
+                    self.error(event.data)
+                    self.dialog.set_state(
+                        "Voice is still active · select a matching language voice to hear this answer"
+                    )
                 elif event.kind == "notice":
                     self.error(event.data)
                 elif event.kind == "perception":

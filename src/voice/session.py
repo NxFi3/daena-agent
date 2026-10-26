@@ -10,7 +10,7 @@ import time
 from uuid import uuid4
 
 from .streaming import SpeechSegmenter, speech_segments
-from .providers import AudioChunk, VoiceError
+from .providers import AudioChunk, VoiceError, VoiceLanguageUnavailable
 
 
 @dataclass(frozen=True)
@@ -468,6 +468,17 @@ class VoiceSession:
                         continue
                 if not cancel.is_set():
                     self.emit("tts_done", None, epoch)
+            except VoiceLanguageUnavailable as exc:
+                if not cancel.is_set():
+                    # Missing an optional language is local to this answer.
+                    # Finalize any preceding PCM and retain STT/TTS readiness.
+                    while not cancel.is_set() and not self._stop.is_set():
+                        try:
+                            self.audio.put((epoch, None), timeout=0.05)
+                            break
+                        except Full:
+                            continue
+                    self.emit("speech_unavailable", str(exc), epoch)
             except Exception as exc:
                 if not cancel.is_set():
                     self.emit(

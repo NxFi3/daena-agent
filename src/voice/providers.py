@@ -17,6 +17,10 @@ class VoiceCancelled(VoiceError):
     pass
 
 
+class VoiceLanguageUnavailable(VoiceError):
+    """A requested passage has no configured local voice; session can continue."""
+
+
 def _check_stop(stop_event):
     if stop_event is not None and stop_event.is_set():
         raise VoiceCancelled("Voice operation cancelled")

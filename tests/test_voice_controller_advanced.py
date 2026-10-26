@@ -255,6 +255,84 @@ def test_kokoro_warmup_does_not_require_unused_stale_english_piper(
     assert loaded == [str(persian)]
 
 
+def test_switch_between_kokoro_and_piper_without_using_stale_optional_voices(
+    controller, tmp_path, monkeypatch
+):
+    c, _ = controller
+    c._provider_factory = None
+    model, voices = tmp_path / "kokoro.onnx", tmp_path / "voices.bin"
+    english = tmp_path / "english.onnx"
+    for path in (model, voices, english, tmp_path / "english.onnx.json"):
+        path.touch()
+
+    created = []
+
+    class English:
+        def __init__(self, *args, **kwargs):
+            created.append("kokoro")
+
+        def prepare(self, stop_event=None):
+            pass
+
+    class Piper:
+        def __init__(self, paths, **kwargs):
+            created.append(("piper", tuple(paths)))
+
+        def prepare(self, stop_event=None):
+            pass
+
+    monkeypatch.setattr("src.voice.kokoro.KokoroProvider", English)
+    monkeypatch.setattr("src.studio.voice_controller.PiperProvider", Piper)
+    monkeypatch.setattr(
+        "src.studio.voice_controller.FasterWhisperProvider",
+        lambda *args, **kwargs: object(),
+    )
+    shared = {
+        "input_mode": "microphone",
+        "language": "auto",
+        "stt_model": str(tmp_path),
+        "kokoro_model_path": str(model),
+        "kokoro_voices_path": str(voices),
+        "tts_fa_model": str(tmp_path / "stale-persian.onnx"),
+    }
+    kokoro = {**shared, "english_engine": "kokoro", "tts_en_model": "/stale"}
+    piper = {**shared, "english_engine": "piper", "tts_en_model": str(english)}
+
+    _, synth = c._providers(kokoro)
+    synth.prepare()
+    assert created == ["kokoro"]
+    assert synth.providers["fa"] is None
+    with pytest.raises(Exception, match="local fa voice"):
+        list(synth.synthesize("سلام", "auto"))
+
+    c.apply_settings(kokoro)
+    c.poll()
+    assert c.session is not None and c._settings["english_engine"] == "kokoro"
+    c.apply_settings(piper)
+    c.poll()
+    assert c.session is not None and c._settings["english_engine"] == "piper"
+    assert created == ["kokoro", ("piper", ("en",))]
+    c.apply_settings(kokoro)
+    c.poll()
+    assert c.session is not None and c._settings["english_engine"] == "kokoro"
+    assert created[-1] == "kokoro"
+    assert [item for item in created if isinstance(item, tuple)] == [("piper", ("en",))]
+
+
+def test_explicit_persian_still_requires_real_persian_voice(controller, tmp_path):
+    c, _ = controller
+    c._provider_factory = None
+    with pytest.raises(ValueError, match="fa Piper voice"):
+        c._providers(
+            {
+                "input_mode": "text",
+                "language": "fa",
+                "english_engine": "kokoro",
+                "tts_fa_model": str(tmp_path / "missing.onnx"),
+            }
+        )
+
+
 def test_cli_installed_paths_fill_empty_settings_but_preserve_custom_paths(
     controller, monkeypatch
 ):

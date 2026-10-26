@@ -7,6 +7,7 @@ import time
 
 from src.voice.providers import AudioChunk
 from src.voice.session import VoiceSession
+from src.voice.kokoro import BilingualSynthesizer
 from src.voice.streaming import SpeechSegmenter, Utterance, speech_segments
 
 
@@ -26,6 +27,46 @@ def drain(queue):
             values.append(queue.get_nowait())
         except Empty:
             return values
+
+
+def test_missing_optional_language_does_not_end_kokoro_only_session():
+    class English:
+        def prepare(self, stop_event=None):
+            pass
+
+        def synthesize(self, text, language, stop_event=None):
+            yield AudioChunk(16000, b"\1\0" * 320)
+
+    session = VoiceSession(
+        None,
+        BilingualSynthesizer(
+            english=English(),
+            persian=None,
+            language="auto",
+            require_all_languages=False,
+        ),
+    )
+    try:
+        wait_until(lambda: any(e.kind == "ready" for e in list(session.events.queue)))
+        session.speak("سلام")
+        wait_until(
+            lambda: any(
+                e.kind == "speech_unavailable" for e in list(session.events.queue)
+            )
+        )
+        events = drain(session.events)
+        assert not any(e.kind == "error" for e in events)
+        assert "fa voice" in next(
+            e.data for e in events if e.kind == "speech_unavailable"
+        )
+        drain(session.audio)
+        session.speak("Hello")
+        wait_until(
+            lambda: any(chunk is not None for _, chunk in list(session.audio.queue))
+        )
+        assert any(chunk is not None for _, chunk in drain(session.audio))
+    finally:
+        session.close()
 
 
 def test_endpointing_preroll_silence_and_short_noise():
