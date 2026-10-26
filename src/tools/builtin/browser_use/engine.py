@@ -25,6 +25,7 @@ class BrowserSession:
         self.pages, self.frames, self.refs = {}, {}, {}
         self.dialogs, self.downloads = {}, {}
         self.latest = None
+        self.visual_capture = None
         self.lock = asyncio.Lock()
         self.delivery = "not_sent"
 
@@ -90,6 +91,7 @@ class BrowserSession:
     def context_closed(self, *_):
         self.context = self.page = None
         self.latest = None
+        self.visual_capture = None
         self.refs.clear()
 
     def register_page(self, page):
@@ -162,6 +164,7 @@ class BrowserSession:
             )
 
     async def observe(self, request):
+        self.visual_capture = None
         observed_start = time.perf_counter()
         page = await self.select_page()
         tab = self.tab_id(page)
@@ -417,7 +420,7 @@ class BrowserSession:
         page.set_default_timeout(timeout)
         page.set_default_navigation_timeout(timeout)
         extra = {}
-        read_only = action in {"observe", "select_tab", "read", "screenshot", "wait"}
+        read_only = action in {"observe", "select_tab", "read", "screenshot", "wait", "move_at"}
         if action in {"observe", "select_tab"}:
             if action == "select_tab":
                 await page.bring_to_front()
@@ -447,8 +450,23 @@ class BrowserSession:
                 "invalid_download",
                 "Choose an existing download_id and a new destination path; files are never overwritten.",
             )
+        if action in {"click_at", "move_at", "drag_at"}:
+            capture = self.visual_capture
+            if not capture or capture["snapshot_id"] != request["snapshot_id"] or capture["tab_id"] != self.tab_id(page):
+                raise BrowserError("stale_snapshot", "Take a new screenshot and use its snapshot_id before visual input.")
+            current_size = await page.evaluate("() => [innerWidth, innerHeight]")
+            if current_size != capture["size"] or page.url != capture["url"]:
+                self.visual_capture = None
+                raise BrowserError("stale_snapshot", "Viewport or URL changed since the screenshot. Capture again.")
+            for key in ("coordinate", "from_coordinate", "to_coordinate"):
+                if key in request:
+                    x, y = request[key]
+                    width, height = capture["size"]
+                    if not (0 <= x < width and 0 <= y < height):
+                        raise BrowserError("outside_capture", f"{key} lies outside screenshot {width}x{height}.")
         if not read_only:
             self.latest = None
+            self.visual_capture = None
             self.delivery = "unknown"
         if action == "open":
             response = await page.goto(request["url"], wait_until="domcontentloaded")
@@ -468,6 +486,22 @@ class BrowserSession:
             self.latest = None
             self.delivery = "completed"
             return dict(tabs=await self.tab_list())
+        elif action in {"click_at", "move_at", "drag_at"}:
+            if action == "click_at":
+                x, y = request["coordinate"]
+                await page.mouse.click(x, y, button=request.get("button", "left"), click_count=request.get("click_count", 1))
+            elif action == "move_at":
+                x, y = request["coordinate"]
+                await page.mouse.move(x, y)
+            else:
+                start = request["from_coordinate"]
+                end = request["to_coordinate"]
+                await page.mouse.move(*start)
+                await page.mouse.down(button=request.get("button", "left"))
+                try:
+                    await page.mouse.move(*end, steps=12)
+                finally:
+                    await page.mouse.up(button=request.get("button", "left"))
         elif action in {"click", "hover", "fill", "press", "select", "check", "upload"}:
             if action == "click":
                 await target.click(
@@ -602,6 +636,14 @@ class BrowserSession:
             observation = await self.observe(request)
             if extra.get("image_ref"):
                 observation["image_ref"] = extra.pop("image_ref")
+                viewport = await page.evaluate("() => [innerWidth, innerHeight]")
+                self.visual_capture = {
+                    "snapshot_id": observation["snapshot_id"],
+                    "tab_id": observation["tab_id"],
+                    "url": observation["url"],
+                    "size": viewport,
+                }
+                observation["screenshot_size"] = {"width": viewport[0], "height": viewport[1]}
             if not read_only:
                 observation["last_action"] = dict(action=action, delivery=self.delivery)
             extra["observation"] = observation
@@ -616,6 +658,7 @@ class BrowserSession:
 
     async def close(self):
         self.latest = None
+        self.visual_capture = None
         await self.clear_refs()
         try:
             if self.context and not self.attached:
