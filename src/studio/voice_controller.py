@@ -70,6 +70,13 @@ class VoiceController(QObject):
         self._pending_transcript = None
         self._previewing = False
         self._perception_failed = False
+        self._playback_active = False
+        self._speech_pending = False
+        self._preserve_input = False
+        self._barge_pending = False
+        self._deferred_submission = None
+        self._deferred_voice_text = None
+        self._duplex_status = {}
         self.timer = QTimer(self)
         self.timer.setInterval(25)
         self.timer.timeout.connect(self.poll)
@@ -80,6 +87,20 @@ class VoiceController(QObject):
 
     def _settings_path(self):
         return self.window.store.root / "voice.json"
+
+    def sync_agent_instructions(self, agent=None):
+        """Apply a transient speaking style without changing the Agent profile."""
+        from src.voice.instructions import VOICE_SYSTEM_INSTRUCTION
+
+        target = agent if agent is not None else getattr(self.window, "agent", None)
+        setter = getattr(target, "set_runtime_instruction", None)
+        if callable(setter):
+            setter(
+                "voice_mode",
+                VOICE_SYSTEM_INSTRUCTION
+                if self.session is not None or self._restart_settings is not None
+                else None,
+            )
 
     def ensure_dialog(self):
         from src.studio.voice_audio import AudioDevices
@@ -146,6 +167,7 @@ class VoiceController(QObject):
             self.screen.start_requested.connect(
                 lambda: self.start(self.dialog.values())
             )
+            self.screen.auto_send_changed.connect(self.set_auto_send)
             self.dialog.state_changed.connect(self.screen.set_state)
             self.dialog.active_changed.connect(self.screen.set_active)
             self.dialog.level_changed.connect(self.screen.set_level)
@@ -158,6 +180,7 @@ class VoiceController(QObject):
             else self.dialog.values()["input_mode"]
         )
         self.screen.set_busy(self.window.busy)
+        self.screen.set_auto_send(self.dialog.auto_send.isChecked())
         self.screen.set_active(self.session is not None)
         self.screen.show()
         self.screen.raise_()
@@ -245,6 +268,97 @@ class VoiceController(QObject):
     def agent_idle(self):
         if self.screen:
             self.screen.set_busy(False)
+        # worker_finished still owns/tears down the old worker at this point.
+        # Start the next turn only after that stack frame has returned.
+        if self._deferred_voice_text:
+            QTimer.singleShot(0, self._send_deferred_text)
+        elif self._deferred_submission:
+            QTimer.singleShot(0, self._send_deferred_transcript)
+
+    def _send_deferred_text(self):
+        pending, self._deferred_voice_text = self._deferred_voice_text, None
+        if not pending or not self.session:
+            return
+        session, signature, text = pending
+        if (
+            self.session is not session
+            or self._signature() != signature
+            or self.window.busy
+            or getattr(self.window, "queued", [])
+            or getattr(self.window, "_automation_run", False)
+        ):
+            if self.dialog:
+                self.dialog.set_transcript(text)
+            return
+        self.send_review(text)
+
+    def set_auto_send(self, enabled):
+        self.ensure_dialog()
+        self.dialog.auto_send.setChecked(bool(enabled))
+        self._settings["auto_send"] = bool(enabled)
+        if self.screen:
+            self.screen.set_auto_send(bool(enabled))
+        if not enabled:
+            self._deferred_submission = None
+        self.save_settings(self.dialog.values())
+
+    def duplex_status(self, status):
+        self._duplex_status = dict(status)
+        if self.dialog:
+            self.dialog.set_duplex_status(status)
+
+    def barge_in(self):
+        """Stop the old answer at confirmed near-end speech, preserving onset."""
+        if (
+            not self.session
+            or self._muted
+            or self._settings.get("input_mode", "microphone") == "text"
+            or getattr(self.window, "_automation_run", False)
+            or self._barge_pending
+            or not (self.window.busy or self._speech_pending or self._playback_active)
+        ):
+            return
+        self._barge_pending = True
+        self._deferred_submission = None
+        self._preserve_input = True
+        try:
+            # Studio.stop also calls cancel_speech; do it exactly once so the
+            # current microphone utterance is retained in the new epoch.
+            before = self.session.epoch
+            if self.window.busy:
+                self.window.stop()
+            if self.session and self.session.epoch == before:
+                self.cancel_speech(preserve_input=True)
+        finally:
+            self._preserve_input = False
+        if self.dialog:
+            self.dialog.set_state("Listening · previous reply stopped; keep speaking")
+
+    def _send_deferred_transcript(self):
+        pending, self._deferred_submission = self._deferred_submission, None
+        if not pending or not self.session:
+            return
+        session, epoch, signature, inserted = pending
+        if (
+            self.session is not session
+            or session.epoch != epoch
+            or self._signature() != signature
+            or not self._settings.get("auto_send", True)
+            or self._muted
+            or self.window.busy
+            or getattr(self.window, "queued", [])
+            or getattr(self.window, "_automation_run", False)
+            or self.window.input.toPlainText().strip() != inserted
+            or self._review_inserted != (inserted, "")
+        ):
+            return
+        self.window.send()
+        if not self.window.input.toPlainText().strip():
+            self.dialog.set_transcript("")
+            self._review_inserted = None
+            self._barge_pending = False
+            if self.screen:
+                self.screen.acknowledge_submission(inserted)
 
     def test_output(self):
         from src.studio.voice_audio import AudioDevices
@@ -312,6 +426,10 @@ class VoiceController(QObject):
             self.dialog.show_error(f"Audio devices unavailable: {exc}")
 
     def save_settings(self, settings, *, force=False):
+        if self.screen and "auto_send" in settings:
+            self.screen.set_auto_send(bool(settings["auto_send"]))
+        if not settings.get("auto_send", True):
+            self._deferred_submission = None
         if self.session and not force:
             for key in ("auto_send", "speak_progress"):
                 if key in settings:
@@ -560,6 +678,14 @@ class VoiceController(QObject):
             self.audio.fault.connect(self.audio_fault)
             self.audio.playback_started.connect(self.playback_started)
             self.audio.playback_stopped.connect(self.output_idle)
+            if hasattr(self.audio, "speech_started"):
+                self.audio.speech_started.connect(self.barge_in)
+            if hasattr(self.audio, "duplex_status"):
+                self.audio.duplex_status.connect(self.duplex_status)
+            if not text_only and hasattr(self.audio, "configure_duplex"):
+                self.duplex_status(
+                    self.audio.configure_duplex(settings.get("duplex_mode", "auto"))
+                )
             self.audio.set_output_device(settings.get("output_device_id", ""))
             audio = self.audio
             output = {}
@@ -580,6 +706,9 @@ class VoiceController(QObject):
             self._context = self._signature()
             self._spoken.clear()
             self._speech_suppressed = False
+            self._barge_pending = False
+            self._deferred_submission = None
+            self._playback_active = self._speech_pending = False
             self._metrics.clear()
             if output:
                 self._metrics["output_device"] = output.get("name", "Selected output")
@@ -596,6 +725,7 @@ class VoiceController(QObject):
                 perception=perception,
                 sound_events_enabled=bool(settings.get("sound_events_enabled", False)),
             )
+            self.sync_agent_instructions()
             self.dialog.set_active(True)
             self.dialog.error_label.hide()
             if self.screen:
@@ -621,6 +751,7 @@ class VoiceController(QObject):
         self.error(message)
 
     def output_idle(self):
+        self._playback_active = False
         if self.session and self.dialog:
             self.dialog.set_state(
                 "Ready · type text; microphone off"
@@ -649,6 +780,8 @@ class VoiceController(QObject):
         for key in ("agent_ms", "first_pcm_ms", "first_playback_ms"):
             self._metrics.pop(key, None)
         self._previewing = True
+        self._barge_pending = False
+        self._speech_pending = True
         self.dialog.set_state(
             "Preparing speech · microphone off; text is not sent to the Agent"
             if self._settings.get("input_mode") == "text"
@@ -662,6 +795,8 @@ class VoiceController(QObject):
 
     def mute(self, muted):
         self._muted = bool(muted)
+        self._deferred_submission = None
+        self._barge_pending = False
         if self.audio:
             self.audio.set_muted(muted)
         if self.session:
@@ -694,8 +829,11 @@ class VoiceController(QObject):
             self.dialog.set_transcript("")
 
     def begin_turn(self):
-        if self._previewing:
+        if self._previewing or self._speech_pending or self._playback_active:
             self.cancel_speech()
+        self._barge_pending = False
+        self._deferred_submission = None
+        self._deferred_voice_text = None
         self.acknowledge_submission()
         # Called synchronously when Studio starts an actual new agent turn.
         # Queued run_start events from a canceled turn cannot re-enable speech.
@@ -720,7 +858,8 @@ class VoiceController(QObject):
             self.session.segmenter.reset()
 
     def playback_started(self):
-        if self.session:
+        self._playback_active = True
+        if self.session and not self._duplex_status.get("active"):
             self.reset_input()
         if self._turn_started is not None and "first_playback_ms" not in self._metrics:
             self._metrics["first_playback_ms"] = round(
@@ -730,14 +869,24 @@ class VoiceController(QObject):
             self.dialog.set_state(
                 "Speaking · microphone off"
                 if self._settings.get("input_mode") == "text"
+                else "Speaking · listening; talk to interrupt"
+                if self._duplex_status.get("active")
                 else "Speaking · microphone paused to avoid echo"
             )
 
-    def cancel_speech(self):
+    def cancel_speech(self, *, preserve_input=False):
+        preserve_input = preserve_input or self._preserve_input
         self._previewing = False
         self._speech_suppressed = True
+        self._speech_pending = self._playback_active = False
+        self._pending_replies.clear()
+        self._deferred_submission = None
+        self._deferred_voice_text = None
         if self.session:
-            self.session.interrupt()
+            if preserve_input:
+                self.session.interrupt(preserve_input=True)
+            else:
+                self.session.interrupt()
         self._pending_pcm = None
         self._acoustic.clear()
         self._review_utterance_id = None
@@ -759,6 +908,11 @@ class VoiceController(QObject):
 
     def stop(self, *, restart=False, cancel_download=False):
         self._previewing = False
+        self._barge_pending = False
+        self._deferred_submission = None
+        self._deferred_voice_text = None
+        self._playback_active = self._speech_pending = False
+        self._duplex_status = {}
         self._close_test_audio(restore=False)
         self._muted = False
         if cancel_download:
@@ -767,6 +921,7 @@ class VoiceController(QObject):
             self._restart_settings = self._restart_state = None
             self._pending_replies.clear()
         session, self.session = self.session, None
+        self.sync_agent_instructions()
         if session:
             session.close()
             self._retiring.append(session)
@@ -797,6 +952,25 @@ class VoiceController(QObject):
             self.start(settings)
             if self.session is None:
                 return
+        was_suppressed = self._speech_suppressed
+        preempted = self._speech_pending or self._playback_active
+        if preempted:
+            self.cancel_speech()
+        if self._barge_pending and self.window.busy:
+            if self._deferred_voice_text:
+                self.dialog.set_state(
+                    "Previous Voice message is queued; send this one after it starts"
+                )
+                return
+            self._deferred_voice_text = (self.session, self._signature(), text)
+            self._deferred_submission = None
+            self.dialog.set_transcript("")
+            if self.screen:
+                self.screen.acknowledge_submission(text)
+            self.dialog.set_state(
+                "Message queued · waiting for the interrupted turn to stop"
+            )
+            return
         if self._pending_transcript:
             self._review_utterance_id = self._pending_transcript[0].get("utterance_id")
             self._pending_transcript = None
@@ -823,6 +997,11 @@ class VoiceController(QObject):
         if preserved_draft is not None:
             self.window.input.setPlainText(preserved_draft)
         if accepted:
+            if preempted and self.window.busy:
+                # Steering an existing run does not call begin_turn. Its new
+                # committed answer remains eligible for speech after old PCM
+                # was cleared; a previously canceled run stays suppressed.
+                self._speech_suppressed = was_suppressed
             self.dialog.set_transcript("")
             self._review_inserted = None
             if self.screen:
@@ -847,6 +1026,19 @@ class VoiceController(QObject):
             self.window.send()
             self.dialog.set_transcript("")
             self._review_inserted = None
+            self._barge_pending = False
+            if self.screen:
+                self.screen.acknowledge_submission(text)
+        elif auto and not truncated and not current and self._barge_pending:
+            self._deferred_submission = (
+                self.session,
+                self.session.epoch,
+                self._signature(),
+                inserted,
+            )
+            self.dialog.set_state(
+                "Recognized · waiting for the interrupted turn to stop"
+            )
         elif self.dialog:
             self.dialog.set_state(
                 "Review the transcript in the composer and press Enter."
@@ -866,7 +1058,7 @@ class VoiceController(QObject):
     def _deliver_transcript(self, data, *, force_review=False):
         self._deliver(
             data["text"],
-            auto=self._settings.get("auto_send", False) and not force_review,
+            auto=self._settings.get("auto_send", True) and not force_review,
             truncated=data.get("truncated", False),
             utterance_id=data.get("utterance_id"),
         )
@@ -916,6 +1108,7 @@ class VoiceController(QObject):
                     (self._reply_started - self._turn_started) * 1000
                 )
         self.session.speak(text, self._settings.get("language", "auto"))
+        self._speech_pending = True
 
     def context_for_prompt(self, prompt):
         """Bounded acoustic observations for a reviewed/recognized request only.
@@ -991,7 +1184,7 @@ class VoiceController(QObject):
                     self.dialog.set_transcript(data["text"])
                     self._metrics["stt_ms"] = data["stt_ms"]
                     if (
-                        self._settings.get("auto_send", False)
+                        self._settings.get("auto_send", True)
                         and self._settings.get("perception_enabled", False)
                         and not self._perception_failed
                         and data.get("utterance_id") is not None
@@ -1054,6 +1247,8 @@ class VoiceController(QObject):
                 elif event.kind in {"state", "ready"}:
                     if self._review_inserted or self._pending_transcript:
                         continue
+                    if self._playback_active:
+                        continue
                     self.dialog.set_state(
                         event.data
                         if event.kind == "state"
@@ -1083,6 +1278,7 @@ class VoiceController(QObject):
                     self._pending_pcm = None
                     continue
                 if chunk is None:
+                    self._speech_pending = False
                     self.audio.finish_playback()
                     self._pending_pcm = None
                     continue

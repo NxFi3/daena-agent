@@ -213,7 +213,7 @@ class VoiceSession:
                 self.epoch,
             )
 
-    def interrupt(self):
+    def interrupt(self, *, preserve_input=False):
         with self._lock:
             self._cancel.set()
             self.epoch += 1
@@ -232,7 +232,18 @@ class VoiceSession:
                         queue.get_nowait()
                     except Empty:
                         break
-            self.reset_input()
+            if preserve_input:
+                # A barge-in starts before endpointing completes. Keep its
+                # pre-roll and first syllables while invalidating old inference.
+                self._input_generation += 1
+                self._ambient_buffer.clear()
+                while True:
+                    try:
+                        self._ambient.get_nowait()
+                    except Empty:
+                        break
+            else:
+                self.reset_input()
             self._perception_wake.set()
         return self.epoch
 

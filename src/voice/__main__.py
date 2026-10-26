@@ -53,6 +53,8 @@ def main(argv=None):
         parser.error("Speech speed must be between 0.7 and 1.4")
 
     if args.command == "doctor":
+        from .duplex import backend_status
+
         print(
             json.dumps(
                 {
@@ -68,6 +70,7 @@ def main(argv=None):
                         )
                     },
                     "models": installed_models(),
+                    "duplex": backend_status(),
                 },
                 ensure_ascii=False,
                 indent=2,

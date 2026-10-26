@@ -24,12 +24,14 @@ class RuntimeWorker(QThread):
         session_id=None,
         blueprint=None,
         input_context=None,
+        runtime_instructions=None,
         parent=None,
     ):
         super().__init__(parent)
         self.config, self.prompt = deepcopy(config), prompt
         self.agent, self.session_id, self.blueprint = agent, session_id, blueprint
         self.input_context = deepcopy(input_context)
+        self.runtime_instructions = dict(runtime_instructions or {})
         self.stop = Event()
 
     def run(self):
@@ -52,6 +54,10 @@ class RuntimeWorker(QThread):
             if self.session_id is not None:
                 self.agent.session_id = self.session_id
                 self.agent.loop.session_id = self.session_id
+            set_instruction = getattr(self.agent, "set_runtime_instruction", None)
+            if callable(set_instruction):
+                for key, text in self.runtime_instructions.items():
+                    set_instruction(key, text)
             self.ready.emit(self.agent)
             content = self.prompt
             if self.input_context:

@@ -88,6 +88,25 @@ def test_busy_agent_keeps_settings_typing_interrupt_and_end_accessible(screen):
     assert screen.heading.text() == "Daena is thinking"
 
 
+def test_hands_free_switch_is_live_and_host_sync_does_not_emit_requests(screen):
+    requests = []
+    screen.auto_send_changed.connect(requests.append)
+    screen.set_auto_send(False)
+    assert not requests and not screen.hands_free_button.isChecked()
+    assert screen.hands_free_button.text() == "Review speech"
+    screen.set_active(True)
+    screen.set_busy(True)
+    assert screen.hands_free_button.isVisible()
+    assert screen.hands_free_button.isEnabled()
+    screen.hands_free_button.click()
+    assert requests == [True] and screen.hands_free_button.isChecked()
+    screen.set_input_mode("text")
+    assert screen.hands_free_button.isHidden()
+    screen.set_input_mode("microphone")
+    assert screen.hands_free_button.isVisible()
+    assert screen.hands_free_button.isChecked()
+
+
 def test_recognition_and_old_acknowledgements_do_not_replace_edited_draft(screen):
     screen.set_input_mode("text")
     screen.set_transcript("Recognized words")

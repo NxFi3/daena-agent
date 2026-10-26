@@ -170,6 +170,7 @@ class VoiceScreen(QDialog):
     input_mode_requested = Signal(str)
     settings_requested = Signal()
     start_requested = Signal()
+    auto_send_changed = Signal(bool)
 
     def __init__(self, parent=None, *, input_mode="microphone", theme="dark"):
         super().__init__(parent)
@@ -182,6 +183,7 @@ class VoiceScreen(QDialog):
         self._last_program_text = self._submitted_text = ""
         self._closing_sent = False
         self._output_ready = False
+        self._auto_send = True
         outer = QVBoxLayout(self)
         outer.setContentsMargins(28, 22, 28, 24)
         outer.setSpacing(12)
@@ -190,6 +192,16 @@ class VoiceScreen(QDialog):
         brand.setObjectName("brand")
         header.addWidget(brand)
         header.addStretch()
+        self.hands_free_button = QToolButton()
+        self.hands_free_button.setText("Hands-free")
+        self.hands_free_button.setCheckable(True)
+        self.hands_free_button.setChecked(True)
+        self.hands_free_button.setAccessibleName("Send recognized speech automatically")
+        self.hands_free_button.setToolTip(
+            "Send complete utterances automatically. Turn off to review recognized words before sending."
+        )
+        self.hands_free_button.toggled.connect(self._set_hands_free)
+        header.addWidget(self.hands_free_button)
         self.settings_button = QToolButton()
         self.settings_button.setText("Voice settings")
         self.settings_button.setObjectName("workspaceButton")
@@ -322,6 +334,7 @@ class VoiceScreen(QDialog):
         self.orb.setMaximumSize(210 if typed else 310, 210 if typed else 310)
         self.composer_frame.setVisible(typed)
         self.mute_button.setVisible(not typed)
+        self.hands_free_button.setVisible(not typed)
         self.mute_button.setEnabled(self._active and not typed)
         self.input_button.setText("Use microphone" if typed else "Type instead")
         self.input_hint.setText(
@@ -346,6 +359,20 @@ class VoiceScreen(QDialog):
             self._submitted_text = text
             self.error_label.hide()
             self.send_requested.emit(text)
+
+    def set_auto_send(self, enabled):
+        """Synchronize the host's preference without emitting another request."""
+        self._auto_send = bool(enabled)
+        self.hands_free_button.blockSignals(True)
+        self.hands_free_button.setChecked(self._auto_send)
+        self.hands_free_button.blockSignals(False)
+        self.hands_free_button.setText(
+            "Hands-free" if self._auto_send else "Review speech"
+        )
+
+    def _set_hands_free(self, enabled):
+        self.set_auto_send(enabled)
+        self.auto_send_changed.emit(bool(enabled))
 
     def _update_send(self):
         self.send_button.setEnabled(bool(self.composer.toPlainText().strip()))

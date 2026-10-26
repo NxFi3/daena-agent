@@ -122,7 +122,7 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
       - name: Install Qt system libraries
-        run: sudo apt-get update && sudo apt-get install -y libegl1 libopengl0 libxcb-cursor0 libpulse0 pulseaudio pulseaudio-utils
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libopengl0 libxcb-cursor0 libpulse0 pulseaudio pulseaudio-utils libspeexdsp1
       - name: Install optional local speech engines
         run: python -m pip install -e '.[dev,desktop,voice,voice-kokoro,voice-perception]'
       - name: Verify local speech packages without downloading weights
@@ -131,8 +131,12 @@ jobs:
           python -m src.voice doctor
       - name: Voice lifecycle, audio conversion and UI regressions
         run: python -m pytest -q tests/test_voice*.py
+      - name: Native Speex echo cancellation and interruption
+        run: |
+          python -c "from src.voice.duplex import backend_status; assert backend_status()['backend'] == 'speexdsp'"
+          DAENA_TEST_VOICE_DUPLEX=1 python -m pytest -q tests/test_voice_duplex.py
       - name: Real Qt playback through an isolated PulseAudio monitor
-        run: DAENA_TEST_AUDIO_LOOPBACK=1 python -m pytest -q tests/test_voice_output_native.py
+        run: DAENA_TEST_AUDIO_LOOPBACK=1 python -m pytest -q tests/test_voice_output_native.py tests/test_voice_duplex_native.py
       - name: Build and exercise installed voice integration
         run: |
           python -m build

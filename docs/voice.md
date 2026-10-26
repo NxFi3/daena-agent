@@ -17,6 +17,28 @@ python -m src.voice doctor
 python -m src.studio
 ```
 
+For interruption through speakers, Automatic mode needs a local echo-cancellation
+backend. On Ubuntu/Debian the simplest installation is the system SpeexDSP library:
+
+```bash
+sudo apt install libspeexdsp1
+```
+
+Alternatively, install the optional WebRTC backend in the same Python environment:
+
+```bash
+python -m pip install -e '.[voice-duplex]'
+```
+
+WebRTC is tried first, then SpeexDSP. The WebRTC wrapper publishes Windows x64
+wheels for supported Python versions; Linux may require a native source build
+with a C++ compiler and the wrapper's SWIG/Meson build prerequisites. The system
+SpeexDSP library avoids that Python extension build on Ubuntu. These are local
+signal-processing libraries, with no API key, paid service or speech-model
+download. If neither backend is available, Automatic mode keeps safe manual
+turn-taking and shows that status instead of silently opening speaker echo to
+recognition. Headphones mode works without either backend when wearing headphones.
+
 Open **Settings → Voice** to choose output voices, microphone recognition,
 devices and optional acoustic perception. Settings are created lazily and opening
 them never starts recording or a speech model. Choose **Apply voice settings** to
@@ -39,6 +61,12 @@ replaced and late recognition from it is discarded; a pending committed Agent
 reply is retained. Native inference may need to finish before restart can
 complete. Model downloads continue when Voice ends; closing Studio cancels its
 transfers while retaining resumable partial bytes.
+
+**Hands-free** on the Voice screen sends complete recognized utterances without
+pressing Send. It is on for new configurations; a previously saved off setting is
+preserved. Toggle it off to review recognized words first. The same preference is
+available under **Settings → Voice → Conversation** and can change while the Agent
+works. A separate unsent chat draft is preserved and prevents automatic submission.
 
 A working system audio service is required. On Linux, Voice checks Qt's PipeWire
 configuration before device access; when no backend was explicitly selected and
@@ -228,8 +256,8 @@ python -m src.voice analyze room-16khz-mono-pcm16.wav --ambient
 - To avoid associating a whole mixed draft with one speaker, combined drafts do
   not get a single-speaker label. Ordinary typed messages receive no microphone
   observations. Auto-send waits at most 400ms for matching acoustic evidence;
-  unavailable or late evidence does not block the conversation. Playback/mute
-  clears partial ambient windows, and canceled/session-old results are discarded.
+  unavailable or late evidence does not block the conversation. Muting clears
+  partial ambient windows, and canceled/session-old results are discarded.
 
 The advanced catalog pins official GitHub release asset IDs, checks file sizes
 and available SHA-256 digests, and stores source/license notes beside the files.
@@ -240,10 +268,33 @@ the same local files works without API access or credentials.
 
 ## Turn-taking and interruption
 
-- Recognized speech appears in the Voice screen and composer. Review it and press
-  **Send** or Enter in chat. **Auto-send** is explicit and only submits a
-  complete utterance when the agent is idle and the composer has no other draft.
-  Busy-agent speech remains for review rather than silently steering active work.
+Choose **Settings → Voice → Audio → Interrupt by speaking** and apply the selection:
+
+- **Automatic** uses local WebRTC or SpeexDSP echo cancellation. Microphone capture
+  continues during replies when a backend is active. The canceller receives the
+  audio actually consumed by the playback device, rather than future queued TTS.
+  If no backend is available, capture pauses during replies and **Stop reply**
+  remains available. The Audio page displays the applied backend and status
+  separately from any edited, unapplied preference.
+- **Headphones** keeps microphone capture open without software echo cancellation.
+  Wear headphones so Daena's output does not re-enter the microphone; software
+  cannot determine acoustic isolation reliably from a device name.
+- **Manual** pauses microphone input during replies. Use **Stop reply** to stop the
+  answer and resume listening.
+
+With an interruptible mode active, speaking over a reply stops queued playback,
+cancels the old speech epoch and asks an active conversational Agent turn to stop.
+The microphone utterance that triggered interruption is preserved, including its
+beginning. Late audio and final messages from the interrupted turn cannot restart
+speech. If **Hands-free** is enabled, the complete next utterance is submitted once
+the interrupted Agent has finished cleanup; it does not start a concurrent Agent.
+Edited drafts, session changes, muting, truncated utterances or turning Hands-free
+off prevent that automatic submission and leave words available for review.
+
+- Recognized speech appears in the Voice screen and composer. With Hands-free off,
+  review it and press **Send** or Enter in chat. Complete utterances can otherwise
+  auto-submit when the Agent is idle and there is no unrelated draft. Speech during
+  an interrupted turn follows the deferred submission described above.
 - Endpointing uses20ms frames, short pre-roll and configurable silence detection.
   WebRTC VAD is installed by the voice extra; an adaptive energy fallback is
   available. A duration cap marks a partial utterance for review and suppresses
@@ -257,15 +308,32 @@ the same local files works without API access or credentials.
   Native inference itself may finish later; it is not forcibly killed, and its
   canceled audio/text cannot be submitted. Restart waits for old native work to
   finish so a second copy of the model is not loaded on top.
-- During speaker playback, microphone PCM is gated before recognition; a short
-  tail gate prevents echo retriggering. This is half-duplex turn-taking, not
-  hardware acoustic echo cancellation or automatic speaker-safe full duplex.
-  Use Stop reply to resume talking immediately. Manual mute also suspends capture.
+- Echo cancellation and voice-activity detection are best effort. Room acoustics,
+  speaker volume, microphone placement, device buffering and Bluetooth latency
+  affect interruption and recognition. The adaptive filter needs a short startup
+  period; a speaker or noisy room still needs testing on your hardware. Headphones
+  avoid most acoustic coupling. Manual mute always suspends microphone input.
 - Only committed final responses are spoken by default. Optional progress speech
   uses committed assistant messages. Raw drafts, reasoning, tool receipts and
   discarded retries are never narrated. Markdown is prepared for speech; fenced
   code and URL targets are omitted. Read-aloud is bounded to8000 characters;
   the complete answer stays in chat.
+
+## Spoken response style
+
+While Voice is active, Daena adds a temporary system instruction alongside its
+ordinary instructions: use natural Persian or English, answer directly, normally
+in one to three short sentences, and leave room for the next turn. It discourages
+repeated introductions, filler and long recaps. Details remain available when
+requested or required for correctness; code, commands and detailed evidence can
+still appear in chat with a brief spoken explanation.
+
+This changes presentation, not task scope, tool permissions, verification or the
+Agent's abilities. It is an application instruction, not a hard response-token cap
+or post-generation truncation. It applies to subsequent model requests while Voice
+is active and is removed when Voice ends; it is not saved into conversation
+history or the Agent's persistent profile. The configured model still determines
+how well it follows that instruction and how quickly it responds.
 
 ## No sound: test the output path
 
@@ -334,3 +402,4 @@ full-duplex voice system.
 - [Published voice catalog](https://github.com/rhasspy/piper/blob/master/VOICES.md) and [voice licensing](https://github.com/OHF-Voice/piper1-gpl/blob/main/docs/VOICES.md).
 - [Kokoro ONNX API](https://github.com/thewh1teagle/kokoro-onnx) and [official model files](https://github.com/thewh1teagle/kokoro-onnx/releases/tag/model-files-v1.1).
 - [Sherpa speaker embeddings](https://github.com/k2-fsa/sherpa-onnx/blob/master/python-api-examples/speaker-identification.py) and [sound tagging](https://github.com/k2-fsa/sherpa-onnx/blob/master/python-api-examples/audio-tagging-from-a-file.py).
+- [WebRTC audio-processing wrapper](https://pypi.org/project/aec-audio-processing/) and [SpeexDSP](https://www.speex.org/docs/) for optional local acoustic echo cancellation.

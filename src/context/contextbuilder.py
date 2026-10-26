@@ -121,6 +121,9 @@ class ContextBuilder:
         self.llm = llm_provider
         self.window = ContextWindow()
         self.system_instruction = SystemInstructionReader()
+        # Optional application modes are read on each request and never copied
+        # into STM, compaction summaries, or persistent configuration.
+        self.runtime_instruction_source = None
         self.skill_registry = None
         self.tokenbudget = TokenBudget(config, self.llm)
         self.compactor = Compactor(self.llm)
@@ -902,6 +905,11 @@ class ContextBuilder:
         runtime_instruction = getattr(self, "config", {}).get("runtime_instruction", "")
         if runtime_instruction:
             instruction += "\n" + str(runtime_instruction)
+        instruction_source = getattr(self, "runtime_instruction_source", None)
+        if instruction_source is not None:
+            transient_instruction = instruction_source()
+            if transient_instruction:
+                instruction += "\n" + str(transient_instruction)
         if getattr(self, "skill_registry", None) is not None and (
             available_tool_names is None or "skill_read" in available_tool_names
         ):

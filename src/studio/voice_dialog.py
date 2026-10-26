@@ -165,9 +165,11 @@ class VoiceDialog(QDialog):
         self.send_button.clicked.connect(self._send_transcript)
         review_row.addWidget(self.send_button)
         chat.addLayout(review_row)
-        self.auto_send = QCheckBox("Send recognized speech automatically")
+        self.auto_send = QCheckBox(
+            "Hands-free conversation · send recognized speech automatically"
+        )
         self.auto_send.setToolTip(
-            "Hands-free mode sends recognized text to the same Agent and tool permissions as typed chat"
+            "Send complete utterances automatically using the same Agent and tool permissions as typed chat. Turn this off to review every transcript before sending."
         )
         chat.addWidget(self.auto_send)
         self.speak_progress = QCheckBox("Read progress updates aloud")
@@ -182,9 +184,7 @@ class VoiceDialog(QDialog):
         self.perception_summary.setObjectName("muted")
         self.perception_summary.setWordWrap(True)
         chat.addWidget(self.perception_summary)
-        self.input_note = QLabel(
-            "Microphone input pauses during playback to avoid hearing Daena’s own voice. Use Interrupt to stop speech and resume listening. This is not acoustic echo cancellation."
-        )
+        self.input_note = QLabel()
         self.input_note.setObjectName("muted")
         self.input_note.setWordWrap(True)
         chat.addWidget(self.input_note)
@@ -326,6 +326,19 @@ class VoiceDialog(QDialog):
         self.output_device.addItem("System default speakers", "")
         audio.addRow("Microphone", self.input_device)
         audio.addRow("Speakers", self.output_device)
+        self.duplex_mode = QComboBox()
+        self.duplex_mode.addItem("Automatic · local echo cancellation", "auto")
+        self.duplex_mode.addItem("Headphones · listen while speaking", "headphones")
+        self.duplex_mode.addItem("Manual · pause microphone during replies", "off")
+        self.duplex_mode.setToolTip(
+            "Automatic uses the available local echo canceller; without one it pauses the microphone during playback. Headphones keeps the microphone open without echo cancellation and requires headphones to avoid hearing Daena's voice."
+        )
+        audio.addRow("Interrupt by speaking", self.duplex_mode)
+        self.duplex_status = QLabel("Active turn-taking mode appears when Voice starts")
+        self.duplex_status.setTextFormat(Qt.PlainText)
+        self.duplex_status.setObjectName("muted")
+        self.duplex_status.setWordWrap(True)
+        audio.addRow(self.duplex_status)
         self.silence_ms = QSpinBox()
         self.silence_ms.setRange(200, 2000)
         self.silence_ms.setSingleStep(50)
@@ -468,6 +481,7 @@ class VoiceDialog(QDialog):
             self.output_device,
             self.english_engine,
             self.input_mode,
+            self.duplex_mode,
         ):
             widget.currentIndexChanged.connect(self._changed)
         self.stt_model.currentTextChanged.connect(self._changed)
@@ -475,6 +489,7 @@ class VoiceDialog(QDialog):
         self.english_engine.currentIndexChanged.connect(self._update_engine)
         self._update_engine()
         self.input_mode.currentIndexChanged.connect(self._update_input_mode)
+        self.duplex_mode.currentIndexChanged.connect(self._update_input_mode)
         self.transcript.submitted.connect(self._editor_submitted)
         for widget in (
             self.tts_fa_model,
@@ -526,11 +541,16 @@ class VoiceDialog(QDialog):
             if text_only
             else "Review recognized speech · Enter sends it to Daena · Shift+Enter adds a line."
         )
-        self.input_note.setText(
-            "Text only: Whisper and microphone are off. Speak text reads your text directly; Send to Daena reads the Agent’s answer. Local voices must already be installed."
-            if text_only
-            else "Microphone input pauses during playback to avoid echo. Interrupt stops speech and resumes listening."
-        )
+        if text_only:
+            note = "Text only: Whisper and microphone are off. Speak text reads your text directly; Send to Daena reads the Agent’s answer. Local voices must already be installed."
+        elif self.duplex_mode.currentData() == "headphones":
+            note = "Wear headphones: the microphone stays open while Daena speaks, so speaking can interrupt the reply. This mode does not cancel speaker echo."
+        elif self.duplex_mode.currentData() == "off":
+            note = "Manual turn-taking: microphone input pauses during replies. Use Stop reply to interrupt and resume listening."
+        else:
+            note = "Automatic turn-taking uses local echo cancellation when available so you can interrupt by speaking. If unavailable, microphone input pauses during replies; Voice shows the active mode. Headphones mode is another option."
+        self.input_note.setText(note)
+        self.duplex_status.setVisible(not text_only)
         self.meter.setVisible(not text_only)
         if not self._active:
             self.start_button.setText(
@@ -551,6 +571,7 @@ class VoiceDialog(QDialog):
             self.stt_cpu_threads,
             self.stt_beam_size,
             self.input_device,
+            self.duplex_mode,
             self.silence_ms,
             self.max_utterance_seconds,
         ):
@@ -644,6 +665,7 @@ class VoiceDialog(QDialog):
         previous, self._populating = self._populating, True
         self._select(self.language, settings.get("language", "auto"))
         self._select(self.input_mode, settings.get("input_mode", "microphone"))
+        self._select(self.duplex_mode, settings.get("duplex_mode", "auto"))
         self._select(self.stt_model, settings.get("stt_model", "large-v3-turbo"))
         self._select(self.stt_device, settings.get("stt_device", "cpu"))
         self._select(self.stt_compute_type, settings.get("stt_compute_type", "int8"))
@@ -674,7 +696,7 @@ class VoiceDialog(QDialog):
         }
         self._select(self.input_device, settings.get("input_device_id", ""))
         self._select(self.output_device, settings.get("output_device_id", ""))
-        self.auto_send.setChecked(bool(settings.get("auto_send", False)))
+        self.auto_send.setChecked(bool(settings.get("auto_send", True)))
         self.speak_progress.setChecked(bool(settings.get("speak_progress", False)))
         self.silence_ms.setValue(int(settings.get("silence_ms", 550)))
         self.max_utterance_seconds.setValue(
@@ -709,6 +731,7 @@ class VoiceDialog(QDialog):
     def values(self):
         return {
             "input_mode": self.input_mode.currentData(),
+            "duplex_mode": self.duplex_mode.currentData(),
             "language": self.language.currentData(),
             "stt_model": self._speech_model(),
             "stt_device": self.stt_device.currentText(),
@@ -814,6 +837,20 @@ class VoiceDialog(QDialog):
             parts.append(f"Queued audio {float(values['queued_seconds']):.1f} s")
         if parts:
             self.metrics.setText(" · ".join(parts))
+
+    def set_duplex_status(self, status):
+        """Show the applied audio backend separately from editable preferences."""
+        message = str(status.get("message") or "").strip()
+        if not message:
+            message = (
+                "Listening during replies"
+                if status.get("active")
+                else "Microphone pauses during replies; use Stop reply to interrupt"
+            )
+        backend = str(status.get("backend") or "").strip()
+        self.duplex_status.setText(
+            "Active: " + message[:500] + (" · " + backend[:80] if backend else "")
+        )
 
     def set_state(self, text):
         self.status.setText(str(text))

@@ -12,6 +12,49 @@ from PySide6.QtCore import Qt
 from src.studio.voice_dialog import VoiceDialog
 
 
+def test_turn_taking_defaults_and_saved_review_choice_round_trip(qt_app):
+    dialog = VoiceDialog()
+    assert dialog.values()["auto_send"] is True
+    assert dialog.values()["duplex_mode"] == "auto"
+    changes = []
+    dialog.settings_changed.connect(changes.append)
+    dialog.populate({"auto_send": False, "duplex_mode": "headphones"})
+    assert not changes
+    assert not dialog.values()["auto_send"]
+    assert dialog.values()["duplex_mode"] == "headphones"
+    assert "Wear headphones" in dialog.input_note.text()
+    dialog.set_active(True)
+    dialog._select(dialog.duplex_mode, "off")
+    assert changes[-1]["duplex_mode"] == "off"
+    assert dialog.duplex_mode.isEnabled()
+    assert "Stop reply" in dialog.input_note.text()
+    dialog._select(dialog.input_mode, "text")
+    assert not dialog.duplex_mode.isEnabled()
+    assert "Whisper and microphone are off" in dialog.input_note.text()
+    dialog._select(dialog.input_mode, "microphone")
+    assert dialog.duplex_mode.isEnabled()
+    dialog.close()
+
+
+def test_applied_duplex_status_survives_draft_mode_changes_and_is_plain_text(qt_app):
+    dialog = VoiceDialog()
+    dialog.set_duplex_status(
+        {
+            "mode": "auto",
+            "active": True,
+            "backend": "WebRTC",
+            "message": "Echo control ready <b>locally</b>",
+        }
+    )
+    status = dialog.duplex_status.text()
+    assert status == "Active: Echo control ready <b>locally</b> · WebRTC"
+    assert dialog.duplex_status.textFormat() == Qt.PlainText
+    dialog._select(dialog.duplex_mode, "off")
+    assert dialog.duplex_status.text() == status
+    assert "Manual" in dialog.input_note.text()
+    dialog.close()
+
+
 def test_advanced_voice_settings_are_opt_in_and_downloads_are_explicit(qt_app):
     dialog = VoiceDialog()
     downloads, starts = [], []

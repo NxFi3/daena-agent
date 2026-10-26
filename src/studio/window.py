@@ -798,6 +798,16 @@ class StudioWindow(QMainWindow):
         self.settings.set_runtime_busy(True)
         config = self.store.runtime_config(self.config)
         voice_options = {"input_context": input_context} if input_context else {}
+        if self.voice_controller is not None and blueprint is None:
+            from src.voice.instructions import VOICE_SYSTEM_INSTRUCTION
+
+            voice_active = (
+                self.voice_controller.session is not None
+                or self.voice_controller._restart_settings is not None
+            )
+            voice_options["runtime_instructions"] = {
+                "voice_mode": VOICE_SYSTEM_INSTRUCTION if voice_active else None
+            }
         self.worker = RuntimeWorker(
             config,
             prompt,
@@ -821,6 +831,10 @@ class StudioWindow(QMainWindow):
 
     def agent_ready(self, agent):
         self.agent = agent
+        if self.voice_controller is not None:
+            sync = getattr(self.voice_controller, "sync_agent_instructions", None)
+            if callable(sync):
+                sync(agent)
 
     def record(self, event):
         # Preserve useful receipts; streaming fragments are coalesced into bounded entries.
