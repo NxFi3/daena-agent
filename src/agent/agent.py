@@ -112,6 +112,8 @@ class Agent:
 
     def steer(self, text: str) -> None:
         """Queue guidance for the currently running task."""
+        if self._closed:
+            raise RuntimeError("Agent is closed")
         self.loop.steer(text)
 
     def approve_background_command(
@@ -147,6 +149,8 @@ class Agent:
         if not self._run_lock.acquire(blocking=False):
             raise RuntimeError("Cannot change workspace while the Agent is running")
         try:
+            if self._closed:
+                raise RuntimeError("Agent is closed")
             resolved = str(Path(directory).expanduser().resolve())
             Path(resolved).mkdir(parents=True, exist_ok=True)
             self.loop.set_workspace(resolved)

@@ -5,7 +5,11 @@ from typing import Any
 
 from src.models.ToolResult import ToolResult
 from src.tools.Tool import Tool
-from src.tools.builtin.workspace_utils import SKIP_DIRECTORIES, relative_path, workspace_path
+from src.tools.builtin.workspace_utils import (
+    SKIP_DIRECTORIES,
+    relative_path,
+    workspace_path,
+)
 
 
 class ListDir(Tool):
@@ -21,9 +25,23 @@ class ListDir(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "path": {"type": "string", "default": ".", "description": "Workspace-relative directory."},
-            "show_hidden": {"type": "boolean", "default": False, "description": "Include hidden entries such as .github."},
-            "max_entries": {"type": "integer", "minimum": 1, "maximum": 500, "default": 200, "description": "Maximum entries returned."},
+            "path": {
+                "type": "string",
+                "default": ".",
+                "description": "Workspace-relative directory.",
+            },
+            "show_hidden": {
+                "type": "boolean",
+                "default": False,
+                "description": "Include hidden entries such as .github.",
+            },
+            "max_entries": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 500,
+                "default": 200,
+                "description": "Maximum entries returned.",
+            },
         },
         "required": [],
         "additionalProperties": False,
@@ -32,18 +50,26 @@ class ListDir(Tool):
     def set_workspace(self, directory: str | Path) -> None:
         self._workspace_root = Path(directory).expanduser().resolve()
 
-    def execute(self, path: str = ".", show_hidden: bool = False, max_entries: int = 200) -> ToolResult:
+    def execute(
+        self, path: str = ".", show_hidden: bool = False, max_entries: int = 200
+    ) -> ToolResult:
         root = getattr(self, "_workspace_root", None)
         if root is None:
             return self._error("workspace_missing", "No workspace is configured.")
         if not isinstance(show_hidden, bool):
             return self._error("invalid_argument", "show_hidden must be boolean.")
-        if not isinstance(max_entries, int) or isinstance(max_entries, bool) or not 1 <= max_entries <= 500:
-            return self._error("invalid_argument", "max_entries must be between 1 and 500.")
+        if (
+            not isinstance(max_entries, int)
+            or isinstance(max_entries, bool)
+            or not 1 <= max_entries <= 500
+        ):
+            return self._error(
+                "invalid_argument", "max_entries must be between 1 and 500."
+            )
 
         try:
             target = workspace_path(root, path)
-        except (PermissionError, OSError) as exc:
+        except (PermissionError, OSError, RuntimeError) as exc:
             return self._error("invalid_argument", str(exc))
 
         if not target.exists():
@@ -52,17 +78,32 @@ class ListDir(Tool):
             return self._error("invalid_target", f"Not a directory: {target}")
 
         entries: list[dict[str, Any]] = []
-        for child in sorted(target.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower())):
+        try:
+            children = sorted(
+                target.iterdir(),
+                key=lambda item: (
+                    not (not item.is_symlink() and item.is_dir()),
+                    item.name.lower(),
+                ),
+            )
+        except OSError as exc:
+            return self._error("read_error", f"Cannot list directory: {exc}")
+        for child in children:
             if not show_hidden and child.name.startswith("."):
                 continue
             if child.name in SKIP_DIRECTORIES:
                 continue
 
             item: dict[str, Any] = {
-                "path": relative_path(root, child),
-                "type": "directory" if child.is_dir() else "file",
+                # Discovery describes the entry, not a symlink's destination.
+                "path": child.relative_to(root).as_posix(),
+                "type": "symlink"
+                if child.is_symlink()
+                else "directory"
+                if child.is_dir()
+                else "file",
             }
-            if child.is_file():
+            if not child.is_symlink() and child.is_file():
                 try:
                     item["size"] = child.stat().st_size
                 except OSError:
@@ -92,6 +133,9 @@ class ListDir(Tool):
         return ToolResult(
             success=False,
             name=self.name,
-            content={"success": False, "error": {"type": error_type, "message": message}},
+            content={
+                "success": False,
+                "error": {"type": error_type, "message": message},
+            },
             metadata={},
         )

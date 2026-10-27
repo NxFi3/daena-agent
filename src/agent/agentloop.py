@@ -80,6 +80,13 @@ class Loop:
         self._reset_run_state()
 
     def _reset_run_state(self):
+        # Guidance belongs to the turn it was submitted during. A cancellation
+        # can leave unconsumed steering behind; never apply it to the next task.
+        while True:
+            try:
+                self._steering_queue.get_nowait()
+            except queue.Empty:
+                break
         self.agent_state.reset()
         self.working_set.reset()
         self._plan_active_this_run = False
@@ -675,5 +682,7 @@ class Loop:
         )
 
     def close(self):
-        self.tool.close()
-        self.stm.close()
+        try:
+            self.tool.close()
+        finally:
+            self.stm.close()

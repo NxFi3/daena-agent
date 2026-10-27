@@ -84,6 +84,7 @@ class ReadFile(Tool):
                 "default": DEFAULT_MAX_OUTPUT_CHARS,
                 "minimum": MIN_OUTPUT_CHARS,
                 "maximum": MAX_OUTPUT_CHARS,
+                "x-daena-clamp": True,
             },
         },
         "required": ["file_path"],

@@ -81,6 +81,7 @@ class ContextService:
         available_tool_names: set[str] | None = None,
         include_plan: bool = True,
         attachments: list[dict[str, Any]] | None = None,
+        contributions=None,
     ) -> list[dict[str, Any]]:
         revision_reader = getattr(self.stm, "get_session_revision", None)
         revision = revision_reader(session_id) if callable(revision_reader) else 0
@@ -163,6 +164,7 @@ class ContextService:
             available_tool_names=available_tool_names,
             include_plan=include_plan,
             attachments=attachments,
+            contributions=contributions,
         )
         builder = self.contextbuilder
         checkpoint_key = (builder._history_summary, frozenset(builder._covered_groups))

@@ -246,6 +246,9 @@ def test_hard_fit_keeps_prompt_under_budget_without_compaction():
     config["context"]["max_prompt_tokens"] = 512
 
     builder = ContextBuilder(config, llm)
+    # A deliberately tiny budget is valid only with short mandatory instructions.
+    # Production system instructions must never be truncated to satisfy this cap.
+    builder.system_instruction = "Complete the requested work accurately."
     task = event(
         ContextRole.USER,
         ContextType.MESSAGE,

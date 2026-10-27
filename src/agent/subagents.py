@@ -52,6 +52,7 @@ class ChildTask:
     status: str = "running"
     response: str = ""
     error: str = ""
+    cleanup_error: str = ""
     collected: bool = False
     metrics: dict = field(default_factory=dict)
     done: threading.Event = field(default_factory=threading.Event)
@@ -196,6 +197,12 @@ class SubagentManager:
                 raise RuntimeError(
                     "Previous subagents are still stopping; wait before starting a new run"
                 )
+            for child in self.tasks.values():
+                if not self._cleanup_storage(child):
+                    raise RuntimeError(
+                        "Cannot release previous subagent resources; close files using "
+                        f"its temporary workspace and retry: {child.cleanup_error}"
+                    )
             self.tasks.clear()
             self.parent_stop = parent_stop
 
@@ -338,7 +345,10 @@ class SubagentManager:
         config["max_agent_iterations"] = min(
             self.max_iterations, config.get("max_agent_iterations", 100)
         )
+        host_instruction = str(config.get("runtime_instruction") or "").strip()
         config["runtime_instruction"] = (
+            host_instruction + "\n\n" if host_instruction else ""
+        ) + (
             "You are a delegated subagent with an independent context. Complete only the supplied task. "
             "Use relative paths within your configured workspace and only your available tools. "
             "Workers have isolated copies; the parent integrates their files separately. Do not delegate further "
@@ -425,11 +435,11 @@ class SubagentManager:
                 if child.storage is not None and (
                     child.snapshot is None or not child.changes
                 ):
-                    child.storage.cleanup()
+                    self._cleanup_storage(child)
                 if child.stop.is_set():
                     child.status = "timed_out" if child.stop.timed_out else "cancelled"
                     if child.storage is not None:
-                        child.storage.cleanup()
+                        self._cleanup_storage(child)
                     child.integration = "discarded"
                 child.done.set()
                 child.finished_at = time.time()
@@ -440,6 +450,7 @@ class SubagentManager:
                         "status": child.status,
                         "integration": child.integration,
                         "error": child.error,
+                        "cleanup_error": child.cleanup_error,
                         "response": child.response,
                     },
                 )
@@ -449,6 +460,23 @@ class SubagentManager:
             if agent_id not in self.tasks:
                 raise ValueError(f"Unknown subagent: {agent_id}")
             return self.tasks[agent_id]
+
+    @staticmethod
+    def _cleanup_storage(child: ChildTask) -> bool:
+        """A locked temporary file must never strand a finished worker thread.
+
+        Keep the storage owner for retry on close/begin_run and expose failure
+        separately from the task result (which may have completed successfully).
+        """
+        if child.storage is None:
+            return True
+        try:
+            child.storage.cleanup()
+        except Exception as exc:
+            child.cleanup_error = f"{type(exc).__name__}: {exc}"[:2000]
+            return False
+        child.cleanup_error = ""
+        return True
 
     @staticmethod
     def _snapshot(child: ChildTask) -> dict:
@@ -464,6 +492,7 @@ class SubagentManager:
             "done": child.done.is_set(),
             "response": child.response,
             "error": child.error,
+            "cleanup_error": child.cleanup_error,
             "metrics": dict(child.metrics),
             "changes": list(child.changes),
             "integration": child.integration,
@@ -528,7 +557,7 @@ class SubagentManager:
                 if not child.done.is_set():
                     child.stop.set()
                 elif child.storage is not None:
-                    child.storage.cleanup()
+                    self._cleanup_storage(child)
                     if child.integration == "pending":
                         child.integration = "discarded"
 
@@ -552,6 +581,11 @@ class SubagentManager:
                 if not result["merged"]:
                     return {"agent_id": agent_id, **result}
             child.integration = "discarded" if discard else "merged"
-            child.storage.cleanup()
+            self._cleanup_storage(child)
             child.collected = True
-            return {"agent_id": agent_id, "integration": child.integration, **result}
+            return {
+                "agent_id": agent_id,
+                "integration": child.integration,
+                "cleanup_error": child.cleanup_error,
+                **result,
+            }

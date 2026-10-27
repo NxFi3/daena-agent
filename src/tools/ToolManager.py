@@ -11,6 +11,7 @@ from src.skills import SkillRegistry
 from src.security.securityService import SecurityService
 from src.tools.ToolDispatcher import ToolDispatcher
 from src.tools.ToolRegistry import ToolRegistry
+from src.tools.Tool import Tool
 from src.tools.builtin.command_exec.process_manager import ProcessManager
 from src.utils.logger import get_logger
 
@@ -41,6 +42,7 @@ class ToolManager:
         self._session_id_provider = None
         self._active_tool_names: list[str] = []
         self._last_tool_search_query = ""
+        self.cleanup_errors: list[str] = []
 
     def set_llm_provider(self, llm_provider) -> None:
         self._llm_provider = llm_provider
@@ -73,14 +75,33 @@ class ToolManager:
 
     def close(self) -> None:
         """Release all task and conversation resources."""
-        try:
-            self.finish_run()
-        finally:
-            self.process_manager.close(discard_output=True)
-            for tool in self.toolregistry.tools.values():
-                closer = getattr(tool, "close", None)
-                if callable(closer):
-                    closer()
+        self.cleanup_errors.clear()
+        cleanup = [
+            ("processes", lambda: self.process_manager.close(discard_output=True)),
+            ("subagents", self.subagents.close),
+        ]
+        seen = set()
+        for name, tool in self.toolregistry.tools.items():
+            closer = getattr(tool, "close", None)
+            if callable(closer) and id(tool) not in seen:
+                cleanup.append((name, closer))
+                seen.add(id(tool))
+        for name, closer in cleanup:
+            try:
+                closer()
+            except Exception as exc:
+                message = f"Cleanup failed for {name}: {type(exc).__name__}: {exc}"
+                self.cleanup_errors.append(message)
+                self.logger.error(message)
+
+    def register_tool(self, tool: Tool) -> str:
+        """Install a trusted host adapter before runs; policy never auto-allows it."""
+        if not self.toolregistry.tools:
+            self.toolregistry.discover()
+        name = self.toolregistry.register(tool)
+        self._definitions = None
+        self._bind_runtime_services()
+        return name
 
     def approve_background_command(
         self,
@@ -137,6 +158,10 @@ class ToolManager:
             if callable(context_setter) and self._context_stm is not None:
                 context_setter(self._context_stm, self._session_id_provider)
 
+            stop_setter = getattr(tool, "set_stop_event", None)
+            if callable(stop_setter):
+                stop_setter(self.stop_event)
+
             search_setter = getattr(tool, "set_searcher", None)
             if callable(search_setter):
                 search_setter(self._search_and_activate_tools)
@@ -164,8 +189,8 @@ class ToolManager:
                 continue
             if (
                 name in {"web_search", "web_fetch", "browser_use"}
-                and not network_allowed
-            ):
+                or getattr(self.toolregistry.get(name), "requires_network", False)
+            ) and not network_allowed:
                 continue
             if name in {"skill_list", "skill_read"} and not self.skills.enabled:
                 continue
@@ -688,8 +713,40 @@ class ToolManager:
                 )
                 continue
 
+            # A host may call execute() with a canonical ToolCall directly.
+            # The valid flag is not a substitute for the registered contract.
+            schema_error = self.dispatcher._schema_validation_error(
+                getattr(tool, "parameters", {}) or {}, toolcall.args
+            )
+            if schema_error:
+                toolcall.valid = False
+                toolcall.validation_error = schema_error
+                calls.append(toolcall)
+                results.append(
+                    ToolResult(
+                        success=False,
+                        name=toolcall.name,
+                        content={
+                            "error": {
+                                "type": "invalid_tool_call",
+                                "message": schema_error,
+                            }
+                        },
+                        metadata={"tool_call_id": toolcall.id},
+                        summary=schema_error,
+                    )
+                )
+                continue
+
             try:
                 toolcall = self.security.check(toolcall)
+                if (
+                    getattr(tool, "requires_network", False)
+                    and not self.security.policy.allow_network_tools
+                ):
+                    toolcall.approved = False
+                    toolcall.security_reason = "This tool requires network access, which is disabled by host configuration."
+                    toolcall.security_rule = "network_disabled"
                 if (
                     toolcall.name in {"skill_list", "skill_read"}
                     and not self.skills.enabled

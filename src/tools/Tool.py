@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from copy import deepcopy
 from typing import Any, ClassVar
 
 from src.models.ToolResult import ToolResult
 
 
 class Tool(ABC):
-
     name: ClassVar[str] = ""
 
     description: ClassVar[str] = ""
@@ -23,6 +23,8 @@ class Tool(ABC):
     allow_same_revision_repeat: ClassVar[bool] = False
     # Only side-effect-free, thread-safe tools may opt into parallel execution.
     parallel_safe: ClassVar[bool] = False
+    # Host adapters (including future MCP transports) must declare networking.
+    requires_network: ClassVar[bool] = False
 
     def duplicate_key(
         self,
@@ -52,10 +54,9 @@ class Tool(ABC):
         Apply safe, schema-driven normalization before validation/execution.
 
         Models frequently serialize an integer as a string or choose a value
-        slightly outside a bounded optional range. Those are transport-level
-        mistakes, not useful reasons to fail an otherwise valid action. We
-        accept numeric strings and clamp bounded integers/booleans to the
-        declared schema where doing so is unambiguous.
+        as a numeric string. Range clamping is opt-in via the schema extension
+        ``x-daena-clamp: true``; adapters otherwise receive validation errors
+        for out-of-range values instead of silently changed requests.
         """
         normalized = dict(arguments or {})
         notes: list[str] = []
@@ -78,10 +79,7 @@ class Tool(ABC):
                     try:
                         if stripped and (
                             stripped.isdigit()
-                            or (
-                                stripped.startswith("-")
-                                and stripped[1:].isdigit()
-                            )
+                            or (stripped.startswith("-") and stripped[1:].isdigit())
                         ):
                             value = int(stripped)
                     except ValueError:
@@ -90,15 +88,14 @@ class Tool(ABC):
                 if isinstance(value, int) and not isinstance(value, bool):
                     minimum = schema.get("minimum")
                     maximum = schema.get("maximum")
-                    if isinstance(minimum, int) and value < minimum:
+                    clamp = schema.get("x-daena-clamp") is True
+                    if clamp and isinstance(minimum, int) and value < minimum:
                         value = minimum
-                    if isinstance(maximum, int) and value > maximum:
+                    if clamp and isinstance(maximum, int) and value > maximum:
                         value = maximum
 
                 if value != original:
-                    notes.append(
-                        f"{key} normalized from {original!r} to {value!r}."
-                    )
+                    notes.append(f"{key} normalized from {original!r} to {value!r}.")
                     normalized[key] = value
 
             elif schema_type == "boolean" and isinstance(value, str):
@@ -149,7 +146,6 @@ class Tool(ABC):
             "command",
             "workdir",
         ):
-
             value = arguments.get(key)
 
             if value is None:
@@ -168,7 +164,7 @@ class Tool(ABC):
             "function": {
                 "name": self.name,
                 "description": self.description,
-                "parameters": self.parameters,
+                "parameters": deepcopy(self.parameters),
             },
         }
 

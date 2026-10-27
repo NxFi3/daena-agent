@@ -202,10 +202,10 @@ class VoiceController(QObject):
 
     def apply_settings(self, settings):
         settings = dict(settings)
-        if self.screen and not self.session:
-            self.screen.set_input_mode(settings.get("input_mode", "text"))
-        if not self.session:
+        if not self.session and self._restart_settings is None:
             self.save_settings(settings)
+            if self.screen:
+                self.screen.set_input_mode(settings.get("input_mode", "text"))
             self.dialog.set_state("Voice settings saved · open Voice to begin")
             return
         try:
@@ -213,13 +213,17 @@ class VoiceController(QObject):
             self._perception(settings)
         except Exception as exc:
             self.error(
-                f"Voice settings were not applied: {exc}. Current Voice remains active."
+                f"Voice settings were not applied: {exc}. Previous Voice configuration is retained."
             )
             return
         self.save_settings(settings, force=True)
-        self._restart_state = (self._speech_suppressed, list(self._spoken))
+        if self.session:
+            self._restart_state = (self._speech_suppressed, list(self._spoken))
         self._restart_settings = settings
-        self.stop(restart=True, cancel_download=False)
+        if self.session:
+            self.stop(restart=True, cancel_download=False)
+        if self.screen:
+            self.screen.set_input_mode(settings.get("input_mode", "text"))
         self.dialog.set_state(
             "Applying voice settings · waiting for previous audio work to finish; Agent continues"
         )
@@ -253,7 +257,7 @@ class VoiceController(QObject):
         settings = self.dialog.values()
         settings["input_mode"] = mode
         self.dialog.populate(settings)
-        if self.session:
+        if self.session or self._restart_settings is not None:
             self.apply_settings(settings)
             if self.screen:
                 self.screen.set_input_mode(
@@ -280,10 +284,10 @@ class VoiceController(QObject):
         if not pending or not self.session:
             return
         session, signature, text = pending
+        if self.session is not session or self._signature() != signature:
+            return  # Never restore an old conversation's text into this one.
         if (
-            self.session is not session
-            or self._signature() != signature
-            or self.window.busy
+            self.window.busy
             or getattr(self.window, "queued", [])
             or getattr(self.window, "_automation_run", False)
         ):
@@ -430,11 +434,12 @@ class VoiceController(QObject):
             self.screen.set_auto_send(bool(settings["auto_send"]))
         if not settings.get("auto_send", True):
             self._deferred_submission = None
-        if self.session and not force:
+        active = self._settings if self.session else self._restart_settings
+        if active is not None and not force:
             for key in ("auto_send", "speak_progress"):
                 if key in settings:
-                    self._settings[key] = bool(settings[key])
-            settings = dict(self._settings)
+                    active[key] = bool(settings[key])
+            settings = dict(active)
         try:
             write_json(self._settings_path(), settings)
         except (OSError, ValueError) as exc:
@@ -687,25 +692,42 @@ class VoiceController(QObject):
                 self.audio = AudioDevices(self)
             else:
                 self.audio = self._audio_factory(self)
-            self.audio.pcm_ready.connect(self.feed)
-            self.audio.level.connect(self.dialog.set_level)
-            self.audio.fault.connect(self.audio_fault)
-            self.audio.playback_started.connect(self.playback_started)
-            self.audio.playback_stopped.connect(self.output_idle)
+            audio = self.audio
+            for signal, callback in (
+                (audio.pcm_ready, self.feed),
+                (audio.level, self.dialog.set_level),
+                (audio.fault, self.audio_fault),
+                (audio.playback_started, self.playback_started),
+                (audio.playback_stopped, self.output_idle),
+            ):
+                signal.connect(
+                    lambda *args, owner=audio, receiver=callback: self._audio_event(
+                        owner, receiver, *args
+                    )
+                )
             if hasattr(self.audio, "speech_started"):
-                self.audio.speech_started.connect(self.barge_in)
+                self.audio.speech_started.connect(
+                    lambda owner=audio: self._audio_event(owner, self.barge_in)
+                )
             if hasattr(self.audio, "duplex_status"):
-                self.audio.duplex_status.connect(self.duplex_status)
+                self.audio.duplex_status.connect(
+                    lambda status, owner=audio: self._audio_event(
+                        owner, self.duplex_status, status
+                    )
+                )
             if not text_only and hasattr(self.audio, "configure_duplex"):
                 self.duplex_status(
                     self.audio.configure_duplex(settings.get("duplex_mode", "auto"))
                 )
             self.audio.set_output_device(settings.get("output_device_id", ""))
-            audio = self.audio
             output = {}
             if hasattr(audio, "prepare_output"):
                 output = audio.prepare_output()
                 self._metrics["output_device"] = output.get("name", "Selected output")
+            if self._muted:
+                # Carry an explicit mute across model/device changes before
+                # opening the replacement microphone.
+                audio.set_muted(True)
             if not text_only and not audio.start_capture(
                 settings.get("input_device_id", "")
             ):
@@ -746,6 +768,8 @@ class VoiceController(QObject):
                 self.screen.error_label.hide()
                 self.screen.set_input_mode(settings.get("input_mode", "microphone"))
                 self.screen.set_busy(self.window.busy)
+            if self._muted and not text_only:
+                self.mute(True)
             if hasattr(self.window, "voice_button"):
                 self.window.voice_button.setText(
                     "◉ Voice output" if text_only else "◉ Live"
@@ -753,6 +777,8 @@ class VoiceController(QObject):
             self.dialog.set_state(
                 "Preparing local voice · text only; microphone off"
                 if text_only
+                else "Preparing local models · microphone muted"
+                if self._muted
                 else "Preparing local models · speech input starts when recognition is ready"
             )
             self.save_settings(settings)
@@ -764,12 +790,19 @@ class VoiceController(QObject):
         self.stop()
         self.error(message)
 
+    def _audio_event(self, owner, callback, *args):
+        """Qt may deliver already-queued signals after a device is retired."""
+        if self.audio is owner and not self._closed:
+            callback(*args)
+
     def output_idle(self):
         self._playback_active = False
         if self.session and self.dialog:
             self.dialog.set_state(
                 "Ready · type text; microphone off"
                 if self._settings.get("input_mode") == "text"
+                else "Microphone muted"
+                if self._muted
                 else "Listening"
             )
 
@@ -892,6 +925,8 @@ class VoiceController(QObject):
         preserve_input = preserve_input or self._preserve_input
         self._previewing = False
         self._speech_suppressed = True
+        if self._restart_state is not None:
+            self._restart_state = (True, list(self._spoken))
         self._speech_pending = self._playback_active = False
         self._pending_replies.clear()
         self._deferred_submission = None
@@ -928,7 +963,8 @@ class VoiceController(QObject):
         self._playback_active = self._speech_pending = False
         self._duplex_status = {}
         self._close_test_audio(restore=False)
-        self._muted = False
+        if not restart:
+            self._muted = False
         if cancel_download:
             self._download_stop.set()
         if not restart:
@@ -1268,6 +1304,9 @@ class VoiceController(QObject):
                     if self._review_inserted or self._pending_transcript:
                         continue
                     if self._playback_active:
+                        continue
+                    if self._muted and self._settings.get("input_mode") != "text":
+                        self.dialog.set_state("Microphone muted")
                         continue
                     self.dialog.set_state(
                         event.data

@@ -121,8 +121,13 @@ def test_incremental_output_and_process_write():
         wait_ms=2_000,
         max_output_chars=8_000,
     )
-    assert finished["status"] == "exited"
     assert "hello" in finished["stdout"]
+    # A flush can wake poll before the interpreter has completed shutdown.
+    if finished["status"] == "running":
+        finished = PROCESS_MANAGER.poll(
+            process_id=process_id, wait_ms=2_000, max_output_chars=8_000
+        )
+    assert finished["status"] == "exited"
 
     second_poll = PROCESS_MANAGER.poll(
         process_id=process_id,

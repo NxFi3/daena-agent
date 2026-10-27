@@ -36,7 +36,8 @@ def test_dispatcher_normalizes_alias_and_generates_id():
     call = calls[0]
     assert isinstance(call, ToolCall)
     assert call.valid is True
-    assert call.args == {"file_path": "main.py"}
+    # JSON Schema allows extra properties unless explicitly disabled.
+    assert call.args == {"file_path": "main.py", "ignored": True}
     assert call.target == "main.py"
     assert call.id
 

@@ -16,6 +16,7 @@ dependencies = [
   "httpx>=0.28,<1",
   "Pillow>=10,<13",
   "jsonschema>=4.21,<5",
+  "regex>=2024.11.6,<2027",
 ]
 
 [project.optional-dependencies]

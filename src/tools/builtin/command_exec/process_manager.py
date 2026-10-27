@@ -58,11 +58,9 @@ class ManagedProcess:
     pty_master_fd: int | None = None
     pty_reader_thread: threading.Thread | None = None
     output_lock: threading.Lock = field(default_factory=threading.Lock)
+    write_lock: threading.Lock = field(default_factory=threading.Lock)
     status: str = "running"
     exit_code: int | None = None
-
-
-
 
 
 def _set_parent_death_signal() -> None:
@@ -95,6 +93,7 @@ class ProcessManager:
     """
 
     MAX_RETAINED_FINISHED = 64
+    STDIN_WRITE_TIMEOUT = 10.0
 
     def __init__(self) -> None:
         self.stop_event = None
@@ -138,7 +137,10 @@ class ProcessManager:
             )
             if existing is not None:
                 self._refresh_locked(existing)
-                if existing.status != "running" and existing.pty_reader_thread is not None:
+                if (
+                    existing.status != "running"
+                    and existing.pty_reader_thread is not None
+                ):
                     existing.pty_reader_thread.join(timeout=1.0)
                 output = self._read_incremental(existing, max_output_chars)
                 return {
@@ -239,7 +241,9 @@ class ProcessManager:
                 if output["stdout"] or output["stderr"]:
                     return self._entry_result(entry, output)
 
-            if time.perf_counter() >= deadline or (self.stop_event is not None and self.stop_event.is_set()):
+            if time.perf_counter() >= deadline or (
+                self.stop_event is not None and self.stop_event.is_set()
+            ):
                 with self._lock:
                     entry = self._processes.get(process_id)
                     if entry is None:
@@ -254,24 +258,24 @@ class ProcessManager:
 
             time.sleep(min(0.05, max(0.0, deadline - time.perf_counter())))
 
-    def write(
-        self,
-        *,
-        process_id: str,
-        input_text: str,
-    ) -> dict:
+    def write(self, *, process_id: str, input_text: str) -> dict:
+        """Bounded input delivery without holding the lifecycle lock over I/O.
+
+        Pipes and PTYs may block when the child is not reading. A dedicated
+        writer owns a duplicate descriptor; stop/poll remain available. On a
+        timeout or cancellation, terminate the child before returning so an
+        abandoned write cannot later become an unintended command.
+        """
+        payload = input_text.encode("utf-8")
         with self._lock:
             entry = self._processes.get(process_id)
-
             if entry is None:
                 return {
                     "status": "unknown",
                     "process_id": process_id,
                     "error": "Unknown process_id.",
                 }
-
             self._refresh_locked(entry)
-
             if entry.status != "running":
                 return {
                     "status": entry.status,
@@ -279,58 +283,99 @@ class ProcessManager:
                     "error": "Process is not running.",
                     "exit_code": entry.exit_code,
                 }
+            if self.stop_event is not None and self.stop_event.is_set():
+                return {
+                    "status": "cancelled",
+                    "process_id": process_id,
+                    "delivery": "not_sent",
+                    "bytes_written": 0,
+                    "error": "Input cancelled before dispatch.",
+                }
+            if not entry.write_lock.acquire(blocking=False):
+                return {
+                    "status": "busy",
+                    "process_id": process_id,
+                    "delivery": "not_sent",
+                    "bytes_written": 0,
+                    "error": "A previous stdin write is still finishing.",
+                }
+            try:
+                source = (
+                    entry.pty_master_fd
+                    if entry.tty
+                    else (
+                        entry.process.stdin.fileno()
+                        if entry.process.stdin is not None
+                        else None
+                    )
+                )
+                if source is None:
+                    raise OSError("Process input is no longer writable.")
+                fd = os.dup(source)
+            except (OSError, ValueError) as exc:
+                entry.write_lock.release()
+                return {
+                    "status": "failed",
+                    "process_id": process_id,
+                    "delivery": "not_sent",
+                    "bytes_written": 0,
+                    "error": str(exc),
+                }
 
-            if entry.tty:
-                master_fd = entry.pty_master_fd
-                if master_fd is None:
-                    return {
-                        "status": entry.status if entry.status != "running" else "failed",
-                        "process_id": process_id,
-                        "error": "PTY input is no longer writable.",
-                        "exit_code": entry.exit_code,
-                    }
+        done, abort = threading.Event(), threading.Event()
+        state = {"written": 0, "error": None}
 
-                try:
-                    payload = input_text.encode("utf-8")
-                    total = 0
-                    while total < len(payload):
-                        written = os.write(master_fd, payload[total:])
-                        if written <= 0:
-                            raise OSError("PTY write returned no progress.")
-                        total += written
-                except (BrokenPipeError, OSError) as exc:
-                    self._refresh_locked(entry)
-                    return {
-                        "status": entry.status if entry.status != "running" else "failed",
-                        "process_id": process_id,
-                        "error": str(exc),
-                        "exit_code": entry.exit_code,
-                    }
+        def deliver():
+            try:
+                while state["written"] < len(payload) and not abort.is_set():
+                    offset = state["written"]
+                    count = os.write(fd, payload[offset : offset + 4096])
+                    if count <= 0:
+                        raise OSError("Input write returned no progress.")
+                    state["written"] += count
+            except OSError as exc:
+                state["error"] = str(exc)
+            finally:
+                os.close(fd)
+                entry.write_lock.release()
+                done.set()
 
-            else:
-                if entry.process.stdin is None:
-                    return {
-                        "status": "failed",
-                        "process_id": process_id,
-                        "error": "Process stdin is not writable.",
-                    }
-
-                try:
-                    entry.process.stdin.write(input_text.encode("utf-8"))
-                    entry.process.stdin.flush()
-                except (BrokenPipeError, OSError) as exc:
-                    self._refresh_locked(entry)
-                    return {
-                        "status": entry.status if entry.status != "running" else "failed",
-                        "process_id": process_id,
-                        "error": str(exc),
-                        "exit_code": entry.exit_code,
-                    }
-
+        writer = threading.Thread(target=deliver, name="daena-stdin", daemon=True)
+        try:
+            writer.start()
+        except Exception:
+            os.close(fd)
+            entry.write_lock.release()
+            raise
+        deadline = time.monotonic() + self.STDIN_WRITE_TIMEOUT
+        outcome = None
+        while not done.wait(0.025):
+            cancelled = self.stop_event is not None and self.stop_event.is_set()
+            if cancelled or time.monotonic() >= deadline:
+                outcome = "cancelled" if cancelled else "timed_out"
+                abort.set()
+                self._terminate_process_tree(entry.process)
+                done.wait(1.0)
+                break
+        written = state["written"]
+        if outcome is not None or state["error"] is not None:
             return {
-                "status": "accepted",
+                "status": outcome or "failed",
                 "process_id": process_id,
+                "bytes_written": written,
+                "bytes_requested": len(payload),
+                "delivery": "partial_or_unknown"
+                if written or not done.is_set()
+                else "not_sent",
+                "error": state["error"]
+                or "Input delivery stopped; the child was terminated. Do not blindly resend partial input.",
             }
+        return {
+            "status": "accepted",
+            "process_id": process_id,
+            "bytes_written": written,
+            "delivery": "complete",
+        }
 
     def stop(
         self,
@@ -549,6 +594,7 @@ class ProcessManager:
     ) -> ManagedProcess | None:
         normalized_workdir = str(workdir) if workdir is not None else None
         for entry in self._processes.values():
+            self._refresh_locked(entry)
             if entry.status != "running":
                 continue
             if entry.command != list(command):
@@ -581,7 +627,11 @@ class ProcessManager:
 
     @staticmethod
     def _read_file_incremental(
-        file: IO[bytes], offset: int, max_bytes: int, *, finished: bool = False,
+        file: IO[bytes],
+        offset: int,
+        max_bytes: int,
+        *,
+        finished: bool = False,
     ) -> tuple[str, int]:
         if file.closed:
             return "", offset
@@ -666,9 +716,7 @@ class ProcessManager:
 
     def _prune_finished_locked(self) -> None:
         finished = [
-            entry
-            for entry in self._processes.values()
-            if entry.status != "running"
+            entry for entry in self._processes.values() if entry.status != "running"
         ]
 
         overflow = len(finished) - self.MAX_RETAINED_FINISHED
