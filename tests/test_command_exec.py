@@ -167,16 +167,22 @@ def test_tty_process_supports_interactive_stdin():
     )
     assert write["status"] == "accepted"
 
-    finished = PROCESS_MANAGER.poll(
-        process_id=process_id,
-        wait_ms=2_000,
-        max_output_chars=8_000,
-    )
+    chunks = [result.content["stdout"]]
+    deadline = time.monotonic() + 5
+    while True:
+        finished = PROCESS_MANAGER.poll(
+            process_id=process_id,
+            wait_ms=2_000,
+            max_output_chars=8_000,
+        )
+        chunks.append(finished["stdout"])
+        if finished["status"] != "running" or time.monotonic() >= deadline:
+            break
 
     assert finished["status"] == "exited"
     assert finished["exit_code"] == 0
 
-    output = result.content["stdout"] + finished["stdout"]
+    output = "".join(chunks)
     assert "READY" in output
     assert "GOT:interactive-test" in output
     assert finished["tty"] is True
