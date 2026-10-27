@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from copy import deepcopy
+from copy import copy, deepcopy
 import hashlib
 import json
 import re
@@ -1065,10 +1065,19 @@ class ContextBuilder:
             ),
         }
 
-    def _fit_protocol(self, system, requests, summary, groups, attachments=()):
+    def _fit_protocol(
+        self, system, requests, summary, groups, attachments=(), contributions=()
+    ):
+        contributions = list(contributions)
+        fitted_window = copy(self.window)
+
         def render():
             history = [m for group in groups for m in group]
-            return [system, *requests, *summary, *history, *attachments]
+            return [system, *requests, *summary, *contributions, *history, *attachments]
+
+        # Optional retrieval must not displace instructions or actual exchanges.
+        if not self.tokenbudget.fits(render()):
+            contributions.clear()
 
         # Oldest complete groups leave first. Keep the actual task/instructions
         # and most recent tool receipt; never relocate the task to the end.
@@ -1092,8 +1101,27 @@ class ContextBuilder:
             for _ in range(12):
                 if self.tokenbudget.fits(render()):
                     break
+                # Trim optional system sections separately. The complete trusted
+                # instruction (including active runtime modes) is never sliced.
+                for field in (
+                    "experience",
+                    "learned_experience",
+                    "plan",
+                    "execution_state",
+                ):
+                    value = getattr(fitted_window, field, "")
+                    if value:
+                        setattr(
+                            fitted_window,
+                            field,
+                            fit_tool_text(
+                                value, max(64, len(value) // 2), self._head_tail
+                            )
+                            if len(value) > 160
+                            else "",
+                        )
+                system["content"] = fitted_window.build_system_content()
                 for message in [
-                    system,
                     *[m for g in groups if not self._is_request(g) for m in g],
                 ]:
                     if message.get("gemini_parts"):
@@ -1153,6 +1181,7 @@ class ContextBuilder:
         available_tool_names=None,
         include_plan=True,
         attachments=None,
+        contributions=None,
     ):
         task_key = str((task or {}).get("id", ""))
         if task_key != getattr(self, "_history_task", None):
@@ -1310,6 +1339,20 @@ class ContextBuilder:
             if self.compaction_enabled
             else []
         )
+        from src.context.contributions import contribution_messages
+
+        contributed = contribution_messages(
+            contributions or (),
+            max_chars=min(
+                6000,
+                int(self.tokenbudget.budget * self.tokenbudget.chars_per_token * 0.1),
+            ),
+        )
         return self._fit_protocol(
-            system, list(self._requests), summary, pending, attachments or ()
+            system,
+            list(self._requests),
+            summary,
+            pending,
+            attachments or (),
+            contributed,
         )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import re
 from pathlib import Path
 from types import ModuleType
 
@@ -214,6 +215,32 @@ class ToolRegistry:
 
         self.logger.info("Discovered %s unique tool(s)", len(self.tools))
         return list(self.tools.keys())
+
+    def register(self, tool: Tool) -> str:
+        """Register a host-owned tool or adapter without replacing another tool.
+
+        Registration is a setup operation: configure adapters before agent runs.
+        ToolManager applies the usual allowlist, schema and runtime policy gates.
+        """
+        from jsonschema.validators import validator_for
+
+        if not isinstance(tool, Tool):
+            raise TypeError("Registered tools must implement Tool")
+        name = tool.name
+        if not isinstance(name, str) or not re.fullmatch(
+            r"[a-z][a-z0-9_-]{0,63}", name
+        ):
+            raise ValueError(
+                "Tool names must be lowercase identifiers of 1–64 characters"
+            )
+        if not isinstance(tool.parameters, dict):
+            raise ValueError("Tool parameters must be a JSON Schema object")
+        validator_for(tool.parameters).check_schema(tool.parameters)
+        existing = self.tools.get(name)
+        if existing is not None and existing is not tool:
+            raise ValueError(f"Tool name already registered: {name}")
+        self.tools[name] = tool
+        return name
 
     def is_available(self, toolname: str) -> bool:
         if not isinstance(toolname, str):

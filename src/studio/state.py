@@ -29,6 +29,7 @@ def validate_config(value):
     for section in (
         "llm",
         "context",
+        "memory",
         "security",
         "skills",
         "subagents",
@@ -147,7 +148,10 @@ class StudioStore:
     def runtime_config(self, config):
         result = deepcopy(config)
         result["workspace"] = {"directory": str(self.root.parents[1])}
-        result["memory"] = {"database": str(self.root / "history.sqlite3")}
+        result["memory"] = {
+            **result.get("memory", {}),
+            "database": str(self.root / "history.sqlite3"),
+        }
         return result
 
     def save_run(self, session, title, events, metrics):

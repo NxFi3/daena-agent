@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import datetime
+from functools import wraps
+from threading import RLock
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -14,6 +16,19 @@ from src.models.ContextEvent import (
     ContextRole,
     ContextType,
 )
+
+
+def _serialized(method):
+    """Serialize complete operations, including multi-statement transactions."""
+
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with self._lock:
+            if self.connection is None and method.__name__ != "close":
+                raise RuntimeError("STM database is closed")
+            return method(self, *args, **kwargs)
+
+    return wrapped
 
 
 class STMDatabase:
@@ -39,6 +54,7 @@ class STMDatabase:
         self,
         db_path: str | Path = "data/stm.db",
     ) -> None:
+        self._lock = RLock()
         self.db_path = Path(db_path)
 
         self.db_path.parent.mkdir(
@@ -197,6 +213,7 @@ class STMDatabase:
 
         return {}
 
+    @_serialized
     def add(
         self,
         session_id: UUID | str,
@@ -281,6 +298,7 @@ class STMDatabase:
             self.connection.rollback()
             raise
 
+    @_serialized
     def get_recent(
         self,
         session_id: UUID | str,
@@ -334,6 +352,7 @@ class STMDatabase:
 
         return [self._row_to_event(row) for row in rows]
 
+    @_serialized
     def get_recent_complete(self, session_id, limit=40):
         """Extend a cutoff inside a tool batch to include its owning call."""
         events = self.get_recent(session_id, limit)
@@ -367,6 +386,7 @@ class STMDatabase:
         ).fetchall()
         return [self._row_to_event(row) for row in rows]
 
+    @_serialized
     def search(
         self,
         session_id: UUID | str,
@@ -466,6 +486,7 @@ class STMDatabase:
 
         return [self._row_to_event(row) for row in rows]
 
+    @_serialized
     def list_sessions(
         self,
         limit: int = 50,
@@ -490,13 +511,14 @@ class STMDatabase:
                 ) AS title
             FROM context_events AS e
             GROUP BY e.session_id
-            ORDER BY MAX(e.step) DESC, MAX(e.timestamp) DESC
+            ORDER BY MAX(e.timestamp) DESC, MAX(e.step) DESC
             LIMIT ?
             """,
             (limit,),
         ).fetchall()
         return [dict(row) for row in rows]
 
+    @_serialized
     def delete(
         self,
         event_id: UUID | str,
@@ -545,6 +567,7 @@ class STMDatabase:
             self.connection.rollback()
             raise
 
+    @_serialized
     def clear_session(
         self,
         session_id: UUID | str,
@@ -590,6 +613,7 @@ class STMDatabase:
             self.connection.rollback()
             raise
 
+    @_serialized
     def get_session_revision(self, session_id):
         row = self.connection.execute(
             "SELECT revision FROM context_session_revisions WHERE session_id=?",
@@ -603,6 +627,7 @@ class STMDatabase:
             (str(session_id),),
         )
 
+    @_serialized
     def record_file_reads(self, session_id, receipts):
         from src.context.file_reads import file_evidence
 
@@ -631,6 +656,7 @@ class STMDatabase:
                     (*key, json.dumps(merged)),
                 )
 
+    @_serialized
     def get_file_reads(self, session_id, limit=32):
         rows = self.connection.execute(
             "SELECT path,file_sha256,spans FROM context_file_reads WHERE session_id=? ORDER BY rowid DESC LIMIT ?",
@@ -653,6 +679,7 @@ class STMDatabase:
             "truncated": count > len(rows),
         }
 
+    @_serialized
     def get_checkpoint(self, session_id):
         row = self.connection.execute(
             "SELECT summary, covered_groups FROM context_checkpoints WHERE session_id = ?",
@@ -667,6 +694,7 @@ class STMDatabase:
             else None
         )
 
+    @_serialized
     def save_checkpoint(self, session_id, summary, covered_groups):
         with self.connection:
             self.connection.execute(
@@ -674,6 +702,7 @@ class STMDatabase:
                 (str(session_id), str(summary), json.dumps(sorted(covered_groups))),
             )
 
+    @_serialized
     def count(
         self,
         session_id: UUID | str,
@@ -720,7 +749,8 @@ class STMDatabase:
         try:
             role = ContextRole(row["role"])
         except (ValueError, TypeError):
-            role = ContextRole.SYSTEM
+            # Corrupt or external roles must never acquire instruction authority.
+            role = ContextRole.USER
 
         try:
             event_type = ContextType(row["type"])
@@ -743,6 +773,7 @@ class STMDatabase:
             metadata=STMDatabase._deserialize_metadata(row["metadata"]),
         )
 
+    @_serialized
     def close(self) -> None:
         """
         Close SQLite connection.
@@ -750,6 +781,7 @@ class STMDatabase:
 
         if self.connection is not None:
             self.connection.close()
+            self.connection = None
 
     def __enter__(self) -> "STMDatabase":
         return self

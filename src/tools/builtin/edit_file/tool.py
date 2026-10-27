@@ -27,8 +27,14 @@ class EditFile(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "file_path": {"type": "string", "description": "Workspace-relative file path."},
-            "old_string": {"type": "string", "description": "Exact existing text to replace."},
+            "file_path": {
+                "type": "string",
+                "description": "Workspace-relative file path.",
+            },
+            "old_string": {
+                "type": "string",
+                "description": "Exact existing text to replace.",
+            },
             "new_string": {"type": "string", "description": "Replacement text."},
             "replace_all": {"type": "boolean", "default": False},
         },
@@ -95,7 +101,9 @@ class EditFile(Tool):
         if not isinstance(file_path, str) or not file_path.strip():
             return self._error("invalid_argument", "file_path must be non-empty.")
         if not isinstance(old_string, str) or not old_string:
-            return self._error("invalid_argument", "old_string must be a non-empty string.")
+            return self._error(
+                "invalid_argument", "old_string must be a non-empty string."
+            )
         if not isinstance(new_string, str):
             return self._error("invalid_argument", "new_string must be a string.")
         if old_string == new_string:
@@ -103,20 +111,32 @@ class EditFile(Tool):
         if type(replace_all) is not bool:
             return self._error("invalid_argument", "replace_all must be a boolean.")
         if self._workspace_root is None:
-            return self._error("workspace_unavailable", "Workspace root is not configured.")
+            return self._error(
+                "workspace_unavailable", "Workspace root is not configured."
+            )
 
         raw_path = Path(file_path).expanduser()
-        path = (raw_path if raw_path.is_absolute() else self._workspace_root / raw_path).resolve(strict=False)
+        try:
+            path = (
+                raw_path if raw_path.is_absolute() else self._workspace_root / raw_path
+            ).resolve(strict=False)
+        except (OSError, RuntimeError) as exc:
+            return self._error("path_error", f"Could not resolve file path: {exc}")
         try:
             path.relative_to(self._workspace_root)
         except ValueError:
-            return self._error("workspace_boundary", "file_path escapes the configured workspace.")
+            return self._error(
+                "workspace_boundary", "file_path escapes the configured workspace."
+            )
         if not path.exists():
             return self._error("file_not_found", f"File does not exist: {file_path}")
         if not path.is_file():
-            return self._error("invalid_target", f"Path is not a regular file: {file_path}")
+            return self._error(
+                "invalid_target", f"Path is not a regular file: {file_path}"
+            )
 
         try:
+            before_stat = path.stat()
             raw = path.read_bytes()
             original, encoding = self._decode(raw)
         except (OSError, UnicodeError) as exc:
@@ -125,7 +145,9 @@ class EditFile(Tool):
         count = original.count(old_string)
         if count == 0:
             closest = self._closest_lines(original, old_string)
-            lines_text = ", ".join(str(value) for value in closest) if closest else "none found"
+            lines_text = (
+                ", ".join(str(value) for value in closest) if closest else "none found"
+            )
             return self._error(
                 "old_string_not_found",
                 f"old_string was not found in {file_path}. Closest matching line numbers: {lines_text}. Read the current file and retry with exact text.",
@@ -134,7 +156,9 @@ class EditFile(Tool):
         if count > 1 and not replace_all:
             positions = []
             start = 0
-            while (index := original.find(old_string, start)) >= 0 and len(positions) < 3:
+            while (index := original.find(old_string, start)) >= 0 and len(
+                positions
+            ) < 3:
                 positions.append(self._line_number(original, index))
                 start = index + len(old_string)
             return self._error(
@@ -143,7 +167,11 @@ class EditFile(Tool):
                 extra={"match_count": count, "matching_line_numbers": positions},
             )
 
-        updated = original.replace(old_string, new_string) if replace_all else original.replace(old_string, new_string, 1)
+        updated = (
+            original.replace(old_string, new_string)
+            if replace_all
+            else original.replace(old_string, new_string, 1)
+        )
         first_pos = original.find(old_string)
         start_line = self._line_number(original, first_pos)
         old_lines = old_string.count("\n") + 1
@@ -152,30 +180,62 @@ class EditFile(Tool):
             "start_line": start_line,
             "end_line": start_line + max(old_lines, new_lines) - 1,
         }
-        diff = "".join(difflib.unified_diff(
-            original.splitlines(keepends=True),
-            updated.splitlines(keepends=True),
-            fromfile=str(file_path),
-            tofile=str(file_path),
-            n=2,
-        ))
+        diff = "".join(
+            difflib.unified_diff(
+                original.splitlines(keepends=True),
+                updated.splitlines(keepends=True),
+                fromfile=str(file_path),
+                tofile=str(file_path),
+                n=2,
+            )
+        )
         diff_preview = diff[:3000]
-        mode = stat.S_IMODE(path.stat().st_mode)
-        payload = updated.encode(encoding)
+        mode = stat.S_IMODE(before_stat.st_mode)
+        try:
+            payload = updated.encode(encoding)
+        except UnicodeError as exc:
+            return self._error(
+                "encoding_error",
+                f"Replacement text cannot use this file's encoding: {exc}",
+            )
         if encoding in {"utf-16-le", "utf-16-be"}:
             payload = raw[:2] + payload
         temporary: str | None = None
         try:
-            fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+            fd, temporary = tempfile.mkstemp(
+                prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+            )
             with os.fdopen(fd, "wb") as handle:
                 handle.write(payload)
                 handle.flush()
                 os.fsync(handle.fileno())
             os.chmod(temporary, mode)
+            # Atomic replace protects readers from partial content, but alone
+            # would overwrite another editor's change made since our read.
+            current_stat = path.stat()
+            if (
+                current_stat.st_dev,
+                current_stat.st_ino,
+                current_stat.st_mtime_ns,
+                current_stat.st_size,
+                current_stat.st_mode,
+            ) != (
+                before_stat.st_dev,
+                before_stat.st_ino,
+                before_stat.st_mtime_ns,
+                before_stat.st_size,
+                before_stat.st_mode,
+            ) or path.read_bytes() != raw:
+                return self._error(
+                    "file_changed",
+                    "File changed while preparing the edit. Re-read it before retrying; the concurrent edit was preserved.",
+                )
             os.replace(temporary, path)
             temporary = None
         except OSError as exc:
-            return self._error("write_error", f"Could not atomically update {file_path}: {exc}")
+            return self._error(
+                "write_error", f"Could not atomically update {file_path}: {exc}"
+            )
         finally:
             if temporary:
                 try:

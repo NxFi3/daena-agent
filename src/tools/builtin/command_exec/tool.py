@@ -117,6 +117,7 @@ class CommandExec(Tool):
                 "default": DEFAULT_YIELD_TIME_MS,
                 "minimum": 0,
                 "maximum": MAX_YIELD_TIME_MS,
+                "x-daena-clamp": True,
             },
             "max_output_chars": {
                 "type": "integer",
@@ -127,6 +128,7 @@ class CommandExec(Tool):
                 "default": DEFAULT_MAX_OUTPUT_CHARS,
                 "minimum": MIN_OUTPUT_CHARS,
                 "maximum": MAX_OUTPUT_CHARS,
+                "x-daena-clamp": True,
             },
             "background": {
                 "type": "boolean",

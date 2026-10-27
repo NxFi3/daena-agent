@@ -933,7 +933,9 @@ class VoiceDialog(QDialog):
         self.audio_page.setEnabled(True)
         self.perception_page.setEnabled(True)
         if not active:
+            self.mute_button.blockSignals(True)
             self.mute_button.setChecked(False)
+            self.mute_button.blockSignals(False)
             self.meter.set_level(0)
         self._update_input_mode()
         self.active_changed.emit(bool(active))
