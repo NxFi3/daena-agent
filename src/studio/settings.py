@@ -462,7 +462,9 @@ class SettingsPanel(QWidget):
         self.browser_headless.setChecked(browser.get("headless", False))
         self.browser_executable.setText(browser.get("executable_path", ""))
         self.browser_cdp.setText(browser.get("cdp_url", ""))
-        self.mcp_servers.setPlainText(json.dumps(config.get("mcp", {}).get("servers", {}), indent=2))
+        self.mcp_servers.setPlainText(
+            json.dumps(config.get("mcp", {}).get("servers", {}), indent=2)
+        )
         self._syncing = False
         self.sync_generation_controls()
 
@@ -579,6 +581,7 @@ class SettingsPanel(QWidget):
         if not isinstance(servers, dict):
             raise ValueError("MCP Servers must be a JSON object")
         from src.tools.mcp_stdio import configured_servers
+
         configured_servers({"mcp": {"servers": servers}})
         result.setdefault("mcp", {})["servers"] = servers
         # Studio saves an explicit tool scope. Enable only the MCP namespaces
@@ -586,7 +589,8 @@ class SettingsPanel(QWidget):
         scope = set(result["security"]["allowed_tools"])
         scope = {name for name in scope if not name.startswith("mcp_")}
         scope.update(
-            f"mcp_{name}_*" for name, server in servers.items()
+            f"mcp_{name}_*"
+            for name, server in servers.items()
             if isinstance(server, dict) and server.get("enabled", False)
         )
         result["security"]["allowed_tools"] = sorted(scope)
