@@ -65,6 +65,18 @@ class Glob(Tool):
                 "invalid_argument", "max_results must be between 1 and 500."
             )
 
+        # pathlib's validation of recursive wildcards differs across Python
+        # releases and may happen only while iterating. Enforce one portable
+        # contract before constructing the lazy iterator.
+        try:
+            glob_parts = Path(pattern).parts
+            if Path(pattern).is_absolute():
+                raise ValueError("pattern must be workspace-relative")
+            if any("**" in part and part != "**" for part in glob_parts):
+                raise ValueError("'**' must be a complete path component")
+        except (TypeError, ValueError) as exc:
+            return self._error("invalid_argument", str(exc))
+
         try:
             start = workspace_path(root, path)
         except (PermissionError, OSError, RuntimeError) as exc:
