@@ -1,13 +1,15 @@
 """Model-directed execution with ordered tool receipts and bounded resources.
 
 The runtime validates protocols and owns cancellation. It does not classify task
-intent, infer verification from command names, or veto actions based on repetition.
+intent or infer verification from command names. It only bounds exact repeated
+read-only observations when the workspace has not changed.
 """
 
 from __future__ import annotations
 
 import json
 import queue
+from concurrent.futures import ThreadPoolExecutor
 import time
 from pathlib import Path
 from threading import Event
@@ -15,8 +17,10 @@ from uuid import uuid4
 
 from src.agent.agentstate import AgentState
 from src.context.contextservice import ContextService
+from src.context.contextbuilder import ContextBudgetError
 from src.context.workingset import WorkingSet
 from src.engine.invoke import invoke
+from src.engine.errors import RecoverableGenerationError
 from src.memories.stm.STM import STM
 from src.models.ContextEvent import ContextEvent, ContextRole, ContextType
 from src.models.LLMResult import LLMResult
@@ -52,30 +56,49 @@ class Loop:
         self.context = ContextService(config, llm, self.stm)
         self.context.contextbuilder.skill_registry = self.tool.skills
         self.session_id = uuid4()
+        self.tool.set_llm_provider(self.llm)
+        self.tool.set_context_store(self.stm, lambda: self.session_id)
         self._workspace_root = None
         self._context_step = 0
         self._event_sink = None
         self._stop_event = None
         self._run_started_at = None
         self._steering_queue = queue.Queue()
+        self._coordination_queue = queue.Queue()
         self.agent_state = AgentState()
         self.working_set = WorkingSet()
         self.recent_context_limit = self.context.default_recent_limit
         self.search_context_top_k = self.context.default_search_top_k
         self.max_iterations = max(1, int(config.get("max_agent_iterations", 100)))
-        self.tool_definitions = self.tool.get_tools()
+        runtime_config = config.get("runtime") or {}
+        self.max_generation_retries = max(
+            0, min(5, int(runtime_config.get("generation_retries", 2)))
+        )
+        self.tool_definitions = self.tool.get_model_tools()
+        self.tool.subagents.parent_message_sink = self.receive_agent_message
         self.tool.subagents.event_sink = lambda event: self._emit_event(
             "subagent_event", child_event=event
         )
         self._reset_run_state()
 
     def _reset_run_state(self):
+        # Guidance belongs to the turn it was submitted during. A cancellation
+        # can leave unconsumed steering behind; never apply it to the next task.
+        while True:
+            try:
+                self._steering_queue.get_nowait()
+            except queue.Empty:
+                break
         self.agent_state.reset()
         self.working_set.reset()
         self._plan_active_this_run = False
         self._finish_request = None
         self._active_process_ids = set()
         self.workspace_revision = 0
+        # Count successful read-only observations per workspace revision.
+        # An exact observation is authoritative until the workspace changes;
+        # repeating it only burns context and commonly causes inspection loops.
+        self._observation_counts = {}
         self.metrics = {
             "iterations": 0,
             "llm_calls": 0,
@@ -85,6 +108,7 @@ class Loop:
             "context_tool_results": 0,
             "context_read_results": 0,
             "generation_failures": 0,
+            "generation_retries": 0,
             "tool_call_attempts": 0,
             "tool_successes": 0,
             "tool_failures": 0,
@@ -120,7 +144,19 @@ class Loop:
         if str(text).strip():
             self._steering_queue.put(str(text).strip())
 
+    def receive_agent_message(self, text):
+        """Accept untrusted child information, not elevated user steering."""
+        if str(text).strip():
+            self._coordination_queue.put(str(text).strip())
+
     def _consume_steering(self):
+        while True:
+            try:
+                text = self._coordination_queue.get_nowait()
+            except queue.Empty:
+                break
+            self._store_nudge(text)
+            self._emit_event("agent_message", text=text)
         while True:
             try:
                 text = self._steering_queue.get_nowait()
@@ -203,6 +239,9 @@ class Loop:
         )
 
     def _apply_result(self, call, result, iteration):
+        from src.tools.builtin.computer_use.integration import remember_result
+
+        remember_result(self, call, result)
         self.agent_state.update_from_result(result)
         content = result.content
         process_id = content.get("process_id")
@@ -225,17 +264,124 @@ class Loop:
         self._emit_event(
             "tool_result",
             name=call.name,
+            call_id=call.id,
             success=result.success,
             summary=result.summary,
             content=result.content,
         )
 
+    def _observation_key(self, call):
+        if not call.valid:
+            return None
+        tool = self.tool.get_tool(call.name)
+        if tool is None or str(getattr(call, "action", "")).lower() != "inspect":
+            return None
+        try:
+            args = tool.duplicate_key(
+                dict(call.args or {}),
+                workspace_root=(
+                    str(getattr(self, "_workspace_root", None))
+                    if getattr(self, "_workspace_root", None)
+                    else None
+                ),
+            )
+            serialized = json.dumps(
+                args, ensure_ascii=False, sort_keys=True, default=str
+            )
+        except Exception:
+            serialized = json.dumps(
+                dict(call.args or {}), ensure_ascii=False, sort_keys=True, default=str
+            )
+        return (getattr(self, "workspace_revision", 0), call.name, serialized)
+
+    def _duplicate_observation_result(self, call):
+        key = Loop._observation_key(self, call)
+        counts = getattr(self, "_observation_counts", {})
+        if key is None or counts.get(key, 0) < 1:
+            return None
+        return ToolResult(
+            success=False,
+            name=call.name,
+            content={
+                "error": {
+                    "type": "duplicate_observation",
+                    "message": (
+                        "This exact read-only observation was already completed "
+                        "without a workspace change. Reuse the existing evidence and "
+                        "take the next concrete action. If different evidence is "
+                        "actually needed, request a different file or narrower range."
+                    ),
+                }
+            },
+            metadata={
+                "duplicate_action": True,
+                "recovery_hint": (
+                    "Do not repeat this exact observation again unless the workspace "
+                    "changes. Use existing evidence or inspect a materially different "
+                    "target/range."
+                ),
+            },
+        )
+
+    def _record_observation_success(self, call, result):
+        if not result.success:
+            return
+        key = Loop._observation_key(self, call)
+        if key is not None:
+            counts = getattr(self, "_observation_counts", None)
+            if counts is None:
+                counts = {}
+                self._observation_counts = counts
+            counts[key] = counts.get(key, 0) + 1
+
     def _execute_tool_calls(self, calls, iteration):
-        # One receipt per call, in order, including malformed and cancelled calls.
-        # Repeated calls are permitted: observations and retries can be legitimate.
+        # Only tools that explicitly opt in as side-effect-free may run in
+        # parallel; the model chooses what to inspect and which calls to group.
+        concurrent = len(calls) > 1 and all(
+            call.valid
+            and call.name != "task_finish"
+            and getattr(self.tool.get_tool(call.name), "parallel_safe", False)
+            for call in calls
+        )
+        if concurrent:
+            executable = []
+            blocked = {}
+            for index, call in enumerate(calls):
+                duplicate = Loop._duplicate_observation_result(self, call)
+                if duplicate is None:
+                    executable.append((index, call))
+                else:
+                    blocked[index] = duplicate
+            for call in calls:
+                self.metrics["tool_call_attempts"] += 1
+                self._emit_event(
+                    "tool_call", name=call.name, arguments=call.args, call_id=call.id
+                )
+            executed_results = {}
+            if executable:
+                with ThreadPoolExecutor(
+                    max_workers=min(8, len(executable))
+                ) as executor:
+                    values = list(
+                        executor.map(
+                            lambda item: self.tool.execute([item[1]])["results"][0],
+                            executable,
+                        )
+                    )
+                executed_results = {
+                    index: result for (index, _call), result in zip(executable, values)
+                }
+            for index, call in enumerate(calls):
+                result = blocked.get(index) or executed_results[index]
+                Loop._record_observation_success(self, call, result)
+                self._apply_result(call, result, iteration)
+            return self._stop_event is not None and self._stop_event.is_set()
+
         for call in calls:
             self.metrics["tool_call_attempts"] += 1
-            self._emit_event("tool_call", name=call.name, arguments=call.args)
+            self._emit_event(
+                "tool_call", name=call.name, arguments=call.args, call_id=call.id
+            )
             pending = None
             if call.name == "task_finish":
                 pending = (
@@ -253,7 +399,13 @@ class Loop:
                 )
                 self.metrics["resource_blocks"] += 1
             else:
-                result = self.tool.execute([call])["results"][0]
+                duplicate = Loop._duplicate_observation_result(self, call)
+                result = (
+                    duplicate
+                    if duplicate is not None
+                    else self.tool.execute([call])["results"][0]
+                )
+            Loop._record_observation_success(self, call, result)
             self._apply_result(call, result, iteration)
             if call.name == "task_finish" and result.success:
                 self._finish_request = result.content
@@ -271,7 +423,8 @@ class Loop:
 
     def _generate_next_action(self, user_task, workspace_directory):
         self.working_set.refresh_workspace()
-        self.tool_definitions = self.tool.get_tools()
+        self.tool_definitions = self.tool.get_model_tools()
+        self.context.contextbuilder.tokenbudget.refresh(self.config)
         self.context.contextbuilder.tokenbudget.reserve_tools(self.tool_definitions)
         names = {item["function"]["name"] for item in self.tool_definitions}
         state = self.working_set.context()
@@ -284,23 +437,65 @@ class Loop:
         state["active_process_ids"] = sorted(self._active_process_ids)
         builder = self.context.contextbuilder
         builder.stop_event = self._stop_event
-        messages = self.context.get_context(
-            session_id=self.session_id,
-            user_task=user_task,
-            agent_state=self.agent_state,
-            working_set=state,
-            observation=self.working_set.observation_context(),
-            recent_actions=self.working_set.recent_actions_context(),
-            workspace_directory=workspace_directory,
-            recent_limit=self.recent_context_limit,
-            search_top_k=self.search_context_top_k,
-            available_tool_names=names,
-            include_plan=True,
-        )
+        from src.tools.builtin.browser_use.integration import interaction_messages
+
+        attachments = interaction_messages(self, names)
+
+        def build_messages():
+            return self.context.get_context(
+                session_id=self.session_id,
+                user_task=user_task,
+                agent_state=self.agent_state,
+                working_set=state,
+                observation=self.working_set.observation_context(),
+                recent_actions=self.working_set.recent_actions_context(),
+                workspace_directory=workspace_directory,
+                recent_limit=self.recent_context_limit,
+                search_top_k=self.search_context_top_k,
+                available_tool_names=names,
+                include_plan=True,
+                attachments=attachments,
+            )
+
+        try:
+            messages = build_messages()
+        except ContextBudgetError as exc:
+            # Retry context construction once with fewer complete tool schemas.
+            # Never discard the active UI tool, current screenshot or user task.
+            required = {getattr(self, "_active_ui_tool", None)} - {None}
+            if self.completion_protocol == "explicit":
+                required.add("task_finish")
+            if self._active_process_ids:
+                required.update({"process_poll", "process_stop"})
+            if self.tool.subagents.has_pending():
+                required.add("subagent")
+            reduced = self.tool.get_model_tools(
+                schema_token_budget=max(0, exc.details["schema_budget_tokens"] - 256),
+                chars_per_token=builder.tokenbudget.chars_per_token,
+                required_names=required,
+            )
+            if len(reduced) >= len(self.tool_definitions) or not any(
+                item["function"]["name"] == "tool_search" for item in reduced
+            ):
+                raise
+            before = len(self.tool_definitions)
+            self.tool_definitions = reduced
+            builder.tokenbudget.reserve_tools(reduced)
+            names = {item["function"]["name"] for item in reduced}
+            state["available_tools"] = sorted(names)
+            self._emit_event(
+                "context_tools_reduced",
+                previous_count=before,
+                active_count=len(reduced),
+                reason="schema_budget",
+                budget_details=exc.details,
+            )
+            messages = build_messages()
         estimated = builder.tokenbudget.estimate_request_tokens(messages)
         self.metrics.update(
             context_estimated_tokens=estimated,
             context_messages=len(messages),
+            context_image_tokens=builder.tokenbudget.image_tokens(messages),
             context_tool_results=sum(m.get("role") == "tool" for m in messages),
             context_read_results=sum(
                 m.get("tool_name") == "read_file" for m in messages
@@ -313,6 +508,7 @@ class Loop:
             messages=len(messages),
             tool_results=self.metrics["context_tool_results"],
             tool_schema_tokens=builder.tokenbudget.tool_tokens,
+            image_tokens=builder.tokenbudget.image_tokens(messages),
         )
         self.metrics["llm_calls"] += 1
         result = invoke(
@@ -324,8 +520,14 @@ class Loop:
         )
         if not isinstance(result, LLMResult):
             raise TypeError("Provider must return LLMResult")
+        self.context.record_delivery(self.session_id)
         self.metrics["tokens"] += max(0, int(result.usage or 0))
         self.context.calibrate(result)
+        if not result.tool_calls and not str(result.response or "").strip():
+            raise RecoverableGenerationError(
+                "Provider returned no text or tool calls",
+                recovery_hint="The previous generation contained no usable answer or tool call. No action was executed. Continue with a valid tool call or a user-visible response.",
+            )
         return result
 
     def _finish(self, result, completed, reason="", outcome=None, evidence=None):
@@ -375,7 +577,7 @@ class Loop:
     ):
         if not isinstance(user_task, ContextEvent):
             raise TypeError("user_task must be a ContextEvent")
-        self.tool.close()
+        self.tool.finish_run()
         self._reset_run_state()
         self._stop_event = stop_event if stop_event is not None else Event()
         self._event_sink = event_sink
@@ -403,7 +605,34 @@ class Loop:
                     raise InterruptedError("Interrupted by user")
                 self._consume_steering()
                 self._emit_event("iteration_start", max_iterations=self.max_iterations)
-                result = self._generate_next_action(user_task, directory)
+                try:
+                    result = self._generate_next_action(user_task, directory)
+                except RecoverableGenerationError as exc:
+                    if self._stop_event.is_set():
+                        raise InterruptedError("Interrupted by user") from exc
+                    self.metrics["generation_failures"] += 1
+                    if (
+                        self.metrics["generation_retries"]
+                        >= self.max_generation_retries
+                    ):
+                        raise RecoverableGenerationError(
+                            f"{exc} Recovery limit ({self.max_generation_retries}) exhausted.",
+                            recovery_hint=exc.recovery_hint,
+                        ) from exc
+                    self.metrics["generation_retries"] += 1
+                    hint = exc.recovery_hint or (
+                        "The previous generation was discarded before any tool call was executed. "
+                        "Continue with a smaller response and smaller tool calls."
+                    )
+                    self._store_nudge(hint)
+                    self._emit_event(
+                        "generation_retry",
+                        reason=str(exc),
+                        attempt=self.metrics["generation_retries"],
+                        max_attempts=self.max_generation_retries,
+                        recovery_hint=hint,
+                    )
+                    continue
                 if self._stop_event.is_set():
                     raise InterruptedError("Interrupted by user")
                 if result.tool_calls:
@@ -444,10 +673,11 @@ class Loop:
         except InterruptedError as exc:
             return self._stopped_result(str(exc))
         except Exception as exc:
-            self.metrics["generation_failures"] += 1
+            if not isinstance(exc, RecoverableGenerationError):
+                self.metrics["generation_failures"] += 1
             return self._stopped_result(f"{type(exc).__name__}: {exc}")
         finally:
-            self.tool.close()
+            self.tool.finish_run()
 
     def set_workspace(self, workspace_directory):
         self.tool.set_workspace(workspace_directory)
@@ -466,5 +696,7 @@ class Loop:
         )
 
     def close(self):
-        self.tool.close()
-        self.stm.close()
+        try:
+            self.tool.close()
+        finally:
+            self.stm.close()

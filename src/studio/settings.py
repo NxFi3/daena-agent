@@ -3,7 +3,7 @@
 from __future__ import annotations
 from copy import deepcopy
 import json
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -36,11 +36,14 @@ from src.studio.profiles import (
 class SettingsPanel(QWidget):
     applied = Signal(dict)
     error = Signal(str)
+    voice_requested = Signal()
 
     def __init__(self, config):
         super().__init__()
         self.config = deepcopy(config)
         self._syncing = False
+        self._runtime_busy = False
+        self._voice_widget = None
         root = QVBoxLayout(self)
         root.setSpacing(16)
         title = QLabel("Workspace settings")
@@ -60,7 +63,9 @@ class SettingsPanel(QWidget):
                 "Context & memory",
                 "Delegation & skills",
                 "Tool permissions",
+                "MCP Servers",
                 "Advanced profile",
+                "Voice",
             ]
         )
         self.sections.setFixedWidth(210)
@@ -138,6 +143,12 @@ class SettingsPanel(QWidget):
         self.reserve = QSpinBox()
         self.reserve.setRange(0, 131072)
         self.reserve.setSingleStep(1024)
+        self.image_reserve = QSpinBox()
+        self.image_reserve.setRange(128, 32768)
+        self.image_reserve.setSingleStep(512)
+        self.image_reserve.setToolTip(
+            "Estimated tokens reserved per screenshot before fitting conversation history. Actual image costs depend on the model."
+        )
         self.summary = QSpinBox()
         self.summary.setRange(128, 32768)
         self.summary.setSingleStep(256)
@@ -150,6 +161,7 @@ class SettingsPanel(QWidget):
         for label, widget in [
             ("Prompt budget", self.context),
             ("Output reserve", self.reserve),
+            ("Tokens per screenshot · estimate", self.image_reserve),
             ("Recent events", self.recent),
             ("Summary target", self.summary),
             ("Iteration limit", self.iterations),
@@ -192,7 +204,7 @@ class SettingsPanel(QWidget):
         title = QLabel("Tool permissions")
         title.setObjectName("sectionTitle")
         t.addWidget(title)
-        self.network = QCheckBox("Allow web search and web fetch")
+        self.network = QCheckBox("Allow web search, web fetch and browser control")
         self.background = QCheckBox("Allow managed background processes")
         self.workspace_only = QCheckBox("Keep file tools inside the workspace")
         for widget in (self.network, self.background, self.workspace_only):
@@ -200,7 +212,46 @@ class SettingsPanel(QWidget):
         self.scope_editor = ToolScopeEditor()
         self.tools = self.scope_editor.list
         t.addWidget(self.scope_editor)
+        browser_title = QLabel("Browser")
+        browser_title.setObjectName("sectionTitle")
+        t.addWidget(browser_title)
+        browser_form = QFormLayout()
+        self.browser_headless = QCheckBox("Run without a visible browser window")
+        self.browser_executable = QLineEdit()
+        self.browser_executable.setPlaceholderText("Blank: Playwright Chromium")
+        self.browser_cdp = QLineEdit()
+        self.browser_cdp.setPlaceholderText("Optional: http://localhost:9222")
+        browser_form.addRow(self.browser_headless)
+        browser_form.addRow("Chromium executable", self.browser_executable)
+        browser_form.addRow("Connect to existing browser · CDP", self.browser_cdp)
+        t.addLayout(browser_form)
+        browser_note = QLabel(
+            "Install the browser extra and run: python -m playwright install chromium. Blank CDP uses a separate browser profile for this conversation."
+        )
+        browser_note.setWordWrap(True)
+        browser_note.setObjectName("muted")
+        t.addWidget(browser_note)
         self.pages.addWidget(tools)
+
+        _, mcp_form = self.page(
+            "MCP Servers",
+            "Configure trusted, already-installed MCP stdio servers. "
+            "Each enabled command runs with your OS user permissions. "
+            "Save settings and restart Daena to discover its tools.",
+        )
+        self.mcp_servers = QPlainTextEdit()
+        self.mcp_servers.setPlaceholderText(
+            '{"example": {"enabled": false, "command": ["python", "-m", "server"]}}'
+        )
+        self.mcp_servers.setMinimumHeight(260)
+        mcp_form.addRow("Servers · JSON", self.mcp_servers)
+        mcp_notice = QLabel(
+            "Only enable commands you installed and trust. "
+            "MCP tools use the normal tool search catalog. "
+            "Network permissions apply. Editing does not install packages."
+        )
+        mcp_notice.setWordWrap(True)
+        mcp_form.addRow(mcp_notice)
 
         advanced = QWidget()
         a = QVBoxLayout(advanced)
@@ -223,15 +274,41 @@ class SettingsPanel(QWidget):
         row.addWidget(use)
         a.addLayout(row)
         self.pages.addWidget(advanced)
+        # Voice preferences belong to a separate client configuration, not the
+        # Agent profile. Construct its model/device controls only on demand.
+        self.voice_index = self.pages.count()
+        self.voice_page = QWidget()
+        self.voice_layout = QVBoxLayout(self.voice_page)
+        self.voice_layout.setContentsMargins(24, 10, 24, 24)
+        self.voice_layout.setSpacing(16)
+        voice_title = QLabel("Voice settings")
+        voice_title.setObjectName("sectionTitle")
+        self.voice_layout.addWidget(voice_title)
+        self.voice_hint = QLabel(
+            "Choose local speech models, voices, audio devices and acoustic perception. "
+            "Voice preferences save separately for this workspace and remain available while the Agent works."
+        )
+        self.voice_hint.setWordWrap(True)
+        self.voice_hint.setObjectName("muted")
+        self.voice_layout.addWidget(self.voice_hint)
+        self.voice_placeholder = QWidget()
+        placeholder = QVBoxLayout(self.voice_placeholder)
+        placeholder.setContentsMargins(0, 0, 0, 0)
+        self.open_voice_button = QPushButton("Open voice settings")
+        self.open_voice_button.clicked.connect(self.voice_requested)
+        placeholder.addWidget(self.open_voice_button)
+        placeholder.addStretch()
+        self.voice_layout.addWidget(self.voice_placeholder, 1)
+        self.pages.addWidget(self.voice_page)
         bottom = QHBoxLayout()
         self.notice = QLabel("Changes apply on the next turn.")
         self.notice.setObjectName("muted")
         bottom.addWidget(self.notice)
         bottom.addStretch()
-        apply = QPushButton("Save workspace settings")
-        apply.setObjectName("primary")
-        apply.clicked.connect(self.apply_form)
-        bottom.addWidget(apply)
+        self.apply_button = QPushButton("Save workspace settings")
+        self.apply_button.setObjectName("primary")
+        self.apply_button.clicked.connect(self.apply_form)
+        bottom.addWidget(self.apply_button)
         root.addLayout(bottom)
         self.provider.currentTextChanged.connect(self.change_provider)
         self.generation.textChanged.connect(self.sync_generation_controls)
@@ -243,6 +320,7 @@ class SettingsPanel(QWidget):
         ):
             signal.connect(self.update_generation)
         self.populate(config)
+        self.sections.currentRowChanged.connect(self._section_changed)
         self.sections.setCurrentRow(0)
 
     def page(self, title, description):
@@ -273,6 +351,61 @@ class SettingsPanel(QWidget):
     def show_section(self, index):
         self.sections.setCurrentRow(index)
 
+    def show_voice(self):
+        """Navigate without constructing audio devices or speech models here."""
+        if self.sections.currentRow() == self.voice_index:
+            self._request_voice()
+        else:
+            self.show_section(self.voice_index)
+
+    def _request_voice(self):
+        if self._voice_widget is None:
+            self.voice_requested.emit()
+
+    def _section_changed(self, index):
+        voice = index == self.voice_index
+        self.apply_button.setVisible(not voice)
+        if voice:
+            self.notice.setText(
+                "Voice preferences save separately from the Agent profile."
+            )
+            self._request_voice()
+        else:
+            self.notice.setText(
+                "Agent running · workspace controls are locked; Voice settings remain available."
+                if self._runtime_busy
+                else "Changes apply on the next turn."
+            )
+
+    def mount_voice_settings(self, widget):
+        """Host the controller's canonical configuration widget, without copying it.
+
+        The owner retains configuration/lifecycle responsibility. Repeated calls
+        with the same widget are harmless; replacing a widget detaches the old
+        one rather than deleting a live controller-owned client.
+        """
+        if widget is self._voice_widget:
+            return
+        if not isinstance(widget, QWidget):
+            raise TypeError("Voice settings must be a QWidget")
+        if self._voice_widget is not None:
+            self.voice_layout.removeWidget(self._voice_widget)
+            self._voice_widget.hide()
+            self._voice_widget.setParent(None)
+        self.voice_placeholder.hide()
+        widget.setParent(self.voice_page, Qt.Widget)
+        self.voice_layout.addWidget(widget, 1)
+        self._voice_widget = widget
+        widget.show()
+
+    def set_runtime_busy(self, busy):
+        """Lock runtime mutation without disabling navigation or Voice controls."""
+        self._runtime_busy = bool(busy)
+        for index in range(self.voice_index):
+            self.pages.widget(index).setEnabled(not busy)
+        self.apply_button.setEnabled(not busy)
+        self._section_changed(self.sections.currentRow())
+
     def change_provider(self, provider):
         if self._syncing:
             return
@@ -300,6 +433,7 @@ class SettingsPanel(QWidget):
         self.context.setValue(c.get("max_prompt_tokens", 24000))
         self.recent.setValue(c.get("recent_event_limit", 80))
         self.reserve.setValue(c.get("output_reserve_tokens", 4096))
+        self.image_reserve.setValue(c.get("image_token_reserve", 4096))
         self.summary.setValue(c.get("compaction_target_tokens", 2048))
         self.iterations.setValue(config.get("max_agent_iterations", 100))
         self.protocol.setCurrentIndex(
@@ -324,6 +458,13 @@ class SettingsPanel(QWidget):
         self.background.setChecked(policy.allow_background)
         self.workspace_only.setChecked(policy.workspace_only)
         self.scope_editor.set_scope(policy.allowed_tools)
+        browser = config.get("browser", {})
+        self.browser_headless.setChecked(browser.get("headless", False))
+        self.browser_executable.setText(browser.get("executable_path", ""))
+        self.browser_cdp.setText(browser.get("cdp_url", ""))
+        self.mcp_servers.setPlainText(
+            json.dumps(config.get("mcp", {}).get("servers", {}), indent=2)
+        )
         self._syncing = False
         self.sync_generation_controls()
 
@@ -407,6 +548,7 @@ class SettingsPanel(QWidget):
             max_prompt_tokens=self.context.value(),
             recent_event_limit=self.recent.value(),
             output_reserve_tokens=self.reserve.value(),
+            image_token_reserve=self.image_reserve.value(),
             compaction_target_tokens=self.summary.value(),
             compaction_enabled=self.compact.isChecked(),
         )
@@ -430,9 +572,36 @@ class SettingsPanel(QWidget):
             workspace_only=self.workspace_only.isChecked(),
             allowed_tools=self.scope_editor.scope(),
         )
+        result.setdefault("browser", {}).update(
+            headless=self.browser_headless.isChecked(),
+            executable_path=self.browser_executable.text().strip(),
+            cdp_url=self.browser_cdp.text().strip(),
+        )
+        servers = json.loads(self.mcp_servers.toPlainText() or "{}")
+        if not isinstance(servers, dict):
+            raise ValueError("MCP Servers must be a JSON object")
+        from src.tools.mcp_stdio import configured_servers
+
+        configured_servers({"mcp": {"servers": servers}})
+        result.setdefault("mcp", {})["servers"] = servers
+        # Studio saves an explicit tool scope. Enable only the MCP namespaces
+        # for servers that the user explicitly opted into.
+        scope = set(result["security"]["allowed_tools"])
+        scope = {name for name in scope if not name.startswith("mcp_")}
+        scope.update(
+            f"mcp_{name}_*"
+            for name, server in servers.items()
+            if isinstance(server, dict) and server.get("enabled", False)
+        )
+        result["security"]["allowed_tools"] = sorted(scope)
         return validate_config(result)
 
     def apply_form(self):
+        if self._runtime_busy:
+            self.error.emit(
+                "Wait for the Agent to finish before changing its workspace profile."
+            )
+            return
         try:
             self.applied.emit(self.value())
             self.notice.setText("Workspace settings saved.")
@@ -448,6 +617,11 @@ class SettingsPanel(QWidget):
             self.error.emit(str(exc))
 
     def apply_advanced(self):
+        if self._runtime_busy:
+            self.error.emit(
+                "Wait for the Agent to finish before changing its workspace profile."
+            )
+            return
         try:
             value = validate_config(json.loads(self.advanced.toPlainText()))
             self.populate(value)

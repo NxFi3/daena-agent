@@ -99,6 +99,18 @@ class STM:
 
         return self.db.count(session_id)
 
+    def get_recent_complete(self, session_id, limit=40):
+        return self.db.get_recent_complete(session_id, limit)
+
+    def get_session_revision(self, session_id):
+        return self.db.get_session_revision(session_id)
+
+    def record_file_reads(self, session_id, receipts):
+        self.db.record_file_reads(session_id, receipts)
+
+    def get_file_reads(self, session_id, limit=32):
+        return self.db.get_file_reads(session_id, limit)
+
     def get_checkpoint(self, session_id):
         return self.db.get_checkpoint(session_id)
 

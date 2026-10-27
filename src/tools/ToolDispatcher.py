@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from typing import Any
 from uuid import uuid4
@@ -10,7 +11,6 @@ from src.utils.logger import get_logger
 
 
 class ToolDispatcher:
-
     ARGUMENT_ALIASES: dict[str, dict[str, str]] = {
         "read_file": {
             "line_start": "start_line",
@@ -125,13 +125,39 @@ class ToolDispatcher:
                     )
 
             schema = getattr(tool, "parameters", {}) or {}
+            # Some providers double-encode structured values inside arguments.
+            # Decode only containers explicitly required by the tool schema;
+            # never infer actions, coordinates, strings, or numeric intent.
+            arguments = dict(arguments)
+            for key, spec in schema.get("properties", {}).items():
+                if not isinstance(spec, dict):
+                    continue
+                value = arguments.get(key)
+                expected = spec.get("type")
+                if isinstance(value, str) and expected in ("array", "object"):
+                    try:
+                        decoded = json.loads(value)
+                    except (ValueError, TypeError):
+                        continue
+                    if (expected == "array" and isinstance(decoded, list)) or (
+                        expected == "object" and isinstance(decoded, dict)
+                    ):
+                        arguments[key] = decoded
+                        normalization_notes.append(
+                            f"Decoded JSON {expected} argument: {key}."
+                        )
             properties = schema.get("properties", {})
             if not isinstance(properties, dict):
                 properties = {}
 
             unknown = sorted(
-                key for key in arguments.keys()
+                key
+                for key in arguments.keys()
                 if key not in properties
+                and not any(
+                    re.search(pattern, key)
+                    for pattern in schema.get("patternProperties", {})
+                )
             )
             if unknown and schema.get("additionalProperties", True) is False:
                 repaired = self._repair_misrouted_tool(name, arguments)
@@ -157,24 +183,13 @@ class ToolDispatcher:
                         normalization_notes=normalization_notes,
                     )
 
-            if unknown:
-                self.logger.warning(
-                    f"Dropped unknown args for '{name}': {unknown}. "
-                    f"Allowed: {sorted(properties.keys())}"
-                )
-                arguments = {
-                    key: value
-                    for key, value in arguments.items()
-                    if key in properties
-                }
+            # additionalProperties defaults to true in JSON Schema. Preserve
+            # these values for adapters and patternProperties validation instead
+            # of silently changing the request before the tool sees it.
 
             required = schema.get("required", [])
             if isinstance(required, list):
-                missing = [
-                    str(key)
-                    for key in required
-                    if str(key) not in arguments
-                ]
+                missing = [str(key) for key in required if str(key) not in arguments]
                 if missing:
                     return ToolCall(
                         name=name,
@@ -188,6 +203,17 @@ class ToolDispatcher:
                         ),
                         normalization_notes=normalization_notes,
                     )
+
+            schema_error = self._schema_validation_error(schema, arguments)
+            if schema_error:
+                return ToolCall(
+                    name=name,
+                    id=call_id,
+                    args=arguments,
+                    valid=False,
+                    validation_error=schema_error,
+                    normalization_notes=normalization_notes,
+                )
 
             validate = getattr(tool, "validate", None)
             if callable(validate):
@@ -231,8 +257,7 @@ class ToolDispatcher:
                         target = str(description.get("target", "")).strip()
                 except Exception:
                     action = (
-                        str(getattr(tool, "action", "execute")).strip()
-                        or "execute"
+                        str(getattr(tool, "action", "execute")).strip() or "execute"
                     )
 
             return ToolCall(
@@ -261,6 +286,7 @@ class ToolDispatcher:
         normalized = str(name).strip().lower().strip("`'\"")
         normalized = normalized.rstrip("?!")
         return normalized
+
     @classmethod
     def _apply_aliases(
         cls,
@@ -343,6 +369,134 @@ class ToolDispatcher:
             candidate_args,
             f"Tool name repaired from {current_name!r} to {candidate_name!r} based on the argument schema.",
         )
+
+    @staticmethod
+    def _schema_validation_error(
+        schema: dict[str, Any],
+        arguments: dict[str, Any],
+    ) -> str | None:
+        """Validate the small JSON-Schema subset used by built-in tools.
+
+        Provider/native tool-call layers do not consistently enforce constraints
+        such as minItems. Reject malformed calls before they reach tool execution
+        so a bad model emission cannot create a misleading started/failed tool
+        lifecycle.
+        """
+        if not isinstance(arguments, Mapping):
+            return "Tool arguments must be a JSON object."
+        properties = schema.get("properties", {})
+        if not isinstance(properties, dict):
+            properties = {}
+
+        def type_matches(value: Any, expected: str) -> bool:
+            if expected == "string":
+                return isinstance(value, str)
+            if expected == "array":
+                return isinstance(value, list)
+            if expected == "object":
+                return isinstance(value, Mapping)
+            if expected == "integer":
+                return isinstance(value, int) and not isinstance(value, bool)
+            if expected == "number":
+                return isinstance(value, (int, float)) and not isinstance(value, bool)
+            if expected == "boolean":
+                return isinstance(value, bool)
+            if expected == "null":
+                return value is None
+            return True
+
+        for key, value in arguments.items():
+            item_schema = properties.get(key)
+            if not isinstance(item_schema, dict):
+                continue
+
+            expected = item_schema.get("type")
+            expected_types = (
+                [expected]
+                if isinstance(expected, str)
+                else expected
+                if isinstance(expected, list)
+                else []
+            )
+            if expected_types and not any(
+                isinstance(item, str) and type_matches(value, item)
+                for item in expected_types
+            ):
+                return (
+                    f"Argument '{key}' has the wrong type. "
+                    f"Expected {expected_types}, got {type(value).__name__}."
+                )
+
+            enum = item_schema.get("enum")
+            if isinstance(enum, list) and value not in enum:
+                return (
+                    f"Argument '{key}' must be one of: "
+                    + ", ".join(repr(item) for item in enum)
+                    + ". "
+                    + str(item_schema.get("description", ""))[:700]
+                )
+
+            if isinstance(value, list):
+                minimum = item_schema.get("minItems")
+                maximum = item_schema.get("maxItems")
+                if isinstance(minimum, int) and len(value) < minimum:
+                    return f"Argument '{key}' must contain at least {minimum} item(s)."
+                if isinstance(maximum, int) and len(value) > maximum:
+                    return f"Argument '{key}' must contain at most {maximum} item(s)."
+
+                child_schema = item_schema.get("items")
+                if isinstance(child_schema, dict):
+                    child_type = child_schema.get("type")
+                    if isinstance(child_type, str):
+                        for index, item in enumerate(value):
+                            if not type_matches(item, child_type):
+                                return (
+                                    f"Argument '{key}[{index}]' has the wrong "
+                                    f"type. Expected {child_type}."
+                                )
+
+            if isinstance(value, str):
+                minimum = item_schema.get("minLength")
+                maximum = item_schema.get("maxLength")
+                if isinstance(minimum, int) and len(value) < minimum:
+                    return (
+                        f"Argument '{key}' must contain at least "
+                        f"{minimum} character(s)."
+                    )
+                if isinstance(maximum, int) and len(value) > maximum:
+                    return (
+                        f"Argument '{key}' must contain at most {maximum} character(s)."
+                    )
+
+        # The concise diagnostics above preserve familiar built-in errors. The
+        # complete schema still owns nested objects, unions, references, numeric
+        # bounds and conditional constraints used by external tool adapters.
+        from jsonschema.validators import validator_for
+        from referencing import Registry
+        from referencing.exceptions import NoSuchResource
+
+        try:
+            json.dumps(arguments, allow_nan=False)
+        except (TypeError, ValueError, OverflowError):
+            return "Tool arguments must contain only JSON values and finite numbers."
+
+        def reject_remote(uri):
+            raise NoSuchResource(ref=uri)
+
+        try:
+            validator_type = validator_for(schema)
+            validator_type.check_schema(schema)
+            validator = validator_type(
+                schema, registry=Registry(retrieve=reject_remote)
+            )
+            error = next(validator.iter_errors(arguments), None)
+        except Exception as exc:
+            return f"Tool schema could not be validated locally: {type(exc).__name__}."
+        if error is not None:
+            path = ".".join(str(part) for part in error.absolute_path) or "arguments"
+            return f"Argument '{path}' violates the tool schema: {error.message}"
+        return None
+
     @staticmethod
     def _normalize_call_id(raw_id: Any) -> str:
         if raw_id is None:

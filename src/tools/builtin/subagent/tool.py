@@ -10,6 +10,8 @@ class Subagent(Tool):
     allow_same_revision_repeat = True
     subagent_manager = None
     description = (
+        "Live coordination: message sends to a running child without stopping it; "
+        "inbox collects messages sent by children to the parent. "
         "Delegate a self-contained task to an independent agent using the same model. "
         "spawn returns agent_id immediately. read_only mode permits reading, skills and allowed web tools. "
         "worker mode edits an isolated workspace copy and can run alongside other workers. "
@@ -32,6 +34,8 @@ class Subagent(Tool):
                     "diff",
                     "merge",
                     "discard",
+                    "message",
+                    "inbox",
                 ],
             },
             "task": {
@@ -50,6 +54,8 @@ class Subagent(Tool):
                 "type": "string",
                 "description": "Required for status, wait, cancel, diff, merge and discard.",
             },
+            "text": {"type": "string", "maxLength": 4000, "description": "Live message content."},
+            "recipient": {"type": "string", "description": "Child agent_id for message."},
             "wait_ms": {
                 "type": "integer",
                 "minimum": 0,
@@ -71,6 +77,8 @@ class Subagent(Tool):
         name: str = "",
         context: str = "",
         allowed_tools: list | None = None,
+        text: str = "",
+        recipient: str = "",
     ) -> ToolResult:
         manager = self.subagent_manager
         if action == "spawn":
@@ -95,6 +103,10 @@ class Subagent(Tool):
             result = manager.wait_all(wait_ms)
         elif action == "cancel":
             result = manager.cancel(agent_id)
+        elif action == "message":
+            result = manager.send_message(sender="parent", recipient=recipient or agent_id, text=text)
+        elif action == "inbox":
+            result = {"messages": manager.inbox("parent")}
         elif action == "diff":
             result = manager.diff(agent_id)
         elif action in {"merge", "discard"}:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import atexit
+import codecs
 import errno
 import os
 import signal
@@ -11,6 +12,33 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO
+
+
+class _OutputSpool:
+    """Independent file descriptions: reading must never seek the child's writer."""
+
+    def __init__(self):
+        self._directory = tempfile.TemporaryDirectory(prefix="daena-process-")
+        path = Path(self._directory.name) / "output"
+        self._writer = path.open("w+b", buffering=0)
+        self._reader = path.open("rb", buffering=0)
+
+    def __getattr__(self, name):
+        return getattr(self._writer, name)
+
+    def read_at(self, offset, size):
+        self._reader.seek(offset)
+        return self._reader.read(size)
+
+    def close(self):
+        try:
+            self._reader.close()
+            self._writer.close()
+        finally:
+            self._directory.cleanup()
+
+    def __del__(self):
+        self.close()
 
 
 @dataclass
@@ -30,11 +58,9 @@ class ManagedProcess:
     pty_master_fd: int | None = None
     pty_reader_thread: threading.Thread | None = None
     output_lock: threading.Lock = field(default_factory=threading.Lock)
+    write_lock: threading.Lock = field(default_factory=threading.Lock)
     status: str = "running"
     exit_code: int | None = None
-
-
-
 
 
 def _set_parent_death_signal() -> None:
@@ -67,6 +93,7 @@ class ProcessManager:
     """
 
     MAX_RETAINED_FINISHED = 64
+    STDIN_WRITE_TIMEOUT = 10.0
 
     def __init__(self) -> None:
         self.stop_event = None
@@ -110,7 +137,10 @@ class ProcessManager:
             )
             if existing is not None:
                 self._refresh_locked(existing)
-                if existing.status != "running" and existing.pty_reader_thread is not None:
+                if (
+                    existing.status != "running"
+                    and existing.pty_reader_thread is not None
+                ):
                     existing.pty_reader_thread.join(timeout=1.0)
                 output = self._read_incremental(existing, max_output_chars)
                 return {
@@ -127,8 +157,8 @@ class ProcessManager:
                 background=background,
             )
 
-        stdout_file = tempfile.TemporaryFile(mode="w+b")
-        stderr_file = tempfile.TemporaryFile(mode="w+b")
+        stdout_file = _OutputSpool()
+        stderr_file = _OutputSpool()
 
         try:
             process = self._spawn(
@@ -146,34 +176,6 @@ class ProcessManager:
         started = time.perf_counter()
 
         self._wait_process(process, yield_time_ms)
-
-        if process.poll() is not None:
-            entry = ManagedProcess(
-                process_id="",
-                command=list(command),
-                workdir=workdir,
-                process=process,
-                stdout_file=stdout_file,
-                stderr_file=stderr_file,
-                started_at=started,
-                pipe_stdin=pipe_stdin,
-                background=background,
-                status="exited",
-                exit_code=process.returncode,
-            )
-            output = self._read_incremental(entry, max_output_chars)
-            stdout_file.close()
-            stderr_file.close()
-            return {
-                "status": "exited",
-                "process_id": None,
-                "pid": process.pid,
-                "exit_code": process.returncode,
-                "background": background,
-                "stdout": output["stdout"],
-                "stderr": output["stderr"],
-                "duration_ms": self._duration_ms(started),
-            }
 
         process_id = f"proc-{os.urandom(6).hex()}"
 
@@ -201,17 +203,14 @@ class ProcessManager:
             output = self._read_incremental(entry, max_output_chars)
             self._prune_finished_locked()
 
-        return {
-            "status": entry.status,
-            "command": list(entry.command),
-            "workdir": str(entry.workdir) if entry.workdir is not None else None,
-            "process_id": entry.process_id,
-            "pid": entry.process.pid,
-            "exit_code": entry.exit_code,
-            "stdout": output["stdout"],
-            "stderr": output["stderr"],
-            "duration_ms": self._duration_ms(started),
-        }
+        result = self._entry_result(entry, output)
+        if entry.status != "running" and not result["output_pending"]:
+            with self._lock:
+                self._processes.pop(entry.process_id, None)
+            stdout_file.close()
+            stderr_file.close()
+            result["process_id"] = None
+        return result
 
     def poll(
         self,
@@ -242,7 +241,9 @@ class ProcessManager:
                 if output["stdout"] or output["stderr"]:
                     return self._entry_result(entry, output)
 
-            if time.perf_counter() >= deadline or (self.stop_event is not None and self.stop_event.is_set()):
+            if time.perf_counter() >= deadline or (
+                self.stop_event is not None and self.stop_event.is_set()
+            ):
                 with self._lock:
                     entry = self._processes.get(process_id)
                     if entry is None:
@@ -257,24 +258,24 @@ class ProcessManager:
 
             time.sleep(min(0.05, max(0.0, deadline - time.perf_counter())))
 
-    def write(
-        self,
-        *,
-        process_id: str,
-        input_text: str,
-    ) -> dict:
+    def write(self, *, process_id: str, input_text: str) -> dict:
+        """Bounded input delivery without holding the lifecycle lock over I/O.
+
+        Pipes and PTYs may block when the child is not reading. A dedicated
+        writer owns a duplicate descriptor; stop/poll remain available. On a
+        timeout or cancellation, terminate the child before returning so an
+        abandoned write cannot later become an unintended command.
+        """
+        payload = input_text.encode("utf-8")
         with self._lock:
             entry = self._processes.get(process_id)
-
             if entry is None:
                 return {
                     "status": "unknown",
                     "process_id": process_id,
                     "error": "Unknown process_id.",
                 }
-
             self._refresh_locked(entry)
-
             if entry.status != "running":
                 return {
                     "status": entry.status,
@@ -282,58 +283,99 @@ class ProcessManager:
                     "error": "Process is not running.",
                     "exit_code": entry.exit_code,
                 }
+            if self.stop_event is not None and self.stop_event.is_set():
+                return {
+                    "status": "cancelled",
+                    "process_id": process_id,
+                    "delivery": "not_sent",
+                    "bytes_written": 0,
+                    "error": "Input cancelled before dispatch.",
+                }
+            if not entry.write_lock.acquire(blocking=False):
+                return {
+                    "status": "busy",
+                    "process_id": process_id,
+                    "delivery": "not_sent",
+                    "bytes_written": 0,
+                    "error": "A previous stdin write is still finishing.",
+                }
+            try:
+                source = (
+                    entry.pty_master_fd
+                    if entry.tty
+                    else (
+                        entry.process.stdin.fileno()
+                        if entry.process.stdin is not None
+                        else None
+                    )
+                )
+                if source is None:
+                    raise OSError("Process input is no longer writable.")
+                fd = os.dup(source)
+            except (OSError, ValueError) as exc:
+                entry.write_lock.release()
+                return {
+                    "status": "failed",
+                    "process_id": process_id,
+                    "delivery": "not_sent",
+                    "bytes_written": 0,
+                    "error": str(exc),
+                }
 
-            if entry.tty:
-                master_fd = entry.pty_master_fd
-                if master_fd is None:
-                    return {
-                        "status": entry.status if entry.status != "running" else "failed",
-                        "process_id": process_id,
-                        "error": "PTY input is no longer writable.",
-                        "exit_code": entry.exit_code,
-                    }
+        done, abort = threading.Event(), threading.Event()
+        state = {"written": 0, "error": None}
 
-                try:
-                    payload = input_text.encode("utf-8")
-                    total = 0
-                    while total < len(payload):
-                        written = os.write(master_fd, payload[total:])
-                        if written <= 0:
-                            raise OSError("PTY write returned no progress.")
-                        total += written
-                except (BrokenPipeError, OSError) as exc:
-                    self._refresh_locked(entry)
-                    return {
-                        "status": entry.status if entry.status != "running" else "failed",
-                        "process_id": process_id,
-                        "error": str(exc),
-                        "exit_code": entry.exit_code,
-                    }
+        def deliver():
+            try:
+                while state["written"] < len(payload) and not abort.is_set():
+                    offset = state["written"]
+                    count = os.write(fd, payload[offset : offset + 4096])
+                    if count <= 0:
+                        raise OSError("Input write returned no progress.")
+                    state["written"] += count
+            except OSError as exc:
+                state["error"] = str(exc)
+            finally:
+                os.close(fd)
+                entry.write_lock.release()
+                done.set()
 
-            else:
-                if entry.process.stdin is None:
-                    return {
-                        "status": "failed",
-                        "process_id": process_id,
-                        "error": "Process stdin is not writable.",
-                    }
-
-                try:
-                    entry.process.stdin.write(input_text.encode("utf-8"))
-                    entry.process.stdin.flush()
-                except (BrokenPipeError, OSError) as exc:
-                    self._refresh_locked(entry)
-                    return {
-                        "status": entry.status if entry.status != "running" else "failed",
-                        "process_id": process_id,
-                        "error": str(exc),
-                        "exit_code": entry.exit_code,
-                    }
-
+        writer = threading.Thread(target=deliver, name="daena-stdin", daemon=True)
+        try:
+            writer.start()
+        except Exception:
+            os.close(fd)
+            entry.write_lock.release()
+            raise
+        deadline = time.monotonic() + self.STDIN_WRITE_TIMEOUT
+        outcome = None
+        while not done.wait(0.025):
+            cancelled = self.stop_event is not None and self.stop_event.is_set()
+            if cancelled or time.monotonic() >= deadline:
+                outcome = "cancelled" if cancelled else "timed_out"
+                abort.set()
+                self._terminate_process_tree(entry.process)
+                done.wait(1.0)
+                break
+        written = state["written"]
+        if outcome is not None or state["error"] is not None:
             return {
-                "status": "accepted",
+                "status": outcome or "failed",
                 "process_id": process_id,
+                "bytes_written": written,
+                "bytes_requested": len(payload),
+                "delivery": "partial_or_unknown"
+                if written or not done.is_set()
+                else "not_sent",
+                "error": state["error"]
+                or "Input delivery stopped; the child was terminated. Do not blindly resend partial input.",
             }
+        return {
+            "status": "accepted",
+            "process_id": process_id,
+            "bytes_written": written,
+            "delivery": "complete",
+        }
 
     def stop(
         self,
@@ -363,7 +405,7 @@ class ProcessManager:
 
             return self._entry_result(entry, output)
 
-    def close(self) -> None:
+    def close(self, *, discard_output: bool = False) -> None:
         with self._lock:
             for entry in list(self._processes.values()):
                 if entry.status == "running":
@@ -371,6 +413,16 @@ class ProcessManager:
                     self._refresh_locked(entry)
 
             self._prune_finished_locked()
+            if discard_output:
+                for entry in self._processes.values():
+                    if entry.pty_reader_thread is not None:
+                        entry.pty_reader_thread.join(timeout=1.0)
+                    self._close_pty_master(entry)
+                    with entry.output_lock:
+                        entry.stdout_file.close()
+                        entry.stderr_file.close()
+                    if entry.process.stdin is not None:
+                        entry.process.stdin.close()
 
     def _start_tty(
         self,
@@ -391,8 +443,8 @@ class ProcessManager:
         import termios
 
         master_fd, slave_fd = pty.openpty()
-        stdout_file = tempfile.TemporaryFile(mode="w+b")
-        stderr_file = tempfile.TemporaryFile(mode="w+b")
+        stdout_file = _OutputSpool()
+        stderr_file = _OutputSpool()
 
         def configure_tty_child() -> None:
             _set_parent_death_signal()
@@ -542,6 +594,7 @@ class ProcessManager:
     ) -> ManagedProcess | None:
         normalized_workdir = str(workdir) if workdir is not None else None
         for entry in self._processes.values():
+            self._refresh_locked(entry)
             if entry.status != "running":
                 continue
             if entry.command != list(command):
@@ -577,12 +630,38 @@ class ProcessManager:
         file: IO[bytes],
         offset: int,
         max_bytes: int,
+        *,
+        finished: bool = False,
     ) -> tuple[str, int]:
-        file.seek(offset)
-        data = file.read(max_bytes)
-        new_offset = file.tell()
+        if file.closed:
+            return "", offset
+        size = max(4, max_bytes)
+        if isinstance(file, _OutputSpool):
+            data = file.read_at(offset, size)
+        elif hasattr(os, "pread"):
+            data = os.pread(file.fileno(), size, offset)
+        else:
+            cursor = file.tell()
+            try:
+                file.seek(offset)
+                data = file.read(size)
+            finally:
+                file.seek(cursor)
+        final = finished and offset + len(data) >= os.fstat(file.fileno()).st_size
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        text = decoder.decode(data, final=final)
+        pending, _ = decoder.getstate()
+        return text, offset + len(data) - len(pending)
 
-        return data.decode("utf-8", errors="replace"), new_offset
+    @staticmethod
+    def _output_pending(entry: ManagedProcess) -> bool:
+        return any(
+            not stream.closed and os.fstat(stream.fileno()).st_size > offset
+            for stream, offset in (
+                (entry.stdout_file, entry.stdout_offset),
+                (entry.stderr_file, entry.stderr_offset),
+            )
+        ) or bool(entry.pty_reader_thread and entry.pty_reader_thread.is_alive())
 
     def _read_incremental(
         self,
@@ -591,17 +670,23 @@ class ProcessManager:
     ) -> dict[str, str]:
         max_bytes = max(1, max_output_chars)
 
+        finished = entry.status != "running"
+        if finished and entry.pty_reader_thread is not None:
+            entry.pty_reader_thread.join(timeout=1.0)
+            finished = not entry.pty_reader_thread.is_alive()
         with entry.output_lock:
             stdout, entry.stdout_offset = self._read_file_incremental(
                 entry.stdout_file,
                 entry.stdout_offset,
                 max_bytes,
+                finished=finished,
             )
 
             stderr, entry.stderr_offset = self._read_file_incremental(
                 entry.stderr_file,
                 entry.stderr_offset,
                 max_bytes,
+                finished=finished,
             )
 
         return {
@@ -625,14 +710,13 @@ class ProcessManager:
             "background": entry.background,
             "stdout": output["stdout"],
             "stderr": output["stderr"],
+            "output_pending": self._output_pending(entry),
             "duration_ms": self._duration_ms(entry.started_at),
         }
 
     def _prune_finished_locked(self) -> None:
         finished = [
-            entry
-            for entry in self._processes.values()
-            if entry.status != "running"
+            entry for entry in self._processes.values() if entry.status != "running"
         ]
 
         overflow = len(finished) - self.MAX_RETAINED_FINISHED
@@ -713,4 +797,4 @@ class ProcessManager:
 
 
 PROCESS_MANAGER = ProcessManager()
-atexit.register(PROCESS_MANAGER.close)
+atexit.register(PROCESS_MANAGER.close, discard_output=True)

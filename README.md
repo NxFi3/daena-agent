@@ -26,6 +26,13 @@ Use `python -m cli --version` to check which source version is running.
 
 ## Desktop app
 
+For desktop control, image/context handling, native backend setup and update
+instructions, see [Computer Use](docs/computer-use.md).
+
+For interactive websites, the separate [Browser Use](docs/browser-use.md) tool
+launches Chromium and controls real tabs, DOM elements, forms, frames and downloads.
+Install the `browser` extra and run `python -m playwright install chromium`.
+
 ```bash
 python -m pip install -e '.[desktop,ollama,openrouter,gemini,web]'
 daena-studio --cwd /path/to/project
@@ -150,3 +157,13 @@ Ollama SDK, concurrent worker integration, skills, security and tool behavior.
 They do not measure the reasoning quality of a particular live model. Run the
 [benchmark harness](harness/README.md) against a configured model for that check.
 CI targets Python 3.11, 3.12 and 3.13.
+
+Optional local Persian/English Voice Mode opens a focused microphone/text
+conversation screen with a Hands-free toggle and interruption by speaking.
+Automatic speaker interruption uses optional local WebRTC/SpeexDSP echo
+cancellation; headphones and manual turn-taking are also available. While Voice
+is active, a temporary system instruction requests concise spoken replies while
+retaining the Agent's full task and tool capabilities. Configure voices, models,
+devices and perception under **Settings → Voice**, including while the Agent
+works. Kokoro English and anonymous speaker/sound analysis remain local. See
+[setup, echo-backend installation, output diagnostics and latency limits](docs/voice.md).

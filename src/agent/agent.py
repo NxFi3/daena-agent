@@ -19,6 +19,8 @@ class Agent:
             raise ValueError("config must be an object")
         self.config = config
         self._run_lock = Lock()
+        self._instruction_lock = Lock()
+        self._runtime_instructions: dict[str, str] = {}
         self._closed = False
         workspace_config = config.get("workspace") or {}
         configured_workspace = workspace_config.get("directory")
@@ -43,6 +45,31 @@ class Agent:
 
         self.loop.session_id = self.session_id
         self.loop.set_workspace(self.workingdirectory)
+        self.loop.context.contextbuilder.runtime_instruction_source = (
+            self.runtime_instructions
+        )
+
+    def set_runtime_instruction(self, key: str, text: str | None) -> None:
+        """Set a transient instruction, including during an active turn.
+
+        This changes the next provider request without editing configuration,
+        conversation history or delegated agents. Passing None removes a mode.
+        Callers supply application instructions, never untrusted tool content.
+        """
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("Runtime instruction key must be a nonempty string")
+        if text is not None and not isinstance(text, str):
+            raise TypeError("Runtime instruction must be text or None")
+        with self._instruction_lock:
+            if text and text.strip():
+                self._runtime_instructions[key] = text.strip()
+            else:
+                self._runtime_instructions.pop(key, None)
+
+    def runtime_instructions(self) -> str:
+        """Return an immutable snapshot for the context builder's worker thread."""
+        with self._instruction_lock:
+            return "\n\n".join(self._runtime_instructions.values())
 
     def act(
         self,
@@ -53,7 +80,9 @@ class Agent:
         if self._closed:
             raise RuntimeError("Agent is closed")
         if not self._run_lock.acquire(blocking=False):
-            raise RuntimeError("This Agent is already running; use steer() or a separate Agent")
+            raise RuntimeError(
+                "This Agent is already running; use steer() or a separate Agent"
+            )
         try:
             if self._closed:
                 raise RuntimeError("Agent is closed")
@@ -77,13 +106,19 @@ class Agent:
             )
         finally:
             try:
-                self.loop.tool.close()
+                self.loop.tool.finish_run()
             finally:
                 self._run_lock.release()
 
     def steer(self, text: str) -> None:
         """Queue guidance for the currently running task."""
+        if self._closed:
+            raise RuntimeError("Agent is closed")
         self.loop.steer(text)
+
+    def receive_agent_message(self, text: str) -> None:
+        """Queue untrusted coordination data for the active runtime turn."""
+        self.loop.receive_agent_message(text)
 
     def approve_background_command(
         self,
@@ -118,6 +153,8 @@ class Agent:
         if not self._run_lock.acquire(blocking=False):
             raise RuntimeError("Cannot change workspace while the Agent is running")
         try:
+            if self._closed:
+                raise RuntimeError("Agent is closed")
             resolved = str(Path(directory).expanduser().resolve())
             Path(resolved).mkdir(parents=True, exist_ok=True)
             self.loop.set_workspace(resolved)

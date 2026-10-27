@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 
 from src.tools.builtin.command_exec.tool import CommandExec
 from src.tools.builtin.command_exec.process_manager import PROCESS_MANAGER
@@ -43,14 +44,23 @@ def test_long_running_command_returns_managed_process():
     assert process_id.startswith("proc-")
     assert "still running" in result.summary
 
-    finished = PROCESS_MANAGER.poll(
-        process_id=process_id,
-        wait_ms=2_000,
-        max_output_chars=8_000,
-    )
+    # Poll returns on incremental output as well as process exit. A newly
+    # started command may print before it finishes, so collect subsequent
+    # updates until its final exit receipt instead of assuming one poll blocks.
+    chunks = [result.content["stdout"]]
+    deadline = time.monotonic() + 3
+    while True:
+        finished = PROCESS_MANAGER.poll(
+            process_id=process_id,
+            wait_ms=2_000,
+            max_output_chars=8_000,
+        )
+        chunks.append(finished["stdout"])
+        if finished["status"] != "running" or time.monotonic() >= deadline:
+            break
     assert finished["status"] == "exited"
     assert finished["exit_code"] == 0
-    combined_output = result.content["stdout"] + finished["stdout"]
+    combined_output = "".join(chunks)
     assert "started" in combined_output
 
 
@@ -111,8 +121,13 @@ def test_incremental_output_and_process_write():
         wait_ms=2_000,
         max_output_chars=8_000,
     )
-    assert finished["status"] == "exited"
     assert "hello" in finished["stdout"]
+    # A flush can wake poll before the interpreter has completed shutdown.
+    if finished["status"] == "running":
+        finished = PROCESS_MANAGER.poll(
+            process_id=process_id, wait_ms=2_000, max_output_chars=8_000
+        )
+    assert finished["status"] == "exited"
 
     second_poll = PROCESS_MANAGER.poll(
         process_id=process_id,
@@ -152,16 +167,22 @@ def test_tty_process_supports_interactive_stdin():
     )
     assert write["status"] == "accepted"
 
-    finished = PROCESS_MANAGER.poll(
-        process_id=process_id,
-        wait_ms=2_000,
-        max_output_chars=8_000,
-    )
+    chunks = [result.content["stdout"]]
+    deadline = time.monotonic() + 5
+    while True:
+        finished = PROCESS_MANAGER.poll(
+            process_id=process_id,
+            wait_ms=2_000,
+            max_output_chars=8_000,
+        )
+        chunks.append(finished["stdout"])
+        if finished["status"] != "running" or time.monotonic() >= deadline:
+            break
 
     assert finished["status"] == "exited"
     assert finished["exit_code"] == 0
 
-    output = result.content["stdout"] + finished["stdout"]
+    output = "".join(chunks)
     assert "READY" in output
     assert "GOT:interactive-test" in output
     assert finished["tty"] is True

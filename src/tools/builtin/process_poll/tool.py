@@ -19,7 +19,7 @@ class ProcessPoll(Tool):
 
     description = (
         "Poll a managed process by process_id. Use this after command_exec returns "
-        "status=running. Returns only newly available stdout/stderr since the last "
+        "status=running or output_pending=true. Returns only newly available stdout/stderr since the last "
         "poll, plus the current process status and exit code."
     )
 

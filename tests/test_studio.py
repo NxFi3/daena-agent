@@ -49,13 +49,13 @@ def call(tool_name, **arguments):
 
 
 @pytest.fixture(scope="module")
-def app():
-    app = QApplication.instance() or QApplication([])
-    yield app
+def app(qt_app):
+    return qt_app
 
 
 @pytest.fixture
 def window(tmp_path, app, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "user-data"))
     errors = []
     monkeypatch.setattr(QMessageBox, "warning", lambda *a: errors.append(a[-1]))
     w = StudioWindow(tmp_path)
@@ -189,10 +189,16 @@ def test_graph_reports_real_worker_and_integrated_files(window, tmp_path):
 
 def test_settings_persist_tool_scope_and_generation_options(window):
     settings = window.settings
+    settings.image_reserve.setValue(3072)
+    settings.browser_headless.setChecked(True)
+    settings.browser_executable.setText("/usr/bin/chromium")
     settings.select_tools(False)
     settings.apply_form()
+    assert settings.value()["browser"]["headless"] is True
+    assert settings.value()["browser"]["executable_path"] == "/usr/bin/chromium"
     saved = json.loads(window.store.profile.read_text())
     assert saved["security"]["allowed_tools"] == []
+    assert saved["context"]["image_token_reserve"] == 3072
     assert window.config["security"]["allowed_tools"] == []
     settings.provider.setCurrentText("openrouter")
     assert "num_ctx" not in json.loads(settings.generation.toPlainText())
@@ -298,3 +304,68 @@ def test_profile_validation_rejects_bad_limits_and_preserves_empty_tool_scopes()
                 "security": {"allowed_tools": []},
             }
         )
+
+
+def test_open_history_restores_original_workspace_profile(window, tmp_path):
+    from uuid import uuid4
+
+    other = tmp_path / "other"
+    other.mkdir()
+    store = StudioStore(other)
+    config = default_config()
+    config["llm"]["provider"] = "gemini"
+    config["llm"]["provider_config"]["model_name"] = "workspace-model"
+    store.save_config(config)
+    session = uuid4()
+    store.save_run(session, "Other workspace", [], {"completed": True})
+    window.refresh_history()
+    window.open_history(window.history.item(0))
+    assert window.workspace == other
+    assert window.config == config
+    assert window.session_id == session
+    assert window.workspace_edit.text() == str(other)
+
+
+def test_open_history_missing_workspace_preserves_current_conversation(
+    window, tmp_path
+):
+    from uuid import uuid4
+    import shutil
+
+    other = tmp_path / "removed"
+    other.mkdir()
+    store = StudioStore(other)
+    store.save_run(uuid4(), "Missing workspace", [], {"completed": True})
+    shutil.rmtree(other)
+    before = window.session_id
+    window.refresh_history()
+    window.open_history(window.history.item(0))
+    assert window.session_id == before and window.workspace == tmp_path
+    assert "unavailable" in window._errors.pop()
+
+
+def test_streamed_phases_remain_ordered_and_restore_from_history(window):
+    window.transcript.begin_turn()
+    events = [
+        {"type": "generation_start"},
+        {"type": "content_delta", "text": "Opening the browser."},
+        {"type": "assistant_message", "text": "Opening the browser."},
+        {"type": "generation_start"},
+        {"type": "content_delta", "text": "The form is ready."},
+        {"type": "final_response", "text": "The form is ready."},
+    ]
+    for event in events:
+        window.on_event(event)
+    card = window.transcript.live
+    assert [text for text, _ in card.phases] == ["Opening the browser."]
+    assert card.text == "The form is ready."
+    assert card.work_layout.indexOf(card.phases[0][1]) >= 0
+    assert card.layout().indexOf(card.work) < card.layout().indexOf(card.body)
+    window.store.save_run(
+        window.session_id, "Browser task", events, {"completed": True}
+    )
+    window.refresh_history()
+    window.open_history(window.history.item(0))
+    restored = window.transcript.cards[-1]
+    assert [text for text, _ in restored.phases] == ["Opening the browser."]
+    assert restored.text == "The form is ready."

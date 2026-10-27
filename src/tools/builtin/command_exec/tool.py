@@ -71,7 +71,7 @@ class CommandExec(Tool):
         "arguments are normalized to their declared bounds before execution. If it exits in that "
         "window, the result contains exit_code and completed output. If it is still "
         "running, the process is kept alive and the result returns status=running "
-        "with an opaque process_id. Use process_poll to wait for completion or inspect "
+        "with an opaque process_id. Exited commands with output_pending=true also retain a process_id. Use process_poll to wait for completion or inspect "
         "new output, process_write for stdin, and process_stop to terminate it. "
         "A slow one-shot command and a long-lived server use the same process lifecycle; "
         "do not treat elapsed time as proof that a command is a server.\n"
@@ -117,6 +117,7 @@ class CommandExec(Tool):
                 "default": DEFAULT_YIELD_TIME_MS,
                 "minimum": 0,
                 "maximum": MAX_YIELD_TIME_MS,
+                "x-daena-clamp": True,
             },
             "max_output_chars": {
                 "type": "integer",
@@ -127,6 +128,7 @@ class CommandExec(Tool):
                 "default": DEFAULT_MAX_OUTPUT_CHARS,
                 "minimum": MIN_OUTPUT_CHARS,
                 "maximum": MAX_OUTPUT_CHARS,
+                "x-daena-clamp": True,
             },
             "background": {
                 "type": "boolean",
@@ -392,6 +394,7 @@ class CommandExec(Tool):
                 "duration_ms",
                 self._duration_ms(started),
             ),
+            "output_pending": bool(result.get("output_pending", False)),
             "stdout_truncated": False,
             "stderr_truncated": False,
         }

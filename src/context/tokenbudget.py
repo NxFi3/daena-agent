@@ -5,6 +5,7 @@ import math
 
 from src.engine.LlmProviderManager import LlmProvider
 from src.models.LLMResult import LLMResult
+from src.engine.runtime_config import effective_config
 from src.utils.logger import get_logger
 
 logger = get_logger("[TOKENBUDGET]")
@@ -17,6 +18,12 @@ class TokenBudget:
         llm_provider: LlmProvider,
     ) -> None:
 
+        config = effective_config(config, llm_provider)
+        self._settings = self._settings_key(config, llm_provider)
+        self._model_identity = (
+            config.get("llm", {}).get("provider"),
+            config.get("llm", {}).get("provider_config", {}).get("model_name"),
+        )
         self.config = config.get("context") or {}
 
         self.llm_provider = llm_provider
@@ -56,11 +63,34 @@ class TokenBudget:
         if self.safe_margin < 0:
             self.safe_margin = int(self.context_length * 0.15)
 
+        # Keep prompt budgeting consistent with the provider's configured output cap.
+        # Otherwise Ollama can be allowed a large prompt while num_predict truncates
+        # a tool call that the context layer believed had enough output room.
+        configured_reserve = max(0, int(self.config.get("output_reserve_tokens", 0)))
+        provider_output_cap = (
+            generation_config.get("num_predict")
+            or generation_config.get("max_output_tokens")
+            or generation_config.get("max_completion_tokens")
+            or generation_config.get("max_tokens")
+            or provider_config.get("num_predict")
+            or provider_config.get("max_output_tokens")
+            or provider_config.get("max_completion_tokens")
+            or provider_config.get("max_tokens")
+            or provider_defaults.get("num_predict")
+            or provider_defaults.get("max_output_tokens")
+            or provider_defaults.get("max_completion_tokens")
+            or provider_defaults.get("max_tokens")
+            or 0
+        )
+        try:
+            provider_output_cap = max(0, int(provider_output_cap))
+        except (TypeError, ValueError):
+            provider_output_cap = 0
+        self.output_reserve_tokens = max(configured_reserve, provider_output_cap)
+
         model_budget = max(
             1,
-            self.context_length
-            - self.safe_margin
-            - max(0, int(self.config.get("output_reserve_tokens", 0))),
+            self.context_length - self.safe_margin - self.output_reserve_tokens,
         )
 
         # A provider may expose a very large native context window, but an
@@ -110,7 +140,29 @@ class TokenBudget:
         if self.chars_per_token <= 0:
             self.chars_per_token = 4.0
         self.tools = []
+        # Provider-specific image accounting varies. Reserve an explicit,
+        # configurable allowance, not base64 characters or zero image tokens.
+        self.image_token_reserve = max(
+            1, int(self.config.get("image_token_reserve", 4096))
+        )
         self._initialize_calibration()
+
+    @staticmethod
+    def _settings_key(config, llm):
+        return json.dumps({
+            "llm": config.get("llm"), "context": config.get("context"),
+            "defaults": getattr(getattr(llm, "model", None), "defaultConfig", {}),
+        }, sort_keys=True, default=str)
+
+    def refresh(self, config):
+        effective = effective_config(config, self.llm_provider)
+        if self._settings_key(effective, self.llm_provider) == self._settings:
+            return
+        replacement = TokenBudget(effective, self.llm_provider)
+        replacement.tools = self.tools
+        if replacement._model_identity == self._model_identity:
+            replacement.chars_per_token = self.chars_per_token
+        self.__dict__.update(replacement.__dict__)
 
     def reserve_tools(self, tools):
         self.tools = list(tools or [])
@@ -154,6 +206,7 @@ class TokenBudget:
             f"budget={self.budget}, "
             f"max_prompt_tokens={self.max_prompt_tokens}, "
             f"safe_margin={self.safe_margin}, "
+            f"output_reserve={self.output_reserve_tokens}, "
             f"compaction_target={self.compaction_target_tokens}, "
             f"chars_per_token={self.chars_per_token}"
         )
@@ -167,7 +220,11 @@ class TokenBudget:
 
         content = message.get("content")
 
-        if content:
+        if isinstance(content, list):
+            total += sum(
+                len(str(p.get("text", ""))) for p in content if isinstance(p, dict)
+            )
+        elif content:
             total += len(str(content))
 
         tool_calls = message.get("tool_calls")
@@ -190,6 +247,20 @@ class TokenBudget:
 
         return total
 
+    def image_tokens(self, messages):
+        count = 0
+        for message in messages:
+            count += len(message.get("images") or [])
+            count += int(bool(message.get("computer_image")))
+            content = message.get("content")
+            if isinstance(content, list):
+                count += sum(
+                    isinstance(p, dict)
+                    and p.get("type") in {"image_url", "input_image"}
+                    for p in content
+                )
+        return count * self.image_token_reserve
+
     def estimate_messages_tokens(
         self,
         messages: list[dict[str, Any]],
@@ -202,12 +273,11 @@ class TokenBudget:
             self._message_character_count(message) for message in messages
         )
 
-        if total_chars <= 0:
-            return 0
-
         return max(
             1,
-            math.ceil(total_chars / self.chars_per_token) + 4 * len(messages),
+            math.ceil(total_chars / self.chars_per_token)
+            + 4 * len(messages)
+            + self.image_tokens(messages),
         )
 
     def fits(
@@ -231,6 +301,11 @@ class TokenBudget:
     ) -> None:
 
         if not messages:
+            return
+
+        if self.image_tokens(messages):
+            # Mixed prompt usage does not separate image tokens consistently.
+            # Do not distort text calibration with unknown visual-token costs.
             return
 
         if model_response is None:

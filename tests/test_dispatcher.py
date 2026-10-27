@@ -36,7 +36,8 @@ def test_dispatcher_normalizes_alias_and_generates_id():
     call = calls[0]
     assert isinstance(call, ToolCall)
     assert call.valid is True
-    assert call.args == {"file_path": "main.py"}
+    # JSON Schema allows extra properties unless explicitly disabled.
+    assert call.args == {"file_path": "main.py", "ignored": True}
     assert call.target == "main.py"
     assert call.id
 
@@ -315,3 +316,37 @@ def test_dispatcher_normalizes_wait_ms_alias():
     assert call.valid is True
     assert call.args["yield_time_ms"] == 5000
     assert "wait_ms" not in call.args
+
+
+def test_dispatcher_rejects_empty_command_array_before_execution():
+    class Registry:
+        def is_available(self, name):
+            return name == "command_exec"
+
+        def get(self, name):
+            return CommandExec() if name == "command_exec" else None
+
+    dispatcher = ToolDispatcher(Registry())
+    call = dispatcher.dispatch({
+        "name": "command_exec",
+        "arguments": {"command": []},
+    })[0]
+
+    assert call.valid is False
+    assert "at least 1 item" in call.validation_error
+
+
+def test_structured_arguments_double_encoded_by_provider():
+    from src.tools.ToolRegistry import ToolRegistry
+    registry = ToolRegistry()
+    registry.discover()
+    dispatcher = ToolDispatcher(registry)
+    args = {'action':'click','coordinate':'[1280, 550]','snapshot_id':'observed'}
+    call = dispatcher.dispatch([{'name':'computer_use','arguments':args}])[0]
+    assert call.valid and call.args['coordinate'] == [1280,550]
+    assert call.normalization_notes
+    args['coordinate'] = '["1280", "550"]'
+    assert not dispatcher.dispatch([{'name':'computer_use','arguments':args}])[0].valid
+    args['coordinate'] = '[1280, 550]'
+    args['action'] = 'fill'
+    assert not dispatcher.dispatch([{'name':'computer_use','arguments':args}])[0].valid

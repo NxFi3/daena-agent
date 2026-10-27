@@ -31,7 +31,19 @@ def main(argv=None):
             1,
             f"Cannot load PySide6: {exc}\nInstall the desktop extra: python -m pip install 'daena-agent[desktop]'\nFor Linux native libraries, see docs/studio.md.\n",
         )
-    from src.studio.window import StudioWindow
+    try:
+        from src.studio.window import StudioWindow
+    except ModuleNotFoundError as exc:
+        if exc.name != "src.studio.window":
+            raise
+        parser.exit(
+            1,
+            "Studio installation is incomplete: src/studio/window.py is missing.\n"
+            f"Loaded Studio from: {Path(__file__).resolve().parent}\n"
+            "In a Git checkout, check `git status --short` and restore missing tracked files "
+            "with `git restore --source=HEAD -- src/studio/window.py` after preserving local changes.\n"
+            "For a package installation, reinstall with: python -m pip install --force-reinstall 'daena-agent[desktop]'\n",
+        )
 
     config = json.loads(args.config.read_text()) if args.config else None
     app = QApplication.instance() or QApplication(sys.argv)

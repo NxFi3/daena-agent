@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+from bisect import bisect_right
+from uuid import uuid4
 from pathlib import Path
 from typing import Any
 
@@ -36,8 +39,8 @@ class ReadFile(Tool):
         "Read a UTF-8 text file. Only use this for a file you know exists; "
         "do not use it to inspect directories or guess filenames. "
         "Optional start_line and end_line can limit the returned range. "
-        "Output is bounded to protect agent context. "
-        "Use command_exec for directory inspection or running commands."
+        "Output is an exact prefix, never a head/tail splice. Follow next_read to continue; offsets are Unicode character offsets and file_sha256 identifies the source version. "
+        "Use glob/list_dir to discover paths and grep for relevant symbols; use command_exec for running commands."
     )
 
     parameters = {
@@ -63,6 +66,15 @@ class ReadFile(Tool):
                 ),
                 "minimum": 1,
             },
+            "start_offset": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Absolute Unicode character offset, normally copied from next_read. Do not combine with start_line.",
+            },
+            "expected_sha256": {
+                "type": "string",
+                "description": "Optional source version from next_read; reject continuation if the file changed.",
+            },
             "max_output_chars": {
                 "type": "integer",
                 "description": (
@@ -72,6 +84,7 @@ class ReadFile(Tool):
                 "default": DEFAULT_MAX_OUTPUT_CHARS,
                 "minimum": MIN_OUTPUT_CHARS,
                 "maximum": MAX_OUTPUT_CHARS,
+                "x-daena-clamp": True,
             },
         },
         "required": ["file_path"],
@@ -120,6 +133,15 @@ class ReadFile(Tool):
             "lines_requested",
             "lines_returned",
             "total_lines",
+            "read_id",
+            "file_sha256",
+            "source_start_offset",
+            "source_end_offset",
+            "requested_end_offset",
+            "offset_unit",
+            "returned_end_line",
+            "next_read",
+            "transport_truncated",
             "truncated",
         }
         removed = sorted(key for key in normalized if key in output_only)
@@ -139,6 +161,8 @@ class ReadFile(Tool):
         start_line: int | None = None,
         end_line: int | None = None,
         max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS,
+        start_offset: int | None = None,
+        expected_sha256: str | None = None,
     ) -> ToolResult:
         """
         ToolManager invokes this as:
@@ -146,6 +170,18 @@ class ReadFile(Tool):
             tool.execute(**toolcall.args)
         """
 
+        if start_offset is not None and (
+            type(start_offset) is not int or start_offset < 0 or start_line is not None
+        ):
+            return self._error(
+                error_type="invalid_argument",
+                message="start_offset must be nonnegative and cannot be combined with start_line.",
+            )
+        if expected_sha256 is not None and not isinstance(expected_sha256, str):
+            return self._error(
+                error_type="invalid_argument",
+                message="expected_sha256 must be a string.",
+            )
         # Models frequently send a reversed range (end_line < start_line).
         # Failing here used to trap the agent in an identical-retry loop that
         # the runtime then blocked. Recover instead: read from start_line to
@@ -223,14 +259,13 @@ class ReadFile(Tool):
             start_line=start_line,
             end_line=end_line,
             max_output_chars=max_output_chars,
+            start_offset=start_offset,
+            expected_sha256=expected_sha256,
         )
 
-        if (
-            range_note
-            and result.success
-            and isinstance(result.content, dict)
-        ):
+        if range_note and result.success and isinstance(result.content, dict):
             result.content["note"] = range_note
+            result.evidence["note"] = range_note
 
         return result
 
@@ -308,178 +343,107 @@ class ReadFile(Tool):
     def _read_file(
         self,
         *,
-        path: Path,
-        start_line: int | None,
-        end_line: int | None,
-        max_output_chars: int,
-    ) -> ToolResult:
-
+        path,
+        start_line,
+        end_line,
+        max_output_chars,
+        start_offset=None,
+        expected_sha256=None,
+    ):
         try:
-            lines = path.read_text(
-                encoding="utf-8",
-                errors="strict",
-            ).splitlines(keepends=True)
-
+            raw = path.read_bytes()
+            text = raw.decode("utf-8")
         except UnicodeDecodeError:
             return self._error(
                 error_type="binary_or_non_utf8",
                 message=f"Cannot read non-UTF-8 or binary file: {path}",
-                extra={
-                    "path": str(path),
-                    "type": "file",
-                },
+                extra={"path": str(path), "type": "file"},
             )
-
-        except PermissionError:
-            return self._error(
-                error_type="permission_error",
-                message=f"Permission denied: {path}",
-                extra={
-                    "path": str(path),
-                    "type": "file",
-                },
-            )
-
         except OSError as exc:
             return self._error(
                 error_type="read_error",
-                message=f"Could not read '{path}': {exc}",
-                extra={
-                    "path": str(path),
-                    "type": "file",
-                },
+                message=f"Could not read {path}: {exc}",
+                extra={"path": str(path), "type": "file"},
             )
-
-        total_lines = len(lines)
-
-        if total_lines == 0:
-            return self._success(
-                path=path,
-                content="",
-                start_line=None,
-                end_line=None,
-                lines_requested=0,
-                lines_returned=0,
-                total_lines=0,
-                truncated=False,
-                max_output_chars=max_output_chars,
+        version = hashlib.sha256(raw).hexdigest()
+        if expected_sha256 is not None and expected_sha256 != version:
+            return self._error(
+                error_type="file_changed",
+                message="The source changed since the previous page. Read the relevant range again without the old expected_sha256.",
+                extra={"path": str(path), "file_sha256": version},
             )
-
-        actual_start = 1 if start_line is None else start_line
-        actual_end = (
-            total_lines
-            if end_line is None
-            else min(
-                end_line,
-                total_lines,
-            )
-        )
-
-        if actual_start > total_lines:
+        lines = text.splitlines(keepends=True)
+        offsets = [0]
+        for line in lines:
+            offsets.append(offsets[-1] + len(line))
+        first = start_line or 1
+        if text and first > len(lines):
             return self._error(
                 error_type="line_out_of_range",
-                message=(
-                    f"start_line ({actual_start}) is beyond the end "
-                    f"of the file ({total_lines} lines)."
-                ),
-                extra={
-                    "path": str(path),
-                    "type": "file",
-                    "total_lines": total_lines,
-                },
+                message=f"start_line ({first}) is beyond the end of the file ({len(lines)} lines).",
+                extra={"path": str(path), "type": "file", "total_lines": len(lines)},
             )
-
-        selected_lines = lines[actual_start - 1 : actual_end]
-
-        raw_content = "".join(selected_lines)
-
-        bounded_content, truncated = self._truncate(
-            raw_content,
-            max_output_chars,
+        requested_end = min(end_line or len(lines), len(lines))
+        start = (
+            start_offset
+            if start_offset is not None
+            else offsets[min(first - 1, len(lines))]
         )
-
-        if truncated:
-            lines_returned = self._estimate_visible_lines(bounded_content)
-        else:
-            lines_returned = len(selected_lines)
-
-        return self._success(
-            path=path,
-            content=bounded_content,
-            start_line=actual_start,
-            end_line=actual_end,
-            lines_requested=actual_end - actual_start + 1,
-            lines_returned=lines_returned,
-            total_lines=total_lines,
-            truncated=truncated,
-            max_output_chars=max_output_chars,
-        )
-
-    @staticmethod
-    def _truncate(
-        value: str,
-        limit: int,
-    ) -> tuple[str, bool]:
-
-        if len(value) <= limit:
-            return value, False
-
-        head = int(limit * 0.70)
-        tail = limit - head
-
-        omitted = len(value) - head - tail
-
-        marker = (
-            f"... {omitted} characters omitted; "
-            "use start_line/end_line to inspect a narrower range ..."
-        )
-
-        bounded = (
-            value[:head].rstrip() + "\n\n" + marker + "\n\n" + value[-tail:].lstrip()
-        )
-
-        return bounded, True
-
-    @staticmethod
-    def _estimate_visible_lines(
-        content: str,
-    ) -> int:
-        if not content:
-            return 0
-
-        return len(content.splitlines())
-
-    def _success(
-        self,
-        *,
-        path: Path,
-        content: str,
-        start_line: int | None,
-        end_line: int | None,
-        lines_requested: int,
-        lines_returned: int,
-        total_lines: int,
-        truncated: bool,
-        max_output_chars: int,
-    ) -> ToolResult:
-
-        return ToolResult(
-            success=True,
-            name=self.name,
-            content={
-                "success": True,
-                "type": "file",
-                "path": str(path),
-                "content": content,
-                "start_line": start_line,
-                "end_line": end_line,
-                "lines_requested": lines_requested,
-                "lines_returned": lines_returned,
-                "total_lines": total_lines,
-                "truncated": truncated,
+        stop = offsets[requested_end]
+        if start > stop:
+            return self._error(
+                error_type="line_out_of_range",
+                message="start_offset is beyond the requested range.",
+                extra={"path": str(path), "total_lines": len(lines)},
+            )
+        end = min(stop, start + max_output_chars)
+        body = text[start:end]
+        next_read = (
+            None
+            if end == stop
+            else {
+                "file_path": str(path),
+                "start_offset": end,
+                "end_line": requested_end,
+                "expected_sha256": version,
                 "max_output_chars": max_output_chars,
-            },
-            metadata={},
+            }
+        )
+        payload = {
+            "success": True,
+            "type": "file",
+            "path": str(path),
+            "content": body,
+            "read_id": uuid4().hex,
+            "file_sha256": version,
+            "source_start_offset": start,
+            "source_end_offset": end,
+            "requested_end_offset": stop,
+            "offset_unit": "unicode_characters",
+            "start_line": min(bisect_right(offsets, start), len(lines))
+            if lines
+            else None,
+            "end_line": requested_end if lines else None,
+            "returned_end_line": bisect_right(offsets, end - 1) if body else None,
+            "lines_requested": max(0, requested_end - first + 1),
+            "lines_returned": len(body.splitlines()),
+            "total_lines": len(lines),
+            "truncated": end < stop,
+            "next_read": next_read,
+            "max_output_chars": max_output_chars,
+        }
+        # Explicit evidence avoids a second unrelated character cap in ToolResult.
+        return ToolResult(
+            True,
+            self.name,
+            content=payload,
+            evidence=dict(payload),
+            summary=f"Read {path}: characters [{start}, {end}) of requested end {stop}; "
+            + (
+                "follow next_read for the remaining text."
+                if next_read
+                else "requested range complete."
+            ),
         )
 
     def _error(

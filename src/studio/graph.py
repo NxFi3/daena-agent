@@ -26,6 +26,20 @@ COLORS = {
     "cancelling": "#ffba6b",
 }
 
+LIGHT_COLORS = {
+    "idle": "#777386",
+    "queued": "#777386",
+    "running": "#7953bc",
+    "completed": "#087d6c",
+    "failed": "#b53d5c",
+    "stopped": "#ad6918",
+    "blocked": "#ad6918",
+    "needs_input": "#ad6918",
+    "cancelled": "#ad6918",
+    "timed_out": "#b53d5c",
+    "cancelling": "#ad6918",
+}
+
 
 class AgentNode(QGraphicsObject):
     WIDTH, HEIGHT = 280, 132
@@ -46,12 +60,13 @@ class AgentNode(QGraphicsObject):
         return QRectF(-8, -8, self.WIDTH + 16, self.HEIGHT + 16)
 
     def paint(self, p, option, widget=None):
-        color = QColor(COLORS.get(self.status, COLORS["idle"]))
+        palette = LIGHT_COLORS if self.canvas.theme == "light" else COLORS
+        color = QColor(palette.get(self.status, palette["idle"]))
         p.setRenderHint(QPainter.Antialiasing)
-        p.setBrush(QColor("#141e30"))
+        p.setBrush(self.canvas.color("#292929", "#ffffff"))
         p.setPen(
             QPen(
-                color if self.isSelected() else QColor("#2b3950"),
+                color if self.isSelected() else self.canvas.color("#484848", "#d6d6d6"),
                 2 if self.isSelected() else 1,
             )
         )
@@ -59,12 +74,12 @@ class AgentNode(QGraphicsObject):
         p.setPen(Qt.NoPen)
         p.setBrush(color)
         p.drawRoundedRect(QRectF(14, 16, 4, 27), 2, 2)
-        p.setPen(QColor("#edf2ff"))
+        p.setPen(self.canvas.color("#f4f4f4", "#242424"))
         p.setFont(QFont("Sans Serif", 11, QFont.DemiBold))
         p.drawText(
             QRectF(28, 14, 230, 26), Qt.AlignLeft | Qt.AlignVCenter, self.title[:30]
         )
-        p.setPen(QColor("#96a7c5"))
+        p.setPen(self.canvas.color("#b4b4b4", "#666666"))
         p.setFont(QFont("Sans Serif", 9))
         p.drawText(QRectF(28, 46, 230, 38), Qt.TextWordWrap, self.subtitle[:90])
         p.setPen(color)
@@ -74,7 +89,7 @@ class AgentNode(QGraphicsObject):
             Qt.AlignLeft,
             self.status.upper().replace("_", " "),
         )
-        p.setBrush(QColor("#101726"))
+        p.setBrush(self.canvas.color("#1c1c1c", "#ffffff"))
         p.setPen(QPen(color, 2))
         for x in (0, self.WIDTH):
             p.drawEllipse(QPointF(x, self.HEIGHT / 2), 5, 5)
@@ -88,14 +103,15 @@ class AgentNode(QGraphicsObject):
         x = event.pos().x()
         if self.canvas.editable and abs(event.pos().y() - self.HEIGHT / 2) < 14:
             if x > self.WIDTH - 14:
-                self.canvas.pending_wire = self.ident
+                self.canvas.begin_wire(self.ident)
                 self.canvas.setToolTip(
                     "Select an input port on another node to connect"
                 )
                 event.accept()
                 return
             if x < 14 and self.canvas.pending_wire:
-                source, self.canvas.pending_wire = self.canvas.pending_wire, None
+                source = self.canvas.pending_wire
+                self.canvas.cancel_wire()
                 self.canvas.wireRequested.emit(source, self.ident)
                 event.accept()
                 return
@@ -109,12 +125,15 @@ class GraphCanvas(QGraphicsView):
 
     def __init__(self, editable=False):
         super().__init__()
+        self.theme = "dark"
         self.editable, self.pending_wire = editable, None
+        self.wire_preview = None
+        self._wire_dragging = False
         self.nodes, self.edges = {}, []
         self.setScene(QGraphicsScene(self))
         self.scene().selectionChanged.connect(self._selected)
         self.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
-        self.setBackgroundBrush(QBrush(QColor("#0c1220")))
+        self.setBackgroundBrush(QBrush(QColor("#1c1c1c")))
         self.setDragMode(QGraphicsView.NoDrag)
         self.setTransformationAnchor(QGraphicsView.NoAnchor)
         self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
@@ -128,28 +147,81 @@ class GraphCanvas(QGraphicsView):
         self.setSceneRect(-20000, -20000, 40000, 40000)
         self.centerOn(0, 0)
         self.setStyleSheet(
-            "QGraphicsView {border: 1px solid #25334a; border-radius: 12px;}"
+            "QGraphicsView {border: 1px solid #404040; border-radius: 12px;}"
         )
 
     def drawBackground(self, p, rect):
         super().drawBackground(p, rect)
-        p.setPen(QPen(QColor("#1d293d"), 1))
+        p.setPen(QPen(self.color("#323232", "#ededed"), 1))
         startx, starty = int(rect.left()) // 24 * 24, int(rect.top()) // 24 * 24
         if rect.width() * rect.height() < 50_000_000:
             for x in range(startx, int(rect.right()) + 1, 24):
                 for y in range(starty, int(rect.bottom()) + 1, 24):
                     p.drawPoint(x, y)
 
+    def color(self, dark, light):
+        return QColor(light if self.theme == "light" else dark)
+
+    def apply_theme(self, theme):
+        self.theme = "light" if theme == "light" else "dark"
+        self.setBackgroundBrush(self.color("#1c1c1c", "#fafafa"))
+        border = "#d6d6d6" if self.theme == "light" else "#404040"
+        self.setStyleSheet(
+            f"QGraphicsView {{border:1px solid {border};border-radius:12px;}}"
+        )
+        for _, _, edge in self.edges:
+            edge.setPen(QPen(self.color("#8794a6", "#8596a9"), 2))
+        if self.wire_preview is not None:
+            self.wire_preview.setPen(
+                QPen(self.color("#b6a0ff", "#7761b2"), 2, Qt.DashLine)
+            )
+        self.scene().update()
+
     def _selected(self):
         nodes = [n for n in self.scene().selectedItems() if isinstance(n, AgentNode)]
         if nodes:
             self.nodeSelected.emit(nodes[0].ident)
 
-    def clear_graph(self):
+    def clear_graph(self, *, reset_view=True):
         self.nodes, self.edges = {}, []
         self.scene().clear()
         self.pending_wire = None
-        self.reset_view()
+        self.wire_preview = None
+        self._wire_dragging = False
+        if reset_view:
+            self.reset_view()
+
+    def begin_wire(self, source):
+        """Click the output port, then click or drag to a target input port."""
+        self.cancel_wire()
+        self.pending_wire = source
+        self._wire_dragging = False
+        self.wire_preview = QGraphicsPathItem()
+        self.wire_preview.setZValue(-1)
+        self.wire_preview.setPen(QPen(self.color("#b6a0ff", "#7761b2"), 2, Qt.DashLine))
+        self.scene().addItem(self.wire_preview)
+        self._update_wire_preview(
+            self.nodes[source].pos() + QPointF(AgentNode.WIDTH, AgentNode.HEIGHT / 2)
+        )
+
+    def _update_wire_preview(self, target):
+        if self.pending_wire is None or self.wire_preview is None:
+            return
+        origin = self.nodes[self.pending_wire].pos() + QPointF(
+            AgentNode.WIDTH, AgentNode.HEIGHT / 2
+        )
+        path = QPainterPath(origin)
+        bend = max(60, abs(target.x() - origin.x()) / 2)
+        path.cubicTo(origin + QPointF(bend, 0), target - QPointF(bend, 0), target)
+        self.wire_preview.setPath(path)
+
+    def cancel_wire(self):
+        if self.wire_preview is not None:
+            self.scene().removeItem(self.wire_preview)
+            self.wire_preview = None
+        self.pending_wire = None
+        self._wire_dragging = False
+        self.setToolTip("")
 
     def upsert(self, ident, title, subtitle, status="idle", x=None, y=None):
         if ident not in self.nodes:
@@ -171,7 +243,7 @@ class GraphCanvas(QGraphicsView):
         ):
             return
         edge = QGraphicsPathItem()
-        edge.setPen(QPen(QColor("#6574ad"), 2))
+        edge.setPen(QPen(self.color("#8794a6", "#8596a9"), 2))
         self.scene().addItem(edge)
         self.edges.append((source, target, edge))
         self.update_edges()
@@ -247,6 +319,15 @@ class GraphCanvas(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        if (
+            self.editable
+            and self.pending_wire is not None
+            and event.buttons() & Qt.LeftButton
+        ):
+            self._wire_dragging = True
+            self._update_wire_preview(self.mapToScene(event.position().toPoint()))
+            event.accept()
+            return
         if self._panning:
             pos = event.position().toPoint()
             delta = pos - self._pan_last
@@ -262,6 +343,24 @@ class GraphCanvas(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        if (
+            self.editable
+            and self.pending_wire is not None
+            and event.button() == Qt.LeftButton
+        ):
+            item = self.itemAt(event.position().toPoint())
+            if isinstance(item, AgentNode) and item.ident != self.pending_wire:
+                pos = item.mapFromScene(self.mapToScene(event.position().toPoint()))
+                if pos.x() < 16 and abs(pos.y() - AgentNode.HEIGHT / 2) < 17:
+                    source = self.pending_wire
+                    self.cancel_wire()
+                    self.wireRequested.emit(source, item.ident)
+                    event.accept()
+                    return
+            if self._wire_dragging:
+                self.cancel_wire()
+                event.accept()
+                return
         if self._panning:
             self._panning = False
             self.viewport().setCursor(
@@ -285,7 +384,7 @@ class GraphCanvas(QGraphicsView):
         elif event.key() == Qt.Key_F:
             self.fit_graph()
         elif event.key() == Qt.Key_Escape:
-            self.pending_wire = None
+            self.cancel_wire()
             self.scene().clearSelection()
         else:
             super().keyPressEvent(event)

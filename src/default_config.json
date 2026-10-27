@@ -7,6 +7,7 @@
         "temperature": 0.3,
         "num_thread": 16,
         "num_ctx": 32768,
+        "num_predict": 8192,
         "request_timeout_seconds": null
       }
     }
@@ -18,7 +19,7 @@
     "compaction_target_tokens": 2048,
     "max_prompt_tokens": 24000,
     "compaction_trigger_ratio": 0.72,
-    "output_reserve_tokens": 4096
+    "output_reserve_tokens": 8192
   },
   "retrieval": {
     "top_k": 3
@@ -27,7 +28,26 @@
     "workspace_only": true,
     "allow_background": true,
     "allow_network_tools": true,
-    "force_approve": false
+    "force_approve": false,
+    "allowed_tools": [
+      "apply_patch",
+      "command_exec",
+      "make_directory",
+      "plan",
+      "process_poll",
+      "process_stop",
+      "process_write",
+      "read_file",
+      "skill_list",
+      "skill_read",
+      "subagent",
+      "task_finish",
+      "web_fetch",
+      "web_search",
+      "computer_use",
+      "browser_use",
+      "tool_search"
+    ]
   },
   "models": {
     "embedding": {
@@ -55,6 +75,12 @@
     "enabled": false
   },
   "runtime": {
-    "completion_protocol": "implicit"
+    "completion_protocol": "implicit",
+    "generation_retries": 2
+  },
+  "browser": {
+    "headless": false,
+    "executable_path": "",
+    "cdp_url": ""
   }
 }

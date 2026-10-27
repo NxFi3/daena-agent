@@ -11,6 +11,8 @@ from src.skills import SkillRegistry
 from src.security.securityService import SecurityService
 from src.tools.ToolDispatcher import ToolDispatcher
 from src.tools.ToolRegistry import ToolRegistry
+from src.tools.mcp_stdio import MCPTool, configured_servers
+from src.tools.Tool import Tool
 from src.tools.builtin.command_exec.process_manager import ProcessManager
 from src.utils.logger import get_logger
 
@@ -35,8 +37,60 @@ class ToolManager:
         self.skills = SkillRegistry(self.config)
         self.subagents = SubagentManager(self.config)
         self.stop_event = None
+        self._workspace_root: Path | None = None
+        self._llm_provider = None
+        self._context_stm = None
+        self._session_id_provider = None
+        self._active_tool_names: list[str] = []
+        self._last_tool_search_query = ""
+        self._mcp_loaded = False
+        self._mcp_servers = []
+        self.cleanup_errors: list[str] = []
+
+    def _load_mcp_tools(self) -> None:
+        if self._mcp_loaded:
+            return
+        self._mcp_loaded = True
+        if not self.toolregistry.tools:
+            self.toolregistry.discover()
+        if not self.security.policy.allow_network_tools:
+            return
+        for server in configured_servers(self.config):
+            explicit_scope = (self.config.get("security") or {}).get("allowed_tools")
+            if explicit_scope is not None and f"mcp_{server.name}_*" not in self.security.policy.allowed_tools:
+                continue
+            try:
+                remote_tools = server.list_tools()
+                for remote in remote_tools:
+                    try:
+                        tool = MCPTool(server, remote)
+                        if tool.name in self.toolregistry.tools:
+                            self.logger.warning('MCP tool name collision: %s', tool.name)
+                            continue
+                        self.toolregistry.tools[tool.name] = tool
+                        # Enabled MCP servers are explicitly trusted in local config.
+                        # This does not override the network-tools host policy.
+                        explicit_scope = (self.config.get("security") or {}).get("allowed_tools")
+                        if explicit_scope is None or f"mcp_{server.name}_*" in self.security.policy.allowed_tools:
+                            self.security.policy.allowed_tools.add(tool.name)
+                    except (TypeError, ValueError, KeyError) as exc:
+                        self.logger.warning('Skipping invalid MCP tool: %s', exc)
+                self._mcp_servers.append(server)
+            except Exception as exc:
+                self.logger.warning('MCP server %s unavailable: %s', server.name, exc)
+                server.close()
+
+    def set_llm_provider(self, llm_provider) -> None:
+        self._llm_provider = llm_provider
+        self._bind_runtime_services()
+
+    def set_context_store(self, stm, session_id_provider) -> None:
+        self._context_stm = stm
+        self._session_id_provider = session_id_provider
+        self._bind_runtime_services()
 
     def set_workspace(self, directory: str) -> None:
+        self._workspace_root = Path(directory).expanduser().resolve()
         self.subagents.set_workspace(directory)
         self.skills.set_workspace(directory)
         self.security.set_workspace(directory)
@@ -48,12 +102,47 @@ class ToolManager:
         if callable(set_workspace):
             set_workspace(directory)
 
-    def close(self) -> None:
-        """Release runtime-owned resources, including managed processes."""
+    def finish_run(self) -> None:
+        """Release task resources while preserving conversation-owned browser state."""
         try:
             self.process_manager.close()
         finally:
             self.subagents.close()
+
+    def close(self) -> None:
+        """Release all task and conversation resources."""
+        self.cleanup_errors.clear()
+        cleanup = [
+            ("processes", lambda: self.process_manager.close(discard_output=True)),
+            ("subagents", self.subagents.close),
+        ]
+        for index, server in enumerate(self._mcp_servers):
+            cleanup.append((f"mcp_server_{index}", server.close))
+        seen = set()
+        for name, tool in self.toolregistry.tools.items():
+            closer = getattr(tool, "close", None)
+            if callable(closer) and id(tool) not in seen:
+                cleanup.append((name, closer))
+                seen.add(id(tool))
+        for name, closer in cleanup:
+            try:
+                closer()
+            except Exception as exc:
+                message = f"Cleanup failed for {name}: {type(exc).__name__}: {exc}"
+                self.cleanup_errors.append(message)
+                self.logger.error(message)
+
+        self._mcp_servers.clear()
+        self._mcp_loaded = False
+
+    def register_tool(self, tool: Tool) -> str:
+        """Install a trusted host adapter before runs; policy never auto-allows it."""
+        if not self.toolregistry.tools:
+            self.toolregistry.discover()
+        name = self.toolregistry.register(tool)
+        self._definitions = None
+        self._bind_runtime_services()
+        return name
 
     def approve_background_command(
         self,
@@ -85,17 +174,41 @@ class ToolManager:
         """Inject runtime-owned services into discovered tool instances."""
         self.process_manager.stop_event = self.stop_event
         for tool in self.toolregistry.tools.values():
+            config_setter = getattr(tool, "set_runtime_config", None)
+            if callable(config_setter):
+                config_setter(self.config)
             if hasattr(tool, "skill_registry"):
                 tool.skill_registry = self.skills
             if hasattr(tool, "subagent_manager"):
                 tool.subagent_manager = self.subagents
-            setter = getattr(tool, "set_process_manager", None)
-            if callable(setter):
-                setter(self.process_manager)
+
+            process_setter = getattr(tool, "set_process_manager", None)
+            if callable(process_setter):
+                process_setter(self.process_manager)
             elif hasattr(tool, "process_manager"):
                 tool.process_manager = self.process_manager
+            workspace_setter = getattr(tool, "set_workspace", None)
+            if callable(workspace_setter) and self._workspace_root is not None:
+                workspace_setter(self._workspace_root)
+
+            llm_setter = getattr(tool, "set_llm_provider", None)
+            if callable(llm_setter) and self._llm_provider is not None:
+                llm_setter(self._llm_provider)
+
+            context_setter = getattr(tool, "set_context_store", None)
+            if callable(context_setter) and self._context_stm is not None:
+                context_setter(self._context_stm, self._session_id_provider)
+
+            stop_setter = getattr(tool, "set_stop_event", None)
+            if callable(stop_setter):
+                stop_setter(self.stop_event)
+
+            search_setter = getattr(tool, "set_searcher", None)
+            if callable(search_setter):
+                search_setter(self._search_and_activate_tools)
 
     def get_tools(self) -> list[dict]:
+        self._load_mcp_tools()
         if self._definitions is None:
             if not self.toolregistry.tools:
                 self.toolregistry.discover()
@@ -110,15 +223,27 @@ class ToolManager:
 
         visible: list[dict] = []
         for definition in self._definitions:
-            function = definition.get("function", {}) if isinstance(definition, dict) else {}
+            function = (
+                definition.get("function", {}) if isinstance(definition, dict) else {}
+            )
             name = str(function.get("name", "")).strip().lower()
             if not name or name not in allowed:
                 continue
-            if name in {"web_search", "web_fetch"} and not network_allowed:
+            if (
+                name in {"web_search", "web_fetch", "browser_use"}
+                or name.startswith("mcp_")
+                or getattr(self.toolregistry.get(name), "requires_network", False)
+            ) and not network_allowed:
                 continue
             if name in {"skill_list", "skill_read"} and not self.skills.enabled:
                 continue
-            if name == "task_finish" and (self.config.get("runtime") or {}).get("completion_protocol", "implicit") != "explicit":
+            if (
+                name == "task_finish"
+                and (self.config.get("runtime") or {}).get(
+                    "completion_protocol", "implicit"
+                )
+                != "explicit"
+            ):
                 continue
             if name == "subagent" and not self.subagents.enabled:
                 continue
@@ -126,10 +251,306 @@ class ToolManager:
 
         return visible
 
+    CORE_MODEL_TOOLS = frozenset(
+        {
+            "tool_search",
+            "read_file",
+            "apply_patch",
+            "command_exec",
+            "process_poll",
+            "process_write",
+            "process_stop",
+            "make_directory",
+            "skill_list",
+            "skill_read",
+            "subagent",
+            "task_finish",
+        }
+    )
+
+    @staticmethod
+    def _search_tokens(value: str) -> list[str]:
+        expanded = re.sub(r"([a-z])([A-Z])", r"\1 \2", str(value or ""))
+        tokens = re.findall(r"[a-z0-9]+", expanded.casefold())
+        aliases = {
+            "editing": "edit",
+            "edited": "edit",
+            "writing": "write",
+            "written": "write",
+            "files": "file",
+            "directories": "directory",
+            "searching": "search",
+            "finding": "find",
+            "browsing": "browse",
+            "desktop": "computer",
+            "gui": "computer",
+            "screen": "computer",
+            "history": "context",
+            "memory": "context",
+        }
+        return [aliases.get(token, token) for token in tokens]
+
+    def _search_and_activate_tools(
+        self,
+        query: str,
+        top_k: int = 5,
+    ) -> dict[str, Any]:
+        """Find allowed capabilities and expose the best matches next turn."""
+        try:
+            limit = max(1, min(8, int(top_k)))
+        except (TypeError, ValueError):
+            limit = 5
+
+        query_tokens = set(self._search_tokens(query))
+        stop = {
+            "a",
+            "an",
+            "and",
+            "for",
+            "from",
+            "i",
+            "in",
+            "is",
+            "it",
+            "of",
+            "on",
+            "or",
+            "please",
+            "the",
+            "this",
+            "to",
+            "tool",
+            "tools",
+            "use",
+            "want",
+            "with",
+            "you",
+            "your",
+            "need",
+        }
+        query_tokens.difference_update(stop)
+        if not query_tokens:
+            return {
+                "matches": [],
+                "active_tools": list(self._active_tool_names),
+            }
+
+        synonyms = {
+            "fix": {"edit", "patch", "write"},
+            "edit": {"fix", "patch", "replace", "file"},
+            "write": {"create", "file", "save"},
+            "create": {"write", "file", "directory"},
+            "search": {"find", "grep", "glob", "context"},
+            "find": {"search", "grep", "glob"},
+            "inspect": {"read", "list", "explore"},
+            "codebase": {"explore", "grep", "glob", "list"},
+            "repository": {"explore", "grep", "glob", "list"},
+            "computer": {"desktop", "gui", "screen", "click", "type"},
+            "browser": {"computer", "web"},
+            "context": {"history", "memory", "previous", "earlier"},
+            "previous": {"context", "history", "memory"},
+            "earlier": {"context", "history", "memory"},
+        }
+        expanded = set(query_tokens)
+        for token in tuple(query_tokens):
+            expanded.update(synonyms.get(token, set()))
+
+        definitions = self.get_tools()
+        scored: list[tuple[float, dict[str, Any]]] = []
+        for definition in definitions:
+            function = (
+                definition.get("function", {}) if isinstance(definition, dict) else {}
+            )
+            name = str(function.get("name", "")).strip().lower()
+            if not name or name == "tool_search":
+                continue
+
+            name_tokens = set(self._search_tokens(name.replace("_", " ")))
+            description_tokens = set(
+                self._search_tokens(function.get("description", ""))
+            )
+            parameters = function.get("parameters", {})
+            schema_tokens = set(self._search_tokens(str(parameters)))
+
+            score = 0.0
+            score += 6.0 * len(expanded & name_tokens)
+            score += 2.0 * len(expanded & description_tokens)
+            score += 0.5 * len(expanded & schema_tokens)
+            normalized_query = " ".join(self._search_tokens(query))
+            normalized_name = " ".join(self._search_tokens(name.replace("_", " ")))
+            if normalized_name and normalized_name in normalized_query:
+                score += 10.0
+
+            if score > 0:
+                scored.append((score, definition))
+
+        query_words = " " + " ".join(self._search_tokens(query)) + " "
+
+        def explicit_name(definition):
+            name = str(definition.get("function", {}).get("name", ""))
+            return (
+                " " + " ".join(self._search_tokens(name.replace("_", " "))) + " "
+                in query_words
+            )
+
+        scored.sort(
+            key=lambda item: (
+                not explicit_name(item[1]),
+                -item[0],
+                str((item[1].get("function") or {}).get("name", "")),
+            )
+        )
+        selected = scored[:limit]
+
+        matched_names = [
+            str((definition.get("function") or {}).get("name", "")).strip().lower()
+            for _, definition in selected
+        ]
+        tool_config = self.config.get("tools") or {}
+        try:
+            max_active = int(tool_config.get("max_active_search_tools", 8))
+        except (AttributeError, TypeError, ValueError):
+            max_active = 8
+        max_active = max(1, min(12, max_active))
+
+        previous = [
+            name for name in self._active_tool_names if name not in matched_names
+        ]
+        self._active_tool_names = (matched_names + previous)[:max_active]
+        self._last_tool_search_query = str(query)
+
+        matches = [
+            {
+                "name": str((definition.get("function") or {}).get("name", "")),
+                "description": str(
+                    (definition.get("function") or {}).get("description", "")
+                )[:260],
+                "relevance": round(score, 3),
+            }
+            for score, definition in selected
+        ]
+        return {
+            "matches": matches,
+            "active_tools": list(self._active_tool_names),
+        }
+
+    def reset_tool_selection(self) -> None:
+        self._active_tool_names = []
+        self._last_tool_search_query = ""
+
+    def get_model_tools(
+        self, *, schema_token_budget=None, chars_per_token=4.0, required_names=()
+    ) -> list[dict]:
+        """Expose core tools plus capabilities selected through tool_search."""
+        visible = self.get_tools()
+        by_name = {
+            str((definition.get("function") or {}).get("name", ""))
+            .strip()
+            .lower(): definition
+            for definition in visible
+            if isinstance(definition, dict)
+            and isinstance(definition.get("function"), dict)
+        }
+
+        search_definition = by_name.get("tool_search")
+        if search_definition is None:
+            return visible
+
+        always_names = set(self.CORE_MODEL_TOOLS)
+        for name in by_name:
+            tool = self.toolregistry.get(name)
+            if str(getattr(tool, "model_exposure", "")).strip().lower() == "always":
+                always_names.add(name)
+
+        ordered: list[dict] = []
+        emitted: set[str] = set()
+
+        def add(name: str) -> None:
+            if name in emitted:
+                return
+            definition = by_name.get(name)
+            if definition is None:
+                return
+            emitted.add(name)
+            ordered.append(definition)
+
+        add("tool_search")
+        for definition in visible:
+            name = (
+                str((definition.get("function") or {}).get("name", "")).strip().lower()
+            )
+            if name in always_names and name != "tool_search":
+                add(name)
+        for name in self._active_tool_names:
+            add(name)
+
+        # Advertise every allowed capability even when its full schema is lazy.
+        # This keeps small contexts viable without hiding browser/desktop tools.
+        from copy import deepcopy
+
+        catalog = [name for name in by_name if name not in emitted]
+        if catalog:
+            ordered = deepcopy(ordered)
+            ordered[0]["function"]["description"] += (
+                " Available additional tools: "
+                + ", ".join(sorted(catalog))
+                + ". Search a tool name to load its complete argument schema."
+            )
+        if schema_token_budget is not None:
+            import json
+            import math
+            from copy import deepcopy
+
+            # Keep complete schemas. Less urgent capabilities remain discoverable;
+            # schema packing never rewrites a tool's argument contract.
+            required = {"tool_search", *required_names}
+            required.update(
+                name
+                for name in by_name
+                if str(
+                    getattr(self.toolregistry.get(name), "model_exposure", "")
+                ).lower()
+                == "always"
+            )
+
+            def render(names):
+                result = [deepcopy(by_name[name]) for name in names]
+                catalog = sorted(set(by_name) - set(names))
+                search = next(
+                    (d for d in result if d["function"]["name"] == "tool_search"), None
+                )
+                if search and catalog:
+                    search["function"]["description"] += (
+                        " Available additional tools: "
+                        + ", ".join(catalog)
+                        + ". Search a tool name to load its complete argument schema."
+                    )
+                return result
+
+            def fits(names):
+                return (
+                    math.ceil(
+                        len(json.dumps(render(names), ensure_ascii=False, default=str))
+                        / chars_per_token
+                    )
+                    <= schema_token_budget
+                )
+
+            selected = [name for name in by_name if name in required]
+            priority = list(self._active_tool_names) + [
+                d["function"]["name"] for d in ordered
+            ]
+            for name in priority:
+                if name in by_name and name not in selected and fits([*selected, name]):
+                    selected.append(name)
+            return render(selected)
+        return ordered
+
     def _find_tool(self, name: str):
         return self.toolregistry.get(str(name).strip().lower())
 
     def get_tool(self, name: str):
+        self._load_mcp_tools()
         if not self.toolregistry.tools:
             self.toolregistry.discover()
         self._bind_runtime_services()
@@ -158,12 +579,12 @@ class ToolManager:
         name = toolcall.name
 
         if name == "make_directory":
-            args["paths"] = [str(self._resolve_execution_path(p)) for p in args["paths"]]
+            args["paths"] = [
+                str(self._resolve_execution_path(p)) for p in args["paths"]
+            ]
 
-        elif name == "read_file":
-            args["file_path"] = str(
-                self._resolve_execution_path(args["file_path"])
-            )
+        elif name in {"read_file", "write_file", "edit_file"}:
+            args["file_path"] = str(self._resolve_execution_path(args["file_path"]))
 
         elif name == "command_exec":
             args["workdir"] = str(
@@ -171,6 +592,13 @@ class ToolManager:
             )
 
         elif name == "apply_patch":
+            if "edits" in args:
+                args["edits"] = [
+                    {**edit, "path": str(self._resolve_execution_path(edit["path"]))}
+                    for edit in args["edits"]
+                ]
+                toolcall.args = args
+                return toolcall
             patch = args["patch"]
             lines = patch.replace("\r\n", "\n").replace("\r", "\n").split("\n")
             normalized: list[str] = []
@@ -182,9 +610,7 @@ class ToolManager:
                 )
                 if match:
                     path = match.group(2).strip()
-                    line = match.group(1) + str(
-                        self._resolve_execution_path(path)
-                    )
+                    line = match.group(1) + str(self._resolve_execution_path(path))
                 normalized.append(line)
 
             args["patch"] = "\n".join(normalized)
@@ -284,10 +710,7 @@ class ToolManager:
             toolcall = incoming_call
 
             if not toolcall.valid:
-                message = (
-                    str(toolcall.validation_error).strip()
-                    or "Invalid tool call."
-                )
+                message = str(toolcall.validation_error).strip() or "Invalid tool call."
                 calls.append(toolcall)
                 results.append(
                     ToolResult(
@@ -334,21 +757,57 @@ class ToolManager:
                 )
                 continue
 
+            # A host may call execute() with a canonical ToolCall directly.
+            # The valid flag is not a substitute for the registered contract.
+            schema_error = self.dispatcher._schema_validation_error(
+                getattr(tool, "parameters", {}) or {}, toolcall.args
+            )
+            if schema_error:
+                toolcall.valid = False
+                toolcall.validation_error = schema_error
+                calls.append(toolcall)
+                results.append(
+                    ToolResult(
+                        success=False,
+                        name=toolcall.name,
+                        content={
+                            "error": {
+                                "type": "invalid_tool_call",
+                                "message": schema_error,
+                            }
+                        },
+                        metadata={"tool_call_id": toolcall.id},
+                        summary=schema_error,
+                    )
+                )
+                continue
+
             try:
                 toolcall = self.security.check(toolcall)
                 if (
-                    (toolcall.name in {"skill_list", "skill_read"} and not self.skills.enabled)
-                    or (toolcall.name == "subagent" and not self.subagents.enabled)
+                    getattr(tool, "requires_network", False)
+                    and not self.security.policy.allow_network_tools
                 ):
                     toolcall.approved = False
-                    toolcall.security_reason = "This feature is disabled by host configuration."
+                    toolcall.security_reason = "This tool requires network access, which is disabled by host configuration."
+                    toolcall.security_rule = "network_disabled"
+                if (
+                    toolcall.name in {"skill_list", "skill_read"}
+                    and not self.skills.enabled
+                ) or (toolcall.name == "subagent" and not self.subagents.enabled):
+                    toolcall.approved = False
+                    toolcall.security_reason = (
+                        "This feature is disabled by host configuration."
+                    )
                     toolcall.security_rule = "feature_disabled"
                 if self.stop_event is not None and self.stop_event.is_set():
                     toolcall.approved = False
                     toolcall.security_reason = "The current task has been cancelled."
                     toolcall.security_rule = "task_cancelled"
             except Exception as exc:
-                self.logger.error("Security check failed for '%s': %s", toolcall.name, exc)
+                self.logger.error(
+                    "Security check failed for '%s': %s", toolcall.name, exc
+                )
                 toolcall.approved = False
                 toolcall.security_reason = f"Security check failed: {exc}"
                 toolcall.security_rule = "security_failure"
@@ -364,7 +823,8 @@ class ToolManager:
                             "success": False,
                             "error": {
                                 "type": "security_denied",
-                                "message": toolcall.security_reason or "Tool execution denied by security policy.",
+                                "message": toolcall.security_reason
+                                or "Tool execution denied by security policy.",
                             },
                         },
                         metadata={

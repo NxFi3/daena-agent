@@ -8,7 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 
 pytest.importorskip("PySide6")
-from PySide6.QtCore import Qt, QPoint, QPointF, QEvent
+from PySide6.QtCore import Qt, QPoint, QPointF, QEvent, QThread, Signal
 from PySide6.QtGui import QWheelEvent, QMouseEvent, QInputMethodEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox, QDialog
@@ -22,12 +22,13 @@ from tests.test_studio import Script, wait_until
 
 
 @pytest.fixture(scope="module")
-def app():
-    return QApplication.instance() or QApplication([])
+def app(qt_app):
+    return qt_app
 
 
 @pytest.fixture
 def ui(tmp_path, app, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "user-data"))
     errors = []
     monkeypatch.setattr(QMessageBox, "warning", lambda *args: errors.append(args[-1]))
     window = StudioWindow(tmp_path)
@@ -109,6 +110,129 @@ def test_composer_respects_ime_preedit(app):
     composer.close()
 
 
+def test_welcome_suggestions_sidebar_toggle_and_keyboard_focus(ui):
+    assert ui.transcript.welcome.isVisible()
+    ui.transcript.suggestedPrompt.emit("Explain this project")
+    assert ui.input.toPlainText() == "Explain this project"
+    assert ui.input.hasFocus()
+    assert ui.sidebar.isVisible()
+    ui.toggle_sidebar()
+    assert not ui.sidebar.isVisible()
+    ui.toggle_sidebar()
+    assert ui.sidebar.isVisible()
+    ui.add_message("You", "A real message")
+    assert not ui.transcript.welcome.isVisible()
+    ui.new_session()
+    assert ui.transcript.welcome.isVisible()
+
+
+def test_theme_switch_persists_without_resetting_session(ui):
+    original_session = ui.session_id
+    assert ui.config.get("studio", {}).get("theme", "dark") == "dark"
+    ui.toggle_theme()
+    assert ui.config["studio"]["theme"] == "light"
+    assert ui.store.load_config()["studio"]["theme"] == "light"
+    assert ui.session_id == original_session
+    ui.toggle_theme()
+    assert ui.config["studio"]["theme"] == "dark"
+
+
+def test_tool_receipts_restore_from_archived_conversation(ui):
+    session = ui.session_id
+    ui.store.save_run(
+        session,
+        "Check tools",
+        [
+            {"type": "user_message", "text": "Check tools"},
+            {
+                "type": "tool_call",
+                "name": "read_file",
+                "arguments": {"file_path": "README.md"},
+            },
+            {
+                "type": "tool_result",
+                "name": "read_file",
+                "success": True,
+                "summary": "Read README.md",
+            },
+            {"type": "thinking_delta", "text": "Reasoning summary"},
+            {"type": "final_response", "text": "All set"},
+        ],
+        {"completed": True},
+    )
+    ui.refresh_history()
+    ui.open_history(ui.history.item(0))
+    card = ui.transcript.cards[-1]
+    assert card.text == "All set"
+    assert len(card.tools.calls) == 1
+    assert card.tools.calls[0]["status"] == "complete"
+    assert "README.md" in card.tools.details.toPlainText()
+    assert card.reasoning == "Reasoning summary"
+    assert not card.tools.isHidden()
+    assert not card.reasoning_button.isHidden()
+    assert not card.details_button.isVisible()
+
+
+def test_rename_history_updates_every_turn_without_changing_session(ui, monkeypatch):
+    original_session = ui.session_id
+    for title in ("First", "Second"):
+        ui.store.save_run(
+            original_session,
+            title,
+            [{"type": "user_message", "text": title}],
+            {"completed": True},
+        )
+    ui.refresh_history()
+    monkeypatch.setattr(
+        "src.studio.window.QInputDialog.getText",
+        lambda *args, **kwargs: ("  My research chat  ", True),
+    )
+    ui.rename_history(ui.history.item(0))
+    assert ui.history.item(0).toolTip() == "My research chat"
+    assert {run["title"] for _, run in ui.store.runs()} == {"My research chat"}
+    assert ui.session_id == original_session
+
+
+def test_delete_history_removes_every_turn_for_session(ui, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    from uuid import uuid4
+
+    session = uuid4()
+    ui.store.save_run(
+        session,
+        "Delete me",
+        [
+            {"type": "user_message", "text": "one"},
+            {"type": "final_response", "text": "1"},
+        ],
+        {"completed": True},
+    )
+    ui.store.save_run(
+        session,
+        "Delete me",
+        [
+            {"type": "user_message", "text": "two"},
+            {"type": "final_response", "text": "2"},
+        ],
+        {"completed": True},
+    )
+    ui.refresh_history()
+    target = next(
+        ui.history.item(index)
+        for index in range(ui.history.count())
+        if "Delete me" in ui.history.item(index).text()
+    )
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes
+    )
+    ui.delete_history(target)
+    assert all(run["session_id"] != str(session) for _, run in ui.store.runs())
+    assert all(
+        "Delete me" not in ui.history.item(index).text()
+        for index in range(ui.history.count())
+    )
+
+
 def test_wheel_zoom_without_modifiers_and_visible_reset(app):
     canvas = GraphCanvas()
     canvas.resize(800, 550)
@@ -176,6 +300,183 @@ def test_quick_provider_and_reasoning_controls_persist_independent_profiles(ui):
     ui.settings.apply_form()
     assert ui.config["llm"]["provider_config"]["generation_config"]["think"] is False
     assert ui.execution.reasoning.currentData() == "off"
+
+
+def test_chat_header_model_selector_and_reasoning_slider(ui):
+    ui._refresh_model_menu()
+    assert "Choose another model" in " ".join(a.text() for a in ui.model_menu.actions())
+    ui._select_model("qwen-test:9b")
+    assert ui.config["llm"]["provider_config"]["model_name"] == "qwen-test:9b"
+    assert "qwen-test:9b" in ui.model_hint.text()
+    ui.reasoning_slider.setValue(3)
+    assert ui.execution.reasoning.currentData() == "medium"
+    assert ui.config["llm"]["provider_config"]["generation_config"]["think"] == "medium"
+    assert ui.reasoning_label.text() == "Medium"
+    ui.open_diagnostics()
+    assert ui.stream_tabs.isVisible() and ui.execution.isVisible()
+    ui.diagnostics.close()
+
+
+def test_automation_keeps_each_agents_edits_and_results_separate(ui):
+    panel = ui.automation
+    panel.add_node()
+    a = panel.selected
+    panel.title.setText("First agent")
+    panel.prompt.setPlainText("Investigate the API")
+    panel.add_node()  # Commits agent 1 even without pressing Update.
+    b = panel.selected
+    panel.title.setText("Second agent")
+    panel.prompt.setPlainText("Write tests for the API")
+    panel.select_node(a)
+    assert panel.title.text() == "First agent"
+    assert panel.prompt.toPlainText() == "Investigate the API"
+    panel.select_node(b)
+    assert panel.title.text() == "Second agent"
+    assert panel.prompt.toPlainText() == "Write tests for the API"
+    panel.handle_event(
+        {
+            "type": "automation_node",
+            "node_id": a,
+            "status": "completed",
+            "response": "API reviewed",
+        }
+    )
+    panel.handle_event(
+        {
+            "type": "automation_node",
+            "node_id": b,
+            "status": "completed",
+            "response": "Tests written",
+        }
+    )
+    assert panel.report.toPlainText() == "Tests written"
+    panel.select_node(a)
+    assert panel.report.toPlainText() == "API reviewed"
+    panel.select_node(b)
+    assert panel.report.toPlainText() == "Tests written"
+    assert panel.graph.nodes[0].title == "First agent"
+    assert panel.graph.nodes[1].prompt == "Write tests for the API"
+
+
+def test_automation_draft_survives_panel_reload(ui):
+    from src.studio.automation import AutomationPanel
+
+    panel = ui.automation
+    panel.add_node()
+    panel.title.setText("Draft researcher")
+    panel.prompt.setPlainText("Find the requirements")
+    assert panel.flush_draft()
+    assert (ui.store.root / "automation-draft.json").exists()
+    restored = AutomationPanel()
+    restored.set_draft_path(ui.store.root / "automation-draft.json")
+    assert len(restored.graph.nodes) == 1
+    assert restored.graph.nodes[0].title == "Draft researcher"
+    assert restored.graph.nodes[0].prompt == "Find the requirements"
+    restored.select_node(restored.graph.nodes[0].id)
+    assert restored.prompt.toPlainText() == "Find the requirements"
+    restored.close()
+
+
+def test_automation_runs_away_from_chat_history(ui, monkeypatch):
+    chat = ui.add_message("You", "Original conversation")
+    ui.journal = [{"type": "user_message", "text": "Original conversation"}]
+    first_session = ui.session_id
+    ui.graph.upsert("parent", "Daena", "Original graph", "completed")
+
+    class Worker(QThread):
+        ready = Signal(object)
+        event = Signal(dict)
+        result = Signal(dict)
+
+        def __init__(
+            self,
+            config,
+            prompt,
+            *,
+            agent=None,
+            session_id=None,
+            blueprint=None,
+            parent=None,
+        ):
+            super().__init__(parent)
+            from threading import Event
+
+            self.stop = Event()
+            self.blueprint = blueprint
+
+        def run(self):
+            self.event.emit(
+                {
+                    "type": "automation_node",
+                    "node_id": self.blueprint.nodes[0].id,
+                    "status": "running",
+                }
+            )
+            self.event.emit(
+                {
+                    "type": "automation_event",
+                    "node_id": self.blueprint.nodes[0].id,
+                    "event": {"type": "content_delta", "text": "Progress"},
+                }
+            )
+            self.event.emit(
+                {
+                    "type": "automation_node",
+                    "node_id": self.blueprint.nodes[0].id,
+                    "status": "completed",
+                    "response": "Done",
+                }
+            )
+            self.result.emit(
+                {
+                    "text": "Automation completed",
+                    "metrics": {"completed": True, "outputs": {}},
+                }
+            )
+
+    monkeypatch.setattr("src.studio.window.RuntimeWorker", Worker)
+    panel = ui.automation
+    panel.add_node()
+    panel.title.setText("Independent agent")
+    panel.prompt.setPlainText("Do independent work")
+    panel.start()
+    wait_until(lambda: not ui.busy)
+    assert ui.session_id == first_session
+    assert ui.transcript.cards == [chat]
+    assert ui.journal == [{"type": "user_message", "text": "Original conversation"}]
+    assert set(ui.graph.nodes) == {"parent"}
+    assert ui.store.runs() == []
+    assert list((ui.store.root / "automation_runs").glob("*.json"))
+    assert panel.node_results[panel.graph.nodes[0].id] == "Done"
+    assert panel.report.toPlainText() == "Done"
+    assert panel.run_state.text() == "Automation completed"
+    assert not panel.stop_button.isVisible()
+
+
+def test_automation_ports_support_drag_to_connect(app):
+    from src.studio.graph import AgentNode
+
+    canvas = GraphCanvas(editable=True)
+    canvas.resize(900, 520)
+    canvas.show()
+    canvas.upsert("first", "First", "Draft", x=0, y=0)
+    canvas.upsert("second", "Second", "Review", x=520, y=0)
+    canvas.fit_graph()
+    app.processEvents()
+    emitted = []
+    canvas.wireRequested.connect(
+        lambda source, target: emitted.append((source, target))
+    )
+    start = canvas.mapFromScene(
+        canvas.nodes["first"].pos() + QPointF(AgentNode.WIDTH, AgentNode.HEIGHT / 2)
+    )
+    end = canvas.mapFromScene(
+        canvas.nodes["second"].pos() + QPointF(0, AgentNode.HEIGHT / 2)
+    )
+    drag(canvas, start, end)
+    assert emitted == [("first", "second")]
+    assert canvas.pending_wire is None and canvas.wire_preview is None
+    canvas.close()
 
 
 def test_tool_picker_saves_real_names_and_searches_descriptions(ui, monkeypatch):
