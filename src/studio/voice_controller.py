@@ -202,19 +202,27 @@ class VoiceController(QObject):
 
     def apply_settings(self, settings):
         settings = dict(settings)
-        if not self.session and self._restart_settings is None:
-            self.save_settings(settings)
-            if self.screen:
-                self.screen.set_input_mode(settings.get("input_mode", "text"))
-            self.dialog.set_state("Voice settings saved · open Voice to begin")
-            return
         try:
+            # Validate even while Voice is stopped. A saved-but-unusable provider
+            # configuration should be caught here, not after a Persian reply.
             self._providers(settings)
             self._perception(settings)
         except Exception as exc:
             self.error(
                 f"Voice settings were not applied: {exc}. Previous Voice configuration is retained."
             )
+            return
+
+        # Reflect automatic recovery from stale model paths in the actual UI so
+        # the next Apply/Start uses the repaired path rather than the old one.
+        if self.dialog and settings != self.dialog.values():
+            self.dialog.populate(settings)
+
+        if not self.session and self._restart_settings is None:
+            self.save_settings(settings, force=True)
+            if self.screen:
+                self.screen.set_input_mode(settings.get("input_mode", "text"))
+            self.dialog.set_state("Voice settings validated and saved · ready to start")
             return
         self.save_settings(settings, force=True)
         if self.session:
@@ -740,6 +748,8 @@ class VoiceController(QObject):
             self._close_test_audio()
             text_only = settings.get("input_mode", "microphone") == "text"
             recognizer, synthesizer = self._providers(settings)
+            if self.dialog and settings != self.dialog.values():
+                self.dialog.populate(settings)
             if text_only:
                 recognizer = None
             perception = self._perception(settings)
