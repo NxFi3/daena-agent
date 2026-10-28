@@ -194,13 +194,11 @@ class VoiceDialog(QDialog):
         form.setContentsMargins(14, 16, 14, 12)
         form.setVerticalSpacing(11)
         self.language = QComboBox()
-        for label, value in [
-            ("Automatic · فارسی / English", "auto"),
-            ("فارسی", "fa"),
-            ("English", "en"),
-        ]:
-            self.language.addItem(label, value)
-        form.addRow("Language", self.language)
+        self.language.addItem("Automatic · فارسی / English", "auto")
+        self.language.setToolTip(
+            "Whisper detects the spoken language for each utterance, and Daena chooses the matching local reply voice from the reply text."
+        )
+        form.addRow("Language detection", self.language)
         self.stt_model = QComboBox()
         self.stt_model.setEditable(True)
         self.stt_model.addItem(
