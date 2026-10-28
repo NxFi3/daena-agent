@@ -77,8 +77,8 @@ def test_voice_model_and_device_selections_restore_with_automatic_language(qt_ap
 
     dialog._select(dialog.input_mode, "text")
     dialog._update_input_mode()
-    assert dialog.stt_model.isEnabled()
-    assert dialog.stt_download.isEnabled()
+    assert not dialog.stt_model.isEnabled()
+    assert not dialog.stt_download.isEnabled()
     assert not dialog.stt_device.isEnabled()
     assert not dialog.input_device.isEnabled()
     dialog.close()
