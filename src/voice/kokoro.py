@@ -25,11 +25,16 @@ from .providers import (
 class KokoroProvider:
     """Kokoro ONNX's bounded async stream, consumed by the existing TTS worker.
 
+    The bundled voice IDs selected by this application are English voices; this
+    provider deliberately does not advertise Persian support.
+
     Native inference cannot be forcibly interrupted. The iterator checks the
     cancellation event before/after each native batch and every 100 ms PCM frame.
     Closing it joins the engine's current executor job before releasing the lock,
     so a second call cannot race a still-running model after interruption.
     """
+
+    supported_languages = ("en",)
 
     def __init__(
         self,
