@@ -464,6 +464,16 @@ class Loop:
             try:
                 delivered_start_line = int(evidence.get("start_line") or 1)
                 total_lines = int(evidence.get("total_lines") or 0)
+                # Retrying the exact same truncated line-range request returns
+                # the same prefix. Block that cycle and tell the model to follow
+                # next_read/start_offset. This relies on a receipt actually
+                # delivered to the model, not raw tool output.
+                if (
+                    evidence.get("truncated") is True
+                    and evidence.get("start_line") == wanted_start_line
+                    and evidence.get("end_line") == wanted_end_line
+                ):
+                    return receipt
                 returned_end_line = evidence.get("returned_end_line")
                 if returned_end_line is None:
                     if evidence.get("truncated"):
@@ -476,7 +486,12 @@ class Loop:
                 continue
             # Omitted end_line means EOF; only a receipt that proves complete
             # delivery through EOF may satisfy that request.
-            desired_end = wanted_end_line if wanted_end_line is not None else total_lines
+            desired_end = (
+                min(wanted_end_line, total_lines)
+                if wanted_end_line is not None and total_lines > 0
+                else wanted_end_line if wanted_end_line is not None
+                else total_lines
+            )
             complete_to_eof = (
                 wanted_end_line is not None
                 or (
