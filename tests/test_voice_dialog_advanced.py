@@ -45,6 +45,45 @@ def test_language_selection_migrates_old_fixed_language_to_automatic(qt_app):
     dialog.close()
 
 
+def test_voice_model_and_device_selections_restore_with_automatic_language(qt_app, tmp_path):
+    persian = tmp_path / "persian.onnx"
+    persian_json = tmp_path / "persian.onnx.json"
+    persian.touch()
+    persian_json.touch()
+
+    dialog = VoiceDialog(
+        {
+            "language": "fa",  # Migrate stale fixed-language preference.
+            "stt_device": "unsupported-device",
+            "tts_fa_model": str(persian),
+            "input_device_id": "removed-microphone",
+            "output_device_id": "removed-speaker",
+        }
+    )
+    assert dialog.values()["language"] == "auto"
+    assert dialog.values()["stt_device"] == "cpu"
+    assert dialog.values()["tts_fa_model"] == str(persian)
+
+    dialog.set_devices(
+        {
+            "inputs": [{"id": "current-mic", "name": "Current microphone"}],
+            "outputs": [{"id": "current-speaker", "name": "Current speaker"}],
+        }
+    )
+    assert dialog.values()["input_device_id"] == "removed-microphone"
+    assert dialog.values()["output_device_id"] == "removed-speaker"
+    assert "Unavailable device" in dialog.input_device.currentText()
+    assert "Unavailable device" in dialog.output_device.currentText()
+
+    dialog._select(dialog.input_mode, "text")
+    dialog._update_input_mode()
+    assert dialog.stt_model.isEnabled()
+    assert dialog.stt_download.isEnabled()
+    assert not dialog.stt_device.isEnabled()
+    assert not dialog.input_device.isEnabled()
+    dialog.close()
+
+
 def test_applied_duplex_status_survives_draft_mode_changes_and_is_plain_text(qt_app):
     dialog = VoiceDialog()
     dialog.set_duplex_status(
