@@ -274,6 +274,10 @@ class LanguageRouter:
         selected = (
             self.required_languages if self.language == "auto" else (self.language,)
         )
+        if not selected:
+            raise VoiceLanguageUnavailable(
+                "No local output voice is configured. Choose a Persian Piper voice and an English Piper/Kokoro voice."
+            )
         missing = [code for code in selected if self.providers.get(code) is None]
         if missing:
             raise VoiceLanguageUnavailable(
