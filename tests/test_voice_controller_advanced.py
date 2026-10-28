@@ -287,23 +287,25 @@ def test_switch_between_kokoro_and_piper_without_using_stale_optional_voices(
         "src.studio.voice_controller.FasterWhisperProvider",
         lambda *args, **kwargs: object(),
     )
+    persian = tmp_path / "persian.onnx"
+    (tmp_path / "persian.onnx.json").touch()
+    persian.touch()
     shared = {
         "input_mode": "microphone",
         "language": "auto",
         "stt_model": str(tmp_path),
         "kokoro_model_path": str(model),
         "kokoro_voices_path": str(voices),
-        "tts_fa_model": str(tmp_path / "stale-persian.onnx"),
+        "tts_fa_model": str(persian),
     }
     kokoro = {**shared, "english_engine": "kokoro", "tts_en_model": "/stale"}
     piper = {**shared, "english_engine": "piper", "tts_en_model": str(english)}
 
     _, synth = c._providers(kokoro)
     synth.prepare()
-    assert created == ["kokoro"]
-    assert synth.providers["fa"] is None
-    with pytest.raises(Exception, match="local fa voice"):
-        list(synth.synthesize("سلام", "auto"))
+    assert created == [("piper", ("fa",)), "kokoro"]
+    assert synth.providers["fa"] is not None
+    assert synth.providers["en"] is not None
 
     c.apply_settings(kokoro)
     c.poll()
@@ -311,12 +313,18 @@ def test_switch_between_kokoro_and_piper_without_using_stale_optional_voices(
     c.apply_settings(piper)
     c.poll()
     assert c.session is not None and c._settings["english_engine"] == "piper"
-    assert created == ["kokoro", ("piper", ("en",))]
+    assert created == [
+        ("piper", ("fa",)),
+        "kokoro",
+        ("piper", ("fa", "en")),
+    ]
     c.apply_settings(kokoro)
     c.poll()
     assert c.session is not None and c._settings["english_engine"] == "kokoro"
-    assert created[-1] == "kokoro"
-    assert [item for item in created if isinstance(item, tuple)] == [("piper", ("en",))]
+    assert created[-2:] == [("piper", ("fa",)), "kokoro"]
+    assert [
+        item for item in created if isinstance(item, tuple)
+    ] == [("piper", ("fa",)), ("piper", ("fa", "en")), ("piper", ("fa",))]
 
 
 def test_voice_language_routes_automatically_even_if_old_setting_says_english(
@@ -347,7 +355,9 @@ def test_voice_language_routes_automatically_even_if_old_setting_says_english(
 
     assert recognizer.language == "auto"
     assert synthesizer.language == "auto"
-    assert set(synthesizer.model_paths) == {"fa", "en"}
+    assert synthesizer.available_languages == ("fa", "en")
+    assert synthesizer.providers["fa"] is synthesizer.providers["en"]
+    assert set(synthesizer.providers["fa"].model_paths) == {"fa", "en"}
 
 
 def test_voice_start_requires_at_least_one_configured_output_voice(
@@ -355,7 +365,7 @@ def test_voice_start_requires_at_least_one_configured_output_voice(
 ):
     c, _ = controller
     c._provider_factory = None
-    with pytest.raises(ValueError, match="at least one local output voice"):
+    with pytest.raises(ValueError, match="needs a working Persian voice"):
         c._providers(
             {
                 "input_mode": "text",
@@ -399,7 +409,9 @@ def test_text_only_mode_never_constructs_whisper_and_keeps_bilingual_voices(
     )
     assert recognizer is None
     assert synthesizer.language == "auto"
-    assert set(synthesizer.model_paths) == {"fa", "en"}
+    assert synthesizer.available_languages == ("fa", "en")
+    assert synthesizer.providers["fa"] is synthesizer.providers["en"]
+    assert set(synthesizer.providers["fa"].model_paths) == {"fa", "en"}
 
 
 def test_cli_installed_paths_fill_empty_settings_but_preserve_custom_paths(
