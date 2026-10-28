@@ -557,9 +557,7 @@ class VoiceController(QObject):
                 valid_piper("fa")
                 if lang == "fa"
                 else (
-                    valid_kokoro()
-                    if english_engine == "kokoro"
-                    else valid_piper("en")
+                    valid_kokoro() if english_engine == "kokoro" else valid_piper("en")
                 )
             )
         )
@@ -576,9 +574,7 @@ class VoiceController(QObject):
             if not (lang == "en" and english_engine == "kokoro")
         }
         piper = (
-            PiperProvider(
-                piper_paths, language="auto", length_scale=1.0 / speed
-            )
+            PiperProvider(piper_paths, language="auto", length_scale=1.0 / speed)
             if piper_paths
             else None
         )
