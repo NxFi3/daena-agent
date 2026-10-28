@@ -758,11 +758,11 @@ class Loop:
 
     def _record_failed_action(self, call, result):
         metadata = result.metadata if isinstance(result.metadata, dict) else {}
-        if (
-            result.success
-            or metadata.get("loop_guard_blocked")
-            or metadata.get("duplicate_action")
-        ):
+        if result.success:
+            return
+        if metadata.get("loop_guard_blocked") or metadata.get("duplicate_action"):
+            # A blocked duplicate is not a real failed tool attempt and should
+            # neither increase nor erase the underlying action failure count.
             return
         exact_key = Loop._failure_exact_key(self, call)
         scope_key = Loop._failure_scope_key(self, call)
@@ -835,11 +835,13 @@ class Loop:
                     )
                 },
             })
-            if read_id:
+                if read_id:
                 seen.add(read_id)
-            # Advancing this revision here means retries are unlocked only when
-            # this newly observed source span was actually sent to the model.
+            # A new delivered source span is fresh evidence; make retries eligible
+            # again, but only after it has actually reached the model.
             self._evidence_revision = getattr(self, "_evidence_revision", 0) + 1
+            self._failed_exact_calls = {}
+            self._failed_action_scopes = {}
         if len(receipts) > self.MAX_READ_RECEIPTS:
             del receipts[:len(receipts) - self.MAX_READ_RECEIPTS]
 
