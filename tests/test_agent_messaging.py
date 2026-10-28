@@ -138,8 +138,14 @@ def test_shared_bus_broadcast_reaches_running_peers_and_parent(tmp_path):
         assert receipt.success
         receipt = receipt.content
         assert receipt["delivery"] == "broadcast"
-        assert any("likely language-routing bug" in item for item in instances[1].messages)
-        assert not any("likely language-routing bug" in item for item in instances[0].messages)
+        sender_agent = manager._get(first["agent_id"]).agent
+        peer_agent = manager._get(second["agent_id"]).agent
+        assert any(
+            "likely language-routing bug" in item for item in peer_agent.messages
+        )
+        assert not any(
+            "likely language-routing bug" in item for item in sender_agent.messages
+        )
         assert manager.inbox(second["agent_id"])[0]["sender"] == first["agent_id"]
         assert manager.inbox() == [
             {
