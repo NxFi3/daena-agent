@@ -14,10 +14,10 @@ from threading import RLock
 
 from .providers import (
     AudioChunk,
+    LanguageRouter,
     VoiceCancelled,
     VoiceError,
     _check_stop,
-    language_runs,
     text_language,
 )
 
@@ -25,11 +25,16 @@ from .providers import (
 class KokoroProvider:
     """Kokoro ONNX's bounded async stream, consumed by the existing TTS worker.
 
+    The bundled voice IDs selected by this application are English voices; this
+    provider deliberately does not advertise Persian support.
+
     Native inference cannot be forcibly interrupted. The iterator checks the
     cancellation event before/after each native batch and every 100 ms PCM frame.
     Closing it joins the engine's current executor job before releasing the lock,
     so a second call cannot race a still-running model after interruption.
     """
+
+    supported_languages = ("en",)
 
     def __init__(
         self,
@@ -202,66 +207,33 @@ class KokoroProvider:
             _check_stop(stop_event)
 
 
-class BilingualSynthesizer:
-    """Route writing systems to explicitly configured local voice engines.
+class BilingualSynthesizer(LanguageRouter):
+    """Compatibility wrapper around the common per-language output router.
 
-    ``english`` may be Kokoro or Piper; ``persian`` is normally Piper. A missing
-    engine is an actionable error, never a silent language or cloud fallback.
+    Kokoro supplies English; the configured Persian provider supplies Persian.
+    All language detection, readiness checks and synthesis dispatch live in
+    LanguageRouter so callers get the same contract regardless of engine.
     """
 
     def __init__(
-        self, english=None, persian=None, *, language="auto", require_all_languages=True
+        self,
+        english=None,
+        persian=None,
+        *,
+        language="auto",
+        require_all_languages=True,
     ):
-        if language not in {"auto", "fa", "en"}:
-            raise VoiceError("Speech language must be auto, fa or en")
-        self.providers = {"en": english, "fa": persian}
-        self.language = language
-        self.require_all_languages = bool(require_all_languages)
-        self._lock = RLock()
-
-    def _provider(self, language):
-        provider = self.providers.get(language)
-        if provider is None:
-            from .providers import VoiceLanguageUnavailable
-
-            raise VoiceLanguageUnavailable(
-                f"Select a local {language} voice in Voice settings; Kokoro speaks English only"
+        required = (
+            ("fa", "en")
+            if require_all_languages
+            else tuple(
+                code
+                for code, provider in (("fa", persian), ("en", english))
+                if provider is not None
             )
-        return provider
-
-    def prepare(self, stop_event=None):
-        selected = ("fa", "en") if self.language == "auto" else (self.language,)
-        if self.language == "auto" and not self.require_all_languages:
-            selected = tuple(
-                code for code in selected if self.providers[code] is not None
-            )
-        if not selected:
-            raise VoiceError("Select a local output voice in Voice settings")
-        with self._lock:
-            for language in selected:
-                _check_stop(stop_event)
-                provider = self._provider(language)
-                prepare = getattr(provider, "prepare", None)
-                if callable(prepare):
-                    prepare(stop_event=stop_event)
-        _check_stop(stop_event)
-
-    def synthesize(self, text, language="auto", stop_event=None):
-        _check_stop(stop_event)
-        selected = self.language if language == "auto" else language
-        if selected not in {"auto", "fa", "en"}:
-            raise VoiceError("Speech language must be auto, fa or en")
-        text = str(text).strip()
-        if not text:
-            return
-        runs = (
-            language_runs(text, text_language(text))
-            if selected == "auto"
-            else [(selected, text)]
         )
-        with self._lock:
-            for code, run in runs:
-                _check_stop(stop_event)
-                provider = self._provider(code)
-                yield from provider.synthesize(run, code, stop_event=stop_event)
-        _check_stop(stop_event)
+        super().__init__(
+            {"en": english, "fa": persian},
+            language=language,
+            required_languages=required,
+        )

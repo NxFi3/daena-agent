@@ -1,5 +1,6 @@
 """Speech evidence follows the matching request without blocking ordinary chat."""
 
+from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
 
@@ -287,23 +288,25 @@ def test_switch_between_kokoro_and_piper_without_using_stale_optional_voices(
         "src.studio.voice_controller.FasterWhisperProvider",
         lambda *args, **kwargs: object(),
     )
+    persian = tmp_path / "persian.onnx"
+    (tmp_path / "persian.onnx.json").touch()
+    persian.touch()
     shared = {
         "input_mode": "microphone",
         "language": "auto",
         "stt_model": str(tmp_path),
         "kokoro_model_path": str(model),
         "kokoro_voices_path": str(voices),
-        "tts_fa_model": str(tmp_path / "stale-persian.onnx"),
+        "tts_fa_model": str(persian),
     }
     kokoro = {**shared, "english_engine": "kokoro", "tts_en_model": "/stale"}
     piper = {**shared, "english_engine": "piper", "tts_en_model": str(english)}
 
     _, synth = c._providers(kokoro)
     synth.prepare()
-    assert created == ["kokoro"]
-    assert synth.providers["fa"] is None
-    with pytest.raises(Exception, match="local fa voice"):
-        list(synth.synthesize("سلام", "auto"))
+    assert created == [("piper", ("fa",)), "kokoro"]
+    assert synth.providers["fa"] is not None
+    assert synth.providers["en"] is not None
 
     c.apply_settings(kokoro)
     c.poll()
@@ -311,12 +314,55 @@ def test_switch_between_kokoro_and_piper_without_using_stale_optional_voices(
     c.apply_settings(piper)
     c.poll()
     assert c.session is not None and c._settings["english_engine"] == "piper"
-    assert created == ["kokoro", ("piper", ("en",))]
+    assert created == [
+        ("piper", ("fa",)),
+        "kokoro",
+        ("piper", ("fa", "en")),
+    ]
     c.apply_settings(kokoro)
     c.poll()
     assert c.session is not None and c._settings["english_engine"] == "kokoro"
-    assert created[-1] == "kokoro"
-    assert [item for item in created if isinstance(item, tuple)] == [("piper", ("en",))]
+    assert created[-2:] == [("piper", ("fa",)), "kokoro"]
+    assert [
+        item for item in created if isinstance(item, tuple)
+    ] == [("piper", ("fa",)), ("piper", ("fa", "en")), ("piper", ("fa",))]
+
+
+def test_stale_persian_setting_recovers_to_installed_piper_voice(
+    controller, tmp_path, monkeypatch
+):
+    c, _ = controller
+    c._provider_factory = None
+    persian = tmp_path / "fa_IR-amir-medium.onnx"
+    english = tmp_path / "en_US-lessac-high.onnx"
+    for path in (
+        persian,
+        Path(str(persian) + ".json"),
+        english,
+        Path(str(english) + ".json"),
+    ):
+        path.touch()
+    monkeypatch.setattr(
+        "src.studio.voice_controller.installed_models",
+        lambda: {
+            "piper-fa": {"path": str(persian)},
+            "piper-en": {"path": str(english)},
+        },
+    )
+    settings = {
+        "input_mode": "text",
+        "language": "en",
+        "stt_model": "/not-used-in-text-mode",
+        "english_engine": "piper",
+        "tts_fa_model": str(tmp_path / "deleted-persian.onnx"),
+        "tts_en_model": str(english),
+    }
+
+    _, synthesizer = c._providers(settings)
+
+    assert settings["tts_fa_model"] == str(persian)
+    assert synthesizer.available_languages == ("fa", "en")
+    assert set(synthesizer.providers["fa"].model_paths) == {"fa", "en"}
 
 
 def test_voice_language_routes_automatically_even_if_old_setting_says_english(
@@ -347,7 +393,9 @@ def test_voice_language_routes_automatically_even_if_old_setting_says_english(
 
     assert recognizer.language == "auto"
     assert synthesizer.language == "auto"
-    assert set(synthesizer.model_paths) == {"fa", "en"}
+    assert synthesizer.available_languages == ("fa", "en")
+    assert synthesizer.providers["fa"] is synthesizer.providers["en"]
+    assert set(synthesizer.providers["fa"].model_paths) == {"fa", "en"}
 
 
 def test_voice_start_requires_at_least_one_configured_output_voice(
@@ -355,7 +403,7 @@ def test_voice_start_requires_at_least_one_configured_output_voice(
 ):
     c, _ = controller
     c._provider_factory = None
-    with pytest.raises(ValueError, match="at least one local output voice"):
+    with pytest.raises(ValueError, match="needs a working Persian voice"):
         c._providers(
             {
                 "input_mode": "text",
@@ -399,7 +447,45 @@ def test_text_only_mode_never_constructs_whisper_and_keeps_bilingual_voices(
     )
     assert recognizer is None
     assert synthesizer.language == "auto"
-    assert set(synthesizer.model_paths) == {"fa", "en"}
+    assert synthesizer.available_languages == ("fa", "en")
+    assert synthesizer.providers["fa"] is synthesizer.providers["en"]
+    assert set(synthesizer.providers["fa"].model_paths) == {"fa", "en"}
+
+
+def test_stopped_voice_settings_are_validated_before_being_saved(
+    controller, monkeypatch, tmp_path
+):
+    c, _ = controller
+    c.stop()
+    c._provider_factory = None
+    monkeypatch.setattr(
+        "src.studio.voice_controller.installed_models", lambda: {}
+    )
+    saved = []
+    monkeypatch.setattr(
+        c, "save_settings", lambda settings, **kwargs: saved.append(dict(settings))
+    )
+    kokoro = tmp_path / "kokoro.onnx"
+    voices = tmp_path / "voices.bin"
+    kokoro.touch()
+    voices.touch()
+
+    c.apply_settings(
+        {
+            "input_mode": "text",
+            "language": "auto",
+            "stt_model": "large-v3-turbo",
+            "english_engine": "kokoro",
+            "tts_fa_model": str(tmp_path / "missing-fa.onnx"),
+            "kokoro_model_path": str(kokoro),
+            "kokoro_voices_path": str(voices),
+        }
+    )
+
+    assert c.session is None
+    assert saved == []
+    assert "needs a working Persian voice" in c.dialog.error_label.text()
+    assert "Kokoro supplies English only" in c.dialog.error_label.text()
 
 
 def test_cli_installed_paths_fill_empty_settings_but_preserve_custom_paths(
@@ -409,17 +495,23 @@ def test_cli_installed_paths_fill_empty_settings_but_preserve_custom_paths(
     monkeypatch.setattr(
         "src.studio.voice_controller.installed_models",
         lambda: {
+            "piper-fa": {"path": "/cache/fa.onnx"},
+            "piper-en": {"path": "/cache/en.onnx"},
             "kokoro-en": {"path": "/cache/kokoro.onnx"},
             "speaker-embedding": {"path": "/cache/speaker.onnx"},
             "audio-events": {"path": "/cache/sound.onnx"},
         },
     )
     settings = {
+        "tts_fa_model": "/deleted/old-fa.onnx",
+        "tts_en_model": "",
         "kokoro_model_path": "",
         "kokoro_voices_path": "",
         "speaker_model_path": "/custom/speaker.onnx",
     }
     c._installed_settings(settings)
+    assert settings["tts_fa_model"] == "/cache/fa.onnx"
+    assert settings["tts_en_model"] == "/cache/en.onnx"
     assert settings["kokoro_model_path"] == "/cache/kokoro.onnx"
     assert settings["kokoro_voices_path"] == "/cache/voices-v1.0.bin"
     assert settings["sound_labels_path"] == "/cache/class_labels_indices.csv"

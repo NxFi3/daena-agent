@@ -1,6 +1,7 @@
 """Voice settings and acoustic evidence stay local, optional and reviewable."""
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -166,6 +167,49 @@ def test_advanced_settings_round_trip_and_emit_single_coherent_start(qt_app):
     assert dialog.sound_threshold.isEnabled()
     dialog.set_active(False)
     assert dialog.perception_page.isEnabled()
+    dialog.close()
+
+
+def test_voice_readiness_explains_missing_fa_pair_and_accepts_kokoro_english(qt_app, tmp_path):
+    persian = tmp_path / "fa.onnx"
+    english = tmp_path / "en.onnx"
+    kokoro = tmp_path / "kokoro.onnx"
+    kokoro_voices = tmp_path / "voices.bin"
+    for path in (
+        persian,
+        Path(str(persian) + ".json"),
+        english,
+        Path(str(english) + ".json"),
+        kokoro,
+        kokoro_voices,
+    ):
+        path.touch()
+
+    dialog = VoiceDialog(
+        {
+            "tts_fa_model": str(persian),
+            "tts_en_model": str(english),
+        }
+    )
+    assert "Ready" in dialog.voice_readiness.text()
+    assert "Persian via Piper" in dialog.voice_readiness.text()
+    assert "English via Piper" in dialog.voice_readiness.text()
+
+    dialog.populate(
+        {
+            "english_engine": "kokoro",
+            "tts_fa_model": str(persian),
+            "kokoro_model_path": str(kokoro),
+            "kokoro_voices_path": str(kokoro_voices),
+        }
+    )
+    assert "Ready" in dialog.voice_readiness.text()
+    assert "English via Kokoro" in dialog.voice_readiness.text()
+
+    dialog.tts_fa_model.clear()
+    assert "Not ready" in dialog.voice_readiness.text()
+    assert "Persian" in dialog.voice_readiness.text()
+    assert "Piper voice" in dialog.voice_readiness.text()
     dialog.close()
 
 
