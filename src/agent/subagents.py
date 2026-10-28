@@ -658,7 +658,7 @@ class SubagentManager:
         with self.lock:
             return [
                 dict(message)
-                for message in list(self._messages)[-max(limit * 5, 100):]
+                for message in self._messages
                 if message["recipient"] == "all"
             ][-limit:]
 
