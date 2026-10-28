@@ -113,14 +113,21 @@ narrated; a slow Agent still adds its own response delay.
 
 Language routing is automatic for every microphone utterance and every
 spoken reply, even when an older saved setting says English or Persian. Whisper
-detects the spoken language per utterance; the reply router selects configured
-voices from the reply's writing system and can switch between Persian and English
-within one response. Available voices are loaded without requiring every language
-at startup. For example, **Kokoro model + voices** can speak English without an
-English Piper voice, while Persian still requires its own configured Piper voice.
-If a reply needs a language with no local voice, Voice reports that specific
-missing voice and stays active. It never silently downloads or substitutes a
-different language. Microphone mode still needs a local Whisper model.
+detects the spoken language per utterance; the common output router sends Persian
+runs to the configured Persian Piper voice and English runs to the selected
+English provider. It can switch between the two within one response. Settings
+show live readiness feedback for both sides. **Apply voice settings** and **Start
+Voice** validate the complete bilingual setup before recording or speaking; a
+stale saved Piper path is repaired to the installed catalog voice when one exists.
+This prevents a conversation from starting successfully and only later failing on
+a Persian answer.
+
+The Persian Piper selection must point to the `.onnx` file and its matching
+`.onnx.json` sidecar from the same voice. If either is missing, Settings explains
+what is wrong. The **Kokoro model + voices** option supplies the English side; the
+official Kokoro ONNX voice pack does not include Persian, so it cannot replace the
+Persian Piper voice. No provider silently downloads a model or substitutes an
+English voice for Persian. Microphone mode still needs a local Whisper model.
 
 ## One-time model setup
 
