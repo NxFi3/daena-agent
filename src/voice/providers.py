@@ -205,6 +205,115 @@ def language_runs(text: str, fallback="en"):
         yield current, "".join(buffer).strip()
 
 
+class LanguageRouter:
+    """Route output text to explicit per-language synthesizers.
+
+    Every engine follows the same small contract: optional prepare(stop_event)
+    and synthesize(text, language, stop_event) methods yielding AudioChunks.
+    The router alone decides which language provider handles each writing run.
+    """
+
+    _LABELS = {"fa": "Persian", "en": "English"}
+
+    def __init__(
+        self,
+        providers: Mapping[str, object | None],
+        *,
+        language="auto",
+        required_languages: tuple[str, ...] = ("fa", "en"),
+    ):
+        if language not in {"auto", "fa", "en"}:
+            raise VoiceError("Speech language must be auto, fa or en")
+        if not isinstance(providers, Mapping):
+            raise VoiceError("Voice providers must be mapped by language code")
+        normalized = dict(providers)
+        if any(code not in {"fa", "en"} for code in normalized):
+            raise VoiceError("Voice routing currently supports Persian and English")
+        if (
+            not isinstance(required_languages, (tuple, list))
+            or any(code not in {"fa", "en"} for code in required_languages)
+        ):
+            raise VoiceError("Required voice languages must be fa/en language codes")
+        self.providers = normalized
+        self.language = language
+        self.required_languages = tuple(dict.fromkeys(required_languages))
+        self._lock = RLock()
+
+    @property
+    def available_languages(self) -> tuple[str, ...]:
+        """Languages with configured providers, without loading models."""
+        return tuple(
+            code for code in ("fa", "en") if self.providers.get(code) is not None
+        )
+
+    @classmethod
+    def _missing_voice_message(cls, language: str) -> str:
+        label = cls._LABELS.get(language, language)
+        if language == "fa":
+            return (
+                "Persian output is not configured. In Settings -> Voice -> Models, "
+                "select/download the Persian Piper .onnx voice and its matching "
+                ".onnx.json file. The official Kokoro ONNX voice pack does not "
+                "include Persian."
+            )
+        if language == "en":
+            return (
+                "English output is not configured. Select an English Piper "
+                ".onnx voice plus its matching .onnx.json file, or configure "
+                "both the Kokoro .onnx model and matching voices .bin archive."
+            )
+        return f"{label} output is not configured in Voice settings."
+
+    def _provider(self, language: str):
+        provider = self.providers.get(language)
+        if provider is None:
+            raise VoiceLanguageUnavailable(self._missing_voice_message(language))
+        return provider
+
+    def prepare(self, stop_event=None):
+        selected = (
+            self.required_languages if self.language == "auto" else (self.language,)
+        )
+        missing = [code for code in selected if self.providers.get(code) is None]
+        if missing:
+            raise VoiceLanguageUnavailable(
+                "Automatic language switching is not ready: "
+                + " ".join(self._missing_voice_message(code) for code in missing)
+            )
+        prepared: set[int] = set()
+        with self._lock:
+            for language in selected:
+                _check_stop(stop_event)
+                provider = self._provider(language)
+                if id(provider) in prepared:
+                    continue
+                prepare = getattr(provider, "prepare", None)
+                if callable(prepare):
+                    prepare(stop_event=stop_event)
+                prepared.add(id(provider))
+        _check_stop(stop_event)
+
+    def synthesize(self, text, language="auto", stop_event=None):
+        _check_stop(stop_event)
+        selected = self.language if language == "auto" else language
+        if selected not in {"auto", "fa", "en"}:
+            raise VoiceError("Speech language must be auto, fa or en")
+        text = str(text).strip()
+        if not text:
+            return
+        runs = (
+            language_runs(text, text_language(text))
+            if selected == "auto"
+            else [(selected, text)]
+        )
+        with self._lock:
+            for code, run in runs:
+                _check_stop(stop_event)
+                provider = self._provider(code)
+                yield from provider.synthesize(run, code, stop_event=stop_event)
+        _check_stop(stop_event)
+
+
 class PiperProvider:
     """Sentence streaming through the maintained Piper 1.3+ AudioChunk API."""
 
@@ -230,6 +339,10 @@ class PiperProvider:
         self._loader = voice_loader
         self._voices = {}
         self._lock = RLock()
+
+    @property
+    def available_languages(self) -> tuple[str, ...]:
+        return tuple(code for code in ("fa", "en") if code in self.model_paths)
 
     def _load(self, language):
         if language in self._voices:
