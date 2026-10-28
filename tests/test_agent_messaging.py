@@ -212,7 +212,7 @@ def test_parent_shared_bus_broadcast_is_delivered_to_every_child(tmp_path):
         manager.wait_all(3000)
 
 
-def test_shipped_config_enables_agent_messages_for_delegated_children():
+def test_shipped_config_enables_agent_messages_for_delegated_children(tmp_path):
     import json
     from pathlib import Path
 
@@ -226,12 +226,13 @@ def test_shipped_config_enables_agent_messages_for_delegated_children():
     assert "agent_message" in allowed
 
     manager = SubagentManager(config, lambda child_config: None)
+    manager.set_workspace(str(tmp_path))
     from src.agent.subagents import Cancellation, ChildTask
 
     child = ChildTask(
         "test-child", "Inspect", "read_only", Cancellation(None, 30)
     )
-    child_config = manager._child_config(child, str(Path.cwd()))
+    child_config = manager._child_config(child, str(tmp_path))
     assert "agent_message" in child_config["security"]["allowed_tools"]
 
 
