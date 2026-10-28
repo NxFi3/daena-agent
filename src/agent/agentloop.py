@@ -1,8 +1,8 @@
-"""Model-directed execution with ordered tool receipts and bounded resources.
+"""Model-directed execution with ordered receipts, bounded context, and loop guards.
 
-The runtime validates protocols and owns cancellation. It does not classify task
-intent or infer verification from command names. It only bounds exact repeated
-read-only observations when the workspace has not changed.
+The runtime validates tool protocols, preserves recovery evidence, and blocks
+repeated observations/actions only when existing receipts prove they add no
+information. New evidence or workspace changes permit deliberate recovery.
 """
 
 from __future__ import annotations
@@ -288,7 +288,6 @@ class Loop:
             # Successful results are fresh evidence unless a guard synthesized
             # them. This permits deliberate retries after useful new evidence.
             self._evidence_revision += 1
-        Loop._record_read_receipt(self, call, result)
         Loop._record_failed_action(self, call, result)
         metadata = result.metadata if isinstance(result.metadata, dict) else {}
         if metadata.get("loop_guard_blocked"):
@@ -659,39 +658,41 @@ class Loop:
             if key[0] == workspace_revision and key[1] == evidence_revision
         }
 
-    def _record_read_receipt(self, call, result):
-        if (
-            not result.success
-            or str(getattr(call, "name", "")).strip().lower() != "read_file"
-        ):
-            return
-        evidence = result.evidence if isinstance(result.evidence, dict) else {}
-        required = (
-            "path", "file_sha256", "source_start_offset",
-            "source_end_offset", "requested_end_offset",
-        )
-        if not all(key in evidence for key in required):
-            return
-        path = Loop._canonical_read_path(self, evidence.get("path"))
-        if not path:
-            return
+    def _record_delivered_read_receipts(self, messages):
+        """Remember only file bytes that were actually included in a provider request."""
+        from src.context.file_reads import delivered_reads
+
+        seen = getattr(self, "_read_receipt_ids", None)
+        if seen is None:
+            seen = set()
+            self._read_receipt_ids = seen
         receipts = getattr(self, "_read_receipts", None)
         if receipts is None:
             receipts = []
             self._read_receipts = receipts
-        receipts.append({
-            "path": path,
-            "workspace_revision": getattr(self, "workspace_revision", 0),
-            "evidence_revision": getattr(self, "_evidence_revision", 0),
-            "evidence": {
-                key: evidence.get(key)
-                for key in (
-                    "path", "file_sha256", "source_start_offset",
-                    "source_end_offset", "requested_end_offset", "start_line",
-                    "end_line", "returned_end_line", "total_lines", "truncated",
-                )
-            },
-        })
+
+        for evidence in delivered_reads(messages):
+            read_id = str(evidence.get("read_id") or "")
+            if read_id and read_id in seen:
+                continue
+            path = Loop._canonical_read_path(self, evidence.get("path"))
+            if not path:
+                continue
+            receipts.append({
+                "path": path,
+                "workspace_revision": getattr(self, "workspace_revision", 0),
+                "evidence_revision": getattr(self, "_evidence_revision", 0),
+                "evidence": {
+                    key: evidence.get(key)
+                    for key in (
+                        "read_id", "path", "file_sha256", "source_start_offset",
+                        "source_end_offset", "requested_end_offset", "start_line",
+                        "end_line", "returned_end_line", "total_lines", "truncated",
+                    )
+                },
+            })
+            if read_id:
+                seen.add(read_id)
         if len(receipts) > self.MAX_READ_RECEIPTS:
             del receipts[:len(receipts) - self.MAX_READ_RECEIPTS]
 
@@ -911,6 +912,9 @@ class Loop:
         if not isinstance(result, LLMResult):
             raise TypeError("Provider must return LLMResult")
         self.context.record_delivery(self.session_id)
+        # Guard decisions are based on the exact file ranges that reached the
+        # model, after context-budget truncation/compaction, never raw tool output.
+        Loop._record_delivered_read_receipts(self, messages)
         self.metrics["tokens"] += max(0, int(result.usage or 0))
         self.context.calibrate(result)
         if not result.tool_calls and not str(result.response or "").strip():
