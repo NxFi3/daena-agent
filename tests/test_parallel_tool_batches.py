@@ -111,3 +111,48 @@ def test_observation_repeat_is_allowed_after_workspace_revision_changes():
 
     runtime.workspace_revision = 1
     assert Loop._duplicate_observation_result(runtime, call) is None
+
+
+def test_same_exact_file_read_in_one_model_batch_executes_only_once(tmp_path):
+    executions = []
+    applied = []
+    tool = SimpleNamespace(
+        parallel_safe=True,
+        duplicate_key=lambda arguments, workspace_root=None: dict(arguments),
+    )
+
+    def execute(calls):
+        executions.append(calls[0].id)
+        return {"results": [ToolResult(True, calls[0].name, {"path": "/tmp/a"})]}
+
+    runtime = SimpleNamespace(
+        tool=SimpleNamespace(get_tool=lambda name: tool, execute=execute),
+        metrics={"tool_call_attempts": 0, "resource_blocks": 0,
+                 "duplicate_observations_blocked": 0, "repeated_actions_blocked": 0,
+                 "tool_successes": 0, "tool_failures": 0},
+        _stop_event=None,
+        _workspace_root=tmp_path,
+        workspace_revision=0,
+        _evidence_revision=0,
+        _observation_counts={},
+        _read_receipts=[],
+        _failed_exact_calls={},
+        _failed_action_scopes={},
+        _guard_block_streak=0,
+        _stagnation_stop_reason=None,
+        _emit_event=lambda kind, **kwargs: None,
+        _apply_result=lambda call, result, iteration: applied.append(result),
+    )
+    args = {"file_path": str(tmp_path / "a.h")}
+    calls = [
+        ToolCall(name="read_file", id="first", valid=True,
+                 action="inspect", args=args),
+        ToolCall(name="read_file", id="second", valid=True,
+                 action="inspect", args=dict(args)),
+    ]
+
+    Loop._execute_tool_calls(runtime, calls, 1)
+
+    assert executions == ["first"]
+    assert len(applied) == 2
+    assert applied[-1].metadata["loop_guard_blocked"] is True
