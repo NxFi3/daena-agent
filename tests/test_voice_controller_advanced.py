@@ -421,17 +421,23 @@ def test_cli_installed_paths_fill_empty_settings_but_preserve_custom_paths(
     monkeypatch.setattr(
         "src.studio.voice_controller.installed_models",
         lambda: {
+            "piper-fa": {"path": "/cache/fa.onnx"},
+            "piper-en": {"path": "/cache/en.onnx"},
             "kokoro-en": {"path": "/cache/kokoro.onnx"},
             "speaker-embedding": {"path": "/cache/speaker.onnx"},
             "audio-events": {"path": "/cache/sound.onnx"},
         },
     )
     settings = {
+        "tts_fa_model": "/deleted/old-fa.onnx",
+        "tts_en_model": "",
         "kokoro_model_path": "",
         "kokoro_voices_path": "",
         "speaker_model_path": "/custom/speaker.onnx",
     }
     c._installed_settings(settings)
+    assert settings["tts_fa_model"] == "/cache/fa.onnx"
+    assert settings["tts_en_model"] == "/cache/en.onnx"
     assert settings["kokoro_model_path"] == "/cache/kokoro.onnx"
     assert settings["kokoro_voices_path"] == "/cache/voices-v1.0.bin"
     assert settings["sound_labels_path"] == "/cache/class_labels_indices.csv"
