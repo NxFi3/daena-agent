@@ -285,9 +285,9 @@ class Loop:
         if workspace_changed:
             self.workspace_revision += 1
             self._evidence_revision += 1
-        elif result.success:
-            # Successful results are fresh evidence unless a guard synthesized
-            # them. This permits deliberate retries after useful new evidence.
+        elif result.success and str(getattr(call, "name", "")).strip().lower() != "read_file":
+            # Other successful tool receipts are fresh evidence. File reads are
+            # counted only after their exact, context-fitted bytes reach a model.
             self._evidence_revision += 1
         Loop._record_failed_action(self, call, result)
         metadata = result.metadata if isinstance(result.metadata, dict) else {}
@@ -703,6 +703,9 @@ class Loop:
             })
             if read_id:
                 seen.add(read_id)
+            # Advancing this revision here means retries are unlocked only when
+            # this newly observed source span was actually sent to the model.
+            self._evidence_revision = getattr(self, "_evidence_revision", 0) + 1
         if len(receipts) > self.MAX_READ_RECEIPTS:
             del receipts[:len(receipts) - self.MAX_READ_RECEIPTS]
 
