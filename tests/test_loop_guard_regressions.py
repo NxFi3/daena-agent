@@ -6,7 +6,6 @@ from types import SimpleNamespace
 
 from src.agent.agentloop import Loop
 from src.context.contextbuilder import ContextBuilder
-from src.models.ToolResult import ToolResult
 
 
 def _loop_for_guards(tmp_path):
@@ -83,6 +82,48 @@ def test_read_guard_allows_uncovered_range(tmp_path):
 
     assert Loop._read_is_already_covered(loop, call) is None
 
+
+
+def test_only_model_delivered_file_bytes_enter_the_read_guard(tmp_path):
+    file_path = tmp_path / "target.h"
+    file_path.write_text("abc", encoding="utf-8")
+    loop = _loop_for_guards(tmp_path)
+    receipt = {
+        "success": True,
+        "evidence": {
+            "read_id": "read-unique-1",
+            "path": str(file_path.resolve()),
+            "file_sha256": "f" * 64,
+            "source_start_offset": 0,
+            "source_end_offset": 3,
+            "requested_end_offset": 3,
+            "content": "abc",
+            "start_line": 1,
+            "end_line": 1,
+            "returned_end_line": 1,
+            "total_lines": 1,
+            "truncated": False,
+        },
+    }
+    messages = [
+        {
+            "role": "tool",
+            "tool_name": "read_file",
+            "content": json.dumps(receipt),
+        }
+    ]
+
+    Loop._record_delivered_read_receipts(loop, messages)
+    Loop._record_delivered_read_receipts(loop, messages)
+
+    assert len(loop._read_receipts) == 1
+    call = SimpleNamespace(
+        valid=True,
+        name="read_file",
+        action="inspect",
+        args={"file_path": str(file_path), "start_line": 1, "end_line": 1},
+    )
+    assert Loop._read_is_already_covered(loop, call) is not None
 
 def test_repeated_failed_action_is_blocked_after_two_failures(tmp_path):
     loop = _loop_for_guards(tmp_path)
