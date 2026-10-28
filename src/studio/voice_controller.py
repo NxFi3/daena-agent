@@ -466,6 +466,7 @@ class VoiceController(QObject):
             path = Path(value or "").expanduser()
             return (
                 bool(value)
+                and path.suffix.lower() == ".onnx"
                 and path.is_file()
                 and Path(str(path) + ".json").is_file()
             )
