@@ -205,8 +205,14 @@ class VoiceDialog(QDialog):
             "Quality first · large-v3-turbo (~1.6 GB)", "large-v3-turbo"
         )
         self.stt_model.addItem("Faster CPU · small (~0.5 GB)", "small")
+        self.stt_model.setToolTip(
+            "Used only when Input is Microphone. Text-only mode never loads Whisper, even if a recognition model is selected here."
+        )
         form.addRow("Speech recognition", self.stt_model)
         self.stt_download = QPushButton("Download selected speech model")
+        self.stt_download.setToolTip(
+            "You can prepare a local model while using Text only; it will not load until Microphone input is selected and applied."
+        )
         self.stt_download.clicked.connect(self._download_speech)
         form.addRow("", self.stt_download)
         row = QHBoxLayout()
@@ -562,8 +568,6 @@ class VoiceDialog(QDialog):
         self.finish_button.setEnabled(self._active and not text_only)
         self.mute_button.setEnabled(self._active and not text_only)
         for widget in (
-            self.stt_model,
-            self.stt_download,
             self.stt_device,
             self.stt_compute_type,
             self.stt_cpu_threads,
@@ -658,6 +662,11 @@ class VoiceDialog(QDialog):
             combo.setCurrentIndex(index)
         elif combo.isEditable():
             combo.setEditText(str(value))
+        elif combo.count():
+            # Do not leave a stale visual choice when a saved enum is invalid.
+            # Device IDs are preserved separately and re-added as unavailable
+            # entries by set_devices() when the list is refreshed.
+            combo.setCurrentIndex(0)
 
     def populate(self, settings):
         previous, self._populating = self._populating, True
