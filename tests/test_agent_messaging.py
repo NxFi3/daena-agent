@@ -1,5 +1,6 @@
 """Live multi-agent messages: ordered, scoped and safe during execution."""
 import threading
+import time
 import pytest
 
 from src.agent.subagents import SubagentManager
@@ -136,8 +137,6 @@ def test_shared_bus_broadcast_reaches_running_peers_and_parent(tmp_path):
             text="I found a likely language-routing bug; please check the related tests.",
         )
         assert receipt["delivery"] == "broadcast"
-        sender = manager._get(first["agent_id"])
-        recipient = manager._get(second["agent_id"])
         assert any("likely language-routing bug" in item for item in instances[1].messages)
         assert not any("likely language-routing bug" in item for item in instances[0].messages)
         assert manager.inbox(second["agent_id"])[0]["sender"] == first["agent_id"]
