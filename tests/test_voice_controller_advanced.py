@@ -1,5 +1,6 @@
 """Speech evidence follows the matching request without blocking ordinary chat."""
 
+from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
 
