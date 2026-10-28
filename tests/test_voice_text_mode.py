@@ -127,7 +127,7 @@ def test_typed_send_can_start_output_without_whisper(output):
     wait_for(lambda: "Spoken reply" in synth.spoken)
 
 
-def test_text_mode_bypasses_missing_whisper_and_unused_persian_voice(
+def test_text_mode_bypasses_whisper_and_requires_bilingual_output_voices(
     output, monkeypatch, tmp_path
 ):
     c, _, _ = output
@@ -138,22 +138,27 @@ def test_text_mode_bypasses_missing_whisper_and_unused_persian_voice(
     )
     monkeypatch.setattr("src.studio.voice_controller.installed_models", lambda: {})
     model, voices = tmp_path / "kokoro.onnx", tmp_path / "voices.bin"
-    model.touch()
-    voices.touch()
+    persian = tmp_path / "fa.onnx"
+    persian_json = tmp_path / "fa.onnx.json"
+    for path in (model, voices, persian, persian_json):
+        path.touch()
     recognizer, router = c._providers(
         {
             "input_mode": "text",
             "language": "auto",
             "stt_model": "/missing",
             "english_engine": "kokoro",
+            "tts_fa_model": str(persian),
             "kokoro_model_path": str(model),
             "kokoro_voices_path": str(voices),
         }
     )
-    assert recognizer is None and router.providers["fa"] is None
+    assert recognizer is None
+    assert router.providers["fa"] is not None
     assert router.providers["en"].model_path == model
+    router.providers["fa"]._loader = lambda path, **kwargs: object()
     router.providers["en"]._engine = object()
-    router.prepare()  # English-only output must not warm an absent Persian voice.
+    router.prepare()  # Both providers must be ready even with the mic disabled.
     assert (
         c._perception(
             {
