@@ -485,8 +485,7 @@ class VoiceController(QObject):
         kokoro = models.get("kokoro-en")
         current_kokoro = settings.get("kokoro_model_path", "")
         if kokoro and not (
-            current_kokoro
-            and Path(current_kokoro).expanduser().is_file()
+            current_kokoro and Path(current_kokoro).expanduser().is_file()
         ):
             settings["kokoro_model_path"] = kokoro["path"]
 
