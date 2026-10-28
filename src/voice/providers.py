@@ -260,10 +260,10 @@ class LanguageRouter:
         label = cls._LABELS.get(language, language)
         if language == "fa":
             return (
-                "Persian output is not configured. In Settings -> Voice -> Models, "
-                "select/download the Persian Piper .onnx voice and its matching "
-                ".onnx.json file. The official Kokoro ONNX voice pack does not "
-                "include Persian."
+                "Select a local fa voice (Persian Piper output). In Settings -> "
+                "Voice -> Models, select/download the Persian Piper .onnx voice "
+                "and its matching .onnx.json file. The official Kokoro ONNX voice "
+                "pack does not include Persian."
             )
         if language == "en":
             return (
