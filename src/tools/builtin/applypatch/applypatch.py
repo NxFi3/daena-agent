@@ -105,6 +105,37 @@ class ApplyPatch(Tool):
         "additionalProperties": False,
     }
 
+    def describe_call(self, arguments: dict[str, Any]) -> dict[str, str]:
+        """Use edited paths as the action scope, not the full patch body."""
+        paths: set[str] = set()
+        edits = arguments.get("edits")
+        if isinstance(edits, list):
+            for edit in edits:
+                if isinstance(edit, dict):
+                    path = edit.get("path")
+                    if isinstance(path, str) and path.strip():
+                        paths.add(path.strip().replace(chr(92), "/"))
+        patch = arguments.get("patch")
+        if isinstance(patch, str):
+            for line in patch.splitlines():
+                prefix = next(
+                    (
+                        candidate for candidate in (
+                            "*** Add File: ", "*** Update File: ", "*** Delete File: "
+                        )
+                        if line.startswith(candidate)
+                    ),
+                    None,
+                )
+                if prefix:
+                    path = line[len(prefix):].strip()
+                    if path:
+                        paths.add(path.replace(chr(92), "/"))
+        return {
+            "action": "modify",
+            "target": "files:" + "|".join(sorted(paths)) if paths else "files:unknown",
+        }
+
     def execute(
         self, patch: str | None = None, edits: list[dict[str, Any]] | None = None
     ) -> ToolResult:
