@@ -36,6 +36,15 @@ def test_turn_taking_defaults_and_saved_review_choice_round_trip(qt_app):
     dialog.close()
 
 
+def test_language_selection_migrates_old_fixed_language_to_automatic(qt_app):
+    dialog = VoiceDialog()
+    dialog.populate({"language": "en"})
+    assert dialog.language.count() == 1
+    assert dialog.values()["language"] == "auto"
+    assert "detects the spoken language" in dialog.language.toolTip()
+    dialog.close()
+
+
 def test_applied_duplex_status_survives_draft_mode_changes_and_is_plain_text(qt_app):
     dialog = VoiceDialog()
     dialog.set_duplex_status(
