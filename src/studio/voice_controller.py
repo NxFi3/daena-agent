@@ -19,7 +19,7 @@ from src.voice.models import (
     installed_models,
     voice_paths,
 )
-from src.voice.providers import FasterWhisperProvider, PiperProvider
+from src.voice.providers import FasterWhisperProvider, LanguageRouter, PiperProvider
 from src.voice.session import VoiceSession
 
 
@@ -451,30 +451,93 @@ class VoiceController(QObject):
 
     @staticmethod
     def _installed_settings(settings):
-        """Offer only explicitly installed files; opening Voice never downloads."""
+        """Repair stale model paths from installed local models, without downloading."""
         models = installed_models()
+
+        def valid_piper(value):
+            path = Path(value or "").expanduser()
+            return (
+                bool(value)
+                and path.is_file()
+                and Path(str(path) + ".json").is_file()
+            )
+
+        # Preserve custom voices only when both parts of Piper's model contract
+        # exist. A stale path otherwise hides a valid installed voice and makes
+        # automatic language routing fail later, during playback.
         for key, field in (
-            ("kokoro-en", "kokoro_model_path"),
+            ("piper-fa", "tts_fa_model"),
+            ("piper-en", "tts_en_model"),
+        ):
+            installed = models.get(key)
+            if installed and not valid_piper(settings.get(field)):
+                settings[field] = installed["path"]
+
+        kokoro = models.get("kokoro-en")
+        current_kokoro = settings.get("kokoro_model_path", "")
+        if kokoro and not (
+            current_kokoro
+            and Path(current_kokoro).expanduser().is_file()
+        ):
+            settings["kokoro_model_path"] = kokoro["path"]
+
+        if settings.get("kokoro_model_path"):
+            sibling_voices = (
+                Path(settings["kokoro_model_path"]).expanduser().parent
+                / "voices-v1.0.bin"
+            )
+            current_voices = settings.get("kokoro_voices_path", "")
+            if not (current_voices and Path(current_voices).expanduser().is_file()):
+                installed_voices = sibling_voices
+                if installed_voices.is_file():
+                    settings["kokoro_voices_path"] = str(installed_voices)
+                elif kokoro:
+                    cached_voices = Path(kokoro["path"]).expanduser().parent / "voices-v1.0.bin"
+                    if cached_voices.is_file():
+                        settings["kokoro_voices_path"] = str(cached_voices)
+
+        for key, field in (
             ("speaker-embedding", "speaker_model_path"),
             ("audio-events", "sound_model_path"),
         ):
             if key in models and not settings.get(field):
                 settings[field] = models[key]["path"]
-        if settings.get("kokoro_model_path"):
-            if not settings.get("kokoro_voices_path"):
-                settings["kokoro_voices_path"] = str(
-                    Path(settings["kokoro_model_path"]).parent / "voices-v1.0.bin"
-                )
-        if settings.get("sound_model_path"):
-            if not settings.get("sound_labels_path"):
-                settings["sound_labels_path"] = str(
-                    Path(settings["sound_model_path"]).parent
-                    / "class_labels_indices.csv"
-                )
+        if settings.get("sound_model_path") and not settings.get("sound_labels_path"):
+            settings["sound_labels_path"] = str(
+                Path(settings["sound_model_path"]).parent / "class_labels_indices.csv"
+            )
+
+    @staticmethod
+    def _piper_path_error(language, value):
+        label = "Persian" if language == "fa" else "English"
+        if not value:
+            return (
+                f"{label} voice is missing. Select/download its local Piper .onnx "
+                "model in Settings -> Voice -> Models."
+            )
+        path = Path(value).expanduser()
+        if not path.is_file():
+            return (
+                f"{label} Piper model was not found: {path}. Browse to an existing "
+                ".onnx voice or download the catalog voice."
+            )
+        if path.suffix.lower() != ".onnx":
+            return f"{label} Piper voice must be an .onnx file, not: {path.name}."
+        sidecar = Path(str(path) + ".json")
+        if not sidecar.is_file():
+            return (
+                f"{label} Piper voice is missing its matching configuration file: "
+                f"{sidecar}. The .onnx and .onnx.json files must come from the same voice."
+            )
+        return ""
 
     def _providers(self, settings):
         if self._provider_factory:
             return self._provider_factory(settings)
+
+        # This repairs stale saved paths before computing the provider cache key.
+        # Valid custom model paths remain untouched and no model is downloaded.
+        self._installed_settings(settings)
         signature = tuple(
             (key, str(settings.get(key, "")))
             for key in (
@@ -497,6 +560,7 @@ class VoiceController(QObject):
         )
         if self._cached_providers and self._cached_providers[0] == signature:
             return self._cached_providers[1]
+
         models = installed_models()
         mode = settings.get("input_mode", "microphone")
         if mode not in {"text", "microphone"}:
@@ -517,6 +581,7 @@ class VoiceController(QObject):
             raise ValueError(
                 "Select an installed local Whisper directory or download a catalog model."
             )
+
         language = settings.get("language", "auto")
         if language not in {"auto", "fa", "en"}:
             raise ValueError("Voice language must be Automatic, Persian or English")
@@ -525,76 +590,73 @@ class VoiceController(QObject):
         if english_engine not in {"piper", "kokoro"}:
             raise ValueError("Choose Piper or Kokoro as the English voice engine")
 
-        # Automatic language follows the voices actually available. A stale
-        # unused Piper path must not prevent switching to Kokoro. If speech
-        # later needs an unconfigured language, the router reports it then.
-        def valid_piper(lang):
-            path = Path(paths.get(lang) or "").expanduser()
-            return (
-                bool(paths.get(lang))
-                and path.is_file()
-                and Path(str(path) + ".json").is_file()
+        # Automatic Persian/English conversations require both outputs up front.
+        # Do not start a microphone session that can answer in a language with no
+        # voice, then fail only after the model has already replied.
+        fa_error = self._piper_path_error("fa", paths["fa"])
+        if fa_error:
+            raise ValueError(
+                "Automatic Persian/English switching needs a working Persian voice. "
+                + fa_error
+                + " Kokoro supplies English only; it cannot replace the Persian Piper voice."
             )
 
-        # Speech language is detected independently for every utterance and
-        # every reply. The legacy UI preference must never force Persian audio
-        # through English ASR/TTS (or vice versa); it is retained for settings
-        # compatibility, while language routing itself is always automatic.
         speed = float(settings.get("speech_speed", 1.0))
         if not 0.7 <= speed <= 1.4:
             raise ValueError("Speech speed must be between 0.7 and 1.4")
 
-        def valid_kokoro():
-            return all(
-                Path(settings.get(field) or "").expanduser().is_file()
-                for field in ("kokoro_model_path", "kokoro_voices_path")
-            )
-
-        available = tuple(
-            lang
-            for lang in ("fa", "en")
-            if (
-                valid_piper("fa")
-                if lang == "fa"
-                else (
-                    valid_kokoro() if english_engine == "kokoro" else valid_piper("en")
+        if english_engine == "piper":
+            en_error = self._piper_path_error("en", paths["en"])
+            if en_error:
+                raise ValueError(
+                    "Automatic Persian/English switching needs a working English voice. "
+                    + en_error
                 )
+            piper = PiperProvider(
+                {"fa": paths["fa"], "en": paths["en"]},
+                language="auto",
+                length_scale=1.0 / speed,
             )
-        )
-        if not available:
-            raise ValueError(
-                "Select/download at least one local output voice in Voice settings."
+            synthesizer = LanguageRouter(
+                {"fa": piper, "en": piper},
+                language="auto",
+                required_languages=("fa", "en"),
             )
+        else:
+            kokoro_model = settings.get("kokoro_model_path", "")
+            kokoro_voices = settings.get("kokoro_voices_path", "")
+            valid_kokoro = (
+                bool(kokoro_model)
+                and Path(kokoro_model).expanduser().is_file()
+                and bool(kokoro_voices)
+                and Path(kokoro_voices).expanduser().is_file()
+            )
+            if not valid_kokoro:
+                raise ValueError(
+                    "Kokoro is selected for English, but its local .onnx model or "
+                    ".bin voices archive is missing. Select both files or choose Piper "
+                    "as the English engine. Persian still uses the separate Piper voice."
+                )
+            from src.voice.kokoro import KokoroProvider
 
-        # Keep every configured language available to the per-reply script
-        # router, even if the old preference was saved as only 'en' or 'fa'.
-        piper_paths = {
-            lang: paths[lang]
-            for lang in available
-            if not (lang == "en" and english_engine == "kokoro")
-        }
-        piper = (
-            PiperProvider(piper_paths, language="auto", length_scale=1.0 / speed)
-            if piper_paths
-            else None
-        )
-        synthesizer = piper
-        if english_engine == "kokoro" and "en" in available:
-            from src.voice.kokoro import KokoroProvider, BilingualSynthesizer
-
+            persian = PiperProvider(
+                {"fa": paths["fa"]},
+                language="fa",
+                length_scale=1.0 / speed,
+            )
             english = KokoroProvider(
-                settings["kokoro_model_path"],
-                settings["kokoro_voices_path"],
+                kokoro_model,
+                kokoro_voices,
                 voice=settings.get("kokoro_voice", "af_heart"),
                 speed=speed,
                 cpu_threads=settings.get("kokoro_cpu_threads", 2),
             )
-            synthesizer = BilingualSynthesizer(
-                english=english,
-                persian=piper if "fa" in available else None,
+            synthesizer = LanguageRouter(
+                {"fa": persian, "en": english},
                 language="auto",
-                require_all_languages=False,
+                required_languages=("fa", "en"),
             )
+
         providers = (
             FasterWhisperProvider(
                 selected,
