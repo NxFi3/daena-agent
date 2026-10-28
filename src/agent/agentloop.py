@@ -116,6 +116,7 @@ class Loop:
         # repeating it only burns context and commonly causes inspection loops.
         self._observation_counts = {}
         self._read_receipts = []
+        self._read_receipt_ids = set()
         self._evidence_revision = 0
         self._failed_exact_calls = {}
         self._failed_action_scopes = {}
@@ -344,6 +345,11 @@ class Loop:
         covered = Loop._covered_read_result(self, call)
         if covered is not None:
             return covered
+        # read_file is guarded against ranges proven delivered to the model.
+        # Do not fall back to execution-time counts: context budgeting can trim
+        # a tool result before the model sees all of its source text.
+        if str(getattr(call, "name", "")).strip().lower() == "read_file":
+            return None
         key = Loop._observation_key(self, call)
         counts = getattr(self, "_observation_counts", {})
         if key is None or counts.get(key, 0) < 1:
@@ -460,6 +466,10 @@ class Loop:
                 total_lines = int(evidence.get("total_lines") or 0)
                 returned_end_line = evidence.get("returned_end_line")
                 if returned_end_line is None:
+                    if evidence.get("truncated"):
+                        # Context payload trimming may split a physical line;
+                        # without the exact returned line, do not claim coverage.
+                        continue
                     returned_end_line = evidence.get("end_line")
                 delivered_end_line = int(returned_end_line or 0)
             except (TypeError, ValueError):
