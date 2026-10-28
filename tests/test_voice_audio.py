@@ -259,7 +259,8 @@ def test_voice_dialog_controls_do_not_start_devices_or_download_models(qt_app):
     dialog.start_requested.connect(starts.append)
     dialog.download_requested.connect(downloads.append)
     dialog.send_requested.connect(sends.append)
-    assert dialog.values()["language"] == "fa"
+    assert dialog.values()["language"] == "auto"
+    assert dialog.language.count() == 1
     assert dialog.values()["stt_model"] == "large-v3-turbo"
     assert not dialog.values()["auto_send"]
     assert not dialog.values()["speak_progress"]
@@ -271,6 +272,14 @@ def test_voice_dialog_controls_do_not_start_devices_or_download_models(qt_app):
     dialog.set_active(True)
     assert dialog.model_page.isEnabled()  # Live settings use explicit Apply.
     assert dialog.interrupt_button.isEnabled()
+    # Text-only mode does not expose microphone/Whisper settings or start
+    # recognition; switch back to microphone mode to change those controls.
+    dialog._select(dialog.input_mode, "text")
+    dialog._update_input_mode()
+    assert dialog.values()["input_mode"] == "text"
+    assert not dialog.stt_model.isEnabled() and not dialog.stt_download.isEnabled()
+    assert not dialog.stt_device.isEnabled()
+    assert not dialog.input_device.isEnabled()
     dialog.set_transcript("سلام Daena")
     dialog.send_button.click()
     assert sends == ["سلام Daena"]

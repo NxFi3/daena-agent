@@ -319,10 +319,43 @@ def test_switch_between_kokoro_and_piper_without_using_stale_optional_voices(
     assert [item for item in created if isinstance(item, tuple)] == [("piper", ("en",))]
 
 
-def test_explicit_persian_still_requires_real_persian_voice(controller, tmp_path):
+def test_voice_language_routes_automatically_even_if_old_setting_says_english(
+    controller, tmp_path
+):
     c, _ = controller
     c._provider_factory = None
-    with pytest.raises(ValueError, match="fa Piper voice"):
+    persian = tmp_path / "persian.onnx"
+    english = tmp_path / "english.onnx"
+    for path in (
+        persian,
+        english,
+        tmp_path / "persian.onnx.json",
+        tmp_path / "english.onnx.json",
+    ):
+        path.touch()
+
+    recognizer, synthesizer = c._providers(
+        {
+            "input_mode": "microphone",
+            "language": "en",  # A previously saved setting must not force English.
+            "stt_model": str(tmp_path),
+            "english_engine": "piper",
+            "tts_fa_model": str(persian),
+            "tts_en_model": str(english),
+        }
+    )
+
+    assert recognizer.language == "auto"
+    assert synthesizer.language == "auto"
+    assert set(synthesizer.model_paths) == {"fa", "en"}
+
+
+def test_voice_start_requires_at_least_one_configured_output_voice(
+    controller, tmp_path
+):
+    c, _ = controller
+    c._provider_factory = None
+    with pytest.raises(ValueError, match="at least one local output voice"):
         c._providers(
             {
                 "input_mode": "text",
@@ -331,6 +364,42 @@ def test_explicit_persian_still_requires_real_persian_voice(controller, tmp_path
                 "tts_fa_model": str(tmp_path / "missing.onnx"),
             }
         )
+
+
+def test_text_only_mode_never_constructs_whisper_and_keeps_bilingual_voices(
+    controller, tmp_path, monkeypatch
+):
+    c, _ = controller
+    c._provider_factory = None
+    persian = tmp_path / "persian.onnx"
+    english = tmp_path / "english.onnx"
+    for path in (
+        persian,
+        english,
+        tmp_path / "persian.onnx.json",
+        tmp_path / "english.onnx.json",
+    ):
+        path.touch()
+
+    def forbidden_whisper(*args, **kwargs):
+        raise AssertionError("Text-only Voice must not construct Whisper")
+
+    monkeypatch.setattr(
+        "src.studio.voice_controller.FasterWhisperProvider", forbidden_whisper
+    )
+    recognizer, synthesizer = c._providers(
+        {
+            "input_mode": "text",
+            "language": "en",
+            "stt_model": "large-v3-turbo",
+            "english_engine": "piper",
+            "tts_fa_model": str(persian),
+            "tts_en_model": str(english),
+        }
+    )
+    assert recognizer is None
+    assert synthesizer.language == "auto"
+    assert set(synthesizer.model_paths) == {"fa", "en"}
 
 
 def test_cli_installed_paths_fill_empty_settings_but_preserve_custom_paths(

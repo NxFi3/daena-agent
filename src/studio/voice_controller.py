@@ -536,55 +536,50 @@ class VoiceController(QObject):
                 and Path(str(path) + ".json").is_file()
             )
 
-        if language == "auto":
-            required = tuple(
-                lang
-                for lang in ("fa", "en")
-                if (
-                    valid_piper("fa")
-                    if lang == "fa"
-                    else english_engine == "kokoro" or valid_piper("en")
-                )
-            )
-            if not required:
-                raise ValueError(
-                    "Select an installed local output voice in Models; Automatic language uses configured voices"
-                )
-        else:
-            required = (language,)
+        # Speech language is detected independently for every utterance and
+        # every reply. The legacy UI preference must never force Persian audio
+        # through English ASR/TTS (or vice versa); it is retained for settings
+        # compatibility, while language routing itself is always automatic.
         speed = float(settings.get("speech_speed", 1.0))
         if not 0.7 <= speed <= 1.4:
             raise ValueError("Speech speed must be between 0.7 and 1.4")
-        for lang in required:
-            if lang == "en" and english_engine == "kokoro":
-                for field in ("kokoro_model_path", "kokoro_voices_path"):
-                    if not Path(settings.get(field) or "").expanduser().is_file():
-                        raise ValueError(
-                            "Select/download the local Kokoro model and matching voices archive"
-                        )
-                continue
-            path = Path(paths.get(lang) or "").expanduser()
-            if not path.is_file() or not Path(str(path) + ".json").is_file():
-                raise ValueError(
-                    f"Select/download the {lang} Piper voice (.onnx plus .onnx.json)."
+
+        def valid_kokoro():
+            return all(
+                Path(settings.get(field) or "").expanduser().is_file()
+                for field in ("kokoro_model_path", "kokoro_voices_path")
+            )
+
+        available = tuple(
+            lang
+            for lang in ("fa", "en")
+            if (
+                valid_piper("fa")
+                if lang == "fa"
+                else (
+                    valid_kokoro() if english_engine == "kokoro" else valid_piper("en")
                 )
+            )
+        )
+        if not available:
+            raise ValueError(
+                "Select/download at least one local output voice in Voice settings."
+            )
+
+        # Keep every configured language available to the per-reply script
+        # router, even if the old preference was saved as only 'en' or 'fa'.
         piper_paths = {
-            lang: paths.get(lang, "")
-            for lang in required
+            lang: paths[lang]
+            for lang in available
             if not (lang == "en" and english_engine == "kokoro")
         }
-        piper_language = (
-            "fa" if english_engine == "kokoro" and "en" in required else language
-        )
         piper = (
-            PiperProvider(
-                piper_paths, language=piper_language, length_scale=1.0 / speed
-            )
+            PiperProvider(piper_paths, language="auto", length_scale=1.0 / speed)
             if piper_paths
             else None
         )
         synthesizer = piper
-        if english_engine == "kokoro" and "en" in required:
+        if english_engine == "kokoro" and "en" in available:
             from src.voice.kokoro import KokoroProvider, BilingualSynthesizer
 
             english = KokoroProvider(
@@ -596,16 +591,16 @@ class VoiceController(QObject):
             )
             synthesizer = BilingualSynthesizer(
                 english=english,
-                persian=piper if "fa" in required else None,
-                language=language,
-                require_all_languages=language != "auto",
+                persian=piper if "fa" in available else None,
+                language="auto",
+                require_all_languages=False,
             )
         providers = (
             FasterWhisperProvider(
                 selected,
                 device=settings.get("stt_device", "cpu"),
                 compute_type=settings.get("stt_compute_type", "int8"),
-                language=language,
+                language="auto",
                 local_files_only=True,
                 cpu_threads=settings.get("stt_cpu_threads", 4),
                 beam_size=settings.get("stt_beam_size", 3),
@@ -834,7 +829,7 @@ class VoiceController(QObject):
             if self._settings.get("input_mode") == "text"
             else "Preparing direct read-aloud"
         )
-        self.session.speak(text, self._settings.get("language", "auto"))
+        self.session.speak(text, "auto")
 
     def feed(self, pcm16):
         if self.session:
@@ -1157,7 +1152,7 @@ class VoiceController(QObject):
                 self._metrics["agent_ms"] = round(
                     (self._reply_started - self._turn_started) * 1000
                 )
-        self.session.speak(text, self._settings.get("language", "auto"))
+        self.session.speak(text, "auto")
         self._speech_pending = True
 
     def context_for_prompt(self, prompt):

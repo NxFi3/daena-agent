@@ -10,13 +10,12 @@ class Subagent(Tool):
     allow_same_revision_repeat = True
     subagent_manager = None
     description = (
-        "Live coordination: message sends to a running child without stopping it; "
-        "inbox collects messages sent by children to the parent. "
-        "Delegate a self-contained task to an independent agent using the same model. "
-        "spawn returns agent_id immediately. read_only mode permits reading, skills and allowed web tools. "
-        "worker mode edits an isolated workspace copy and can run alongside other workers. "
-        "Use status/wait to collect results, list to inspect tasks, cancel to request cooperative stopping. "
-        "After completion use diff to review changes, then merge to integrate changed files, or discard. A merge conflict leaves parent files unchanged. Collect all results and resolve pending changes before finishing. Review reports and independently verify worker changes. "
+        "Delegate complex work to independent subagents in parallel when tasks can be separated cleanly; keep simple work in the parent. "
+        "Each child has its own model session/context; worker edits happen in an isolated copy and must be explicitly reviewed and merged. "
+        "Use message/broadcast to coordinate live while children run. Recipient 'all' publishes to the shared agent bus; bus reads recent shared messages and inbox collects newly delivered messages. "
+        "spawn returns agent_id immediately. read_only permits reading, skills and allowed web tools; worker can edit its isolated copy. "
+        "Use status/wait/wait_all to collect results, list to inspect tasks, and cancel to request cooperative stopping. "
+        "After completion use diff to review changes, then merge or discard each worker; conflicts leave parent files unchanged. Verify integrated changes and resolve pending workers before finishing. "
         "Children cannot spawn more children or gain permissions beyond the parent."
     )
     parameters = {
@@ -35,7 +34,9 @@ class Subagent(Tool):
                     "merge",
                     "discard",
                     "message",
+                    "broadcast",
                     "inbox",
+                    "bus",
                 ],
             },
             "task": {
@@ -55,12 +56,18 @@ class Subagent(Tool):
                 "description": "Required for status, wait, cancel, diff, merge and discard.",
             },
             "text": {"type": "string", "maxLength": 4000, "description": "Live message content."},
-            "recipient": {"type": "string", "description": "Child agent_id for message."},
+            "recipient": {"type": "string", "description": "parent, a running agent_id, or all for a shared bus broadcast."},
             "wait_ms": {
                 "type": "integer",
                 "minimum": 0,
                 "maximum": 300000,
                 "default": 30000,
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 50,
+                "default": 20,
             },
         },
         "required": ["action"],
@@ -79,6 +86,7 @@ class Subagent(Tool):
         allowed_tools: list | None = None,
         text: str = "",
         recipient: str = "",
+        limit: int = 20,
     ) -> ToolResult:
         manager = self.subagent_manager
         if action == "spawn":
@@ -105,8 +113,12 @@ class Subagent(Tool):
             result = manager.cancel(agent_id)
         elif action == "message":
             result = manager.send_message(sender="parent", recipient=recipient or agent_id, text=text)
+        elif action == "broadcast":
+            result = manager.send_message(sender="parent", recipient="all", text=text)
         elif action == "inbox":
             result = {"messages": manager.inbox("parent")}
+        elif action == "bus":
+            result = {"messages": manager.bus_history(limit=limit)}
         elif action == "diff":
             result = manager.diff(agent_id)
         elif action in {"merge", "discard"}:

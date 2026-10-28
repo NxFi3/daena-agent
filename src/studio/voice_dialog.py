@@ -194,21 +194,25 @@ class VoiceDialog(QDialog):
         form.setContentsMargins(14, 16, 14, 12)
         form.setVerticalSpacing(11)
         self.language = QComboBox()
-        for label, value in [
-            ("Automatic · فارسی / English", "auto"),
-            ("فارسی", "fa"),
-            ("English", "en"),
-        ]:
-            self.language.addItem(label, value)
-        form.addRow("Language", self.language)
+        self.language.addItem("Automatic · فارسی / English", "auto")
+        self.language.setToolTip(
+            "Whisper detects the spoken language for each utterance, and Daena chooses the matching local reply voice from the reply text."
+        )
+        form.addRow("Language detection", self.language)
         self.stt_model = QComboBox()
         self.stt_model.setEditable(True)
         self.stt_model.addItem(
             "Quality first · large-v3-turbo (~1.6 GB)", "large-v3-turbo"
         )
         self.stt_model.addItem("Faster CPU · small (~0.5 GB)", "small")
+        self.stt_model.setToolTip(
+            "Used only for microphone input. Text-only mode never loads Whisper."
+        )
         form.addRow("Speech recognition", self.stt_model)
         self.stt_download = QPushButton("Download selected speech model")
+        self.stt_download.setToolTip(
+            "Download the selected local recognition model for microphone input."
+        )
         self.stt_download.clicked.connect(self._download_speech)
         form.addRow("", self.stt_download)
         row = QHBoxLayout()
@@ -660,6 +664,11 @@ class VoiceDialog(QDialog):
             combo.setCurrentIndex(index)
         elif combo.isEditable():
             combo.setEditText(str(value))
+        elif combo.count():
+            # Do not leave a stale visual choice when a saved enum is invalid.
+            # Device IDs are preserved separately and re-added as unavailable
+            # entries by set_devices() when the list is refreshed.
+            combo.setCurrentIndex(0)
 
     def populate(self, settings):
         previous, self._populating = self._populating, True
