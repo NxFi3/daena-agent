@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from math import ceil
+from pathlib import Path
 from src.studio.widgets import Composer
 
 from PySide6.QtCore import QRectF, Qt, Signal
@@ -238,8 +239,13 @@ class VoiceDialog(QDialog):
         recognition_tuning.addWidget(self.stt_beam_size)
         form.addRow("CPU threads / beam", recognition_tuning)
         self.tts_fa_model = QLineEdit()
-        self.tts_fa_model.setPlaceholderText("Local Persian .onnx model")
-        form.addRow("Persian voice", self._model_picker(self.tts_fa_model))
+        self.tts_fa_model.setPlaceholderText(
+            "Persian Piper .onnx + matching .onnx.json"
+        )
+        self.tts_fa_model.setToolTip(
+            "Persian output requires a Piper .onnx model and the matching .onnx.json file beside it. Kokoro does not replace this Persian voice."
+        )
+        form.addRow("Persian voice · Piper", self._model_picker(self.tts_fa_model))
         self.fa_download = QPushButton("Download Persian voice")
         self.fa_download.clicked.connect(
             lambda: self.download_requested.emit("piper-fa")
@@ -248,6 +254,9 @@ class VoiceDialog(QDialog):
         self.english_engine = QComboBox()
         self.english_engine.addItem("Piper · lightweight", "piper")
         self.english_engine.addItem("Kokoro · expressive English", "kokoro")
+        self.english_engine.setToolTip(
+            "This setting chooses the English engine only. Persian always uses its separate Piper voice; automatic switching requires both voices to be configured."
+        )
         form.addRow("English engine", self.english_engine)
         self.tts_en_model = QLineEdit()
         self.tts_en_model.setPlaceholderText("Local English .onnx model")
@@ -301,6 +310,11 @@ class VoiceDialog(QDialog):
         kokoro_note.setWordWrap(True)
         kokoro.addRow(kokoro_note)
         form.addRow(self.kokoro_page)
+        self.voice_readiness = QLabel()
+        self.voice_readiness.setObjectName("muted")
+        self.voice_readiness.setWordWrap(True)
+        self.voice_readiness.setTextFormat(Qt.PlainText)
+        form.addRow("Automatic language switching", self.voice_readiness)
         self.speech_speed = QDoubleSpinBox()
         self.speech_speed.setRange(0.7, 1.4)
         self.speech_speed.setSingleStep(0.05)
@@ -505,6 +519,13 @@ class VoiceDialog(QDialog):
             self.sound_labels_path,
         ):
             widget.textChanged.connect(self._changed)
+        for widget in (
+            self.tts_fa_model,
+            self.tts_en_model,
+            self.kokoro_model_path,
+            self.kokoro_voices_path,
+        ):
+            widget.textChanged.connect(self._update_voice_setup_status)
         for widget in (
             self.auto_send,
             self.speak_progress,
@@ -715,11 +736,60 @@ class VoiceDialog(QDialog):
         self._update_engine()
         self._update_input_mode()
 
+    @staticmethod
+    def _piper_setup_status(label, value):
+        if not value:
+            return f"{label}: missing local Piper .onnx voice."
+        path = Path(value).expanduser()
+        if not path.is_file():
+            return f"{label}: model file not found ({path})."
+        if path.suffix.lower() != ".onnx":
+            return f"{label}: select a Piper .onnx model file."
+        sidecar = Path(str(path) + ".json")
+        if not sidecar.is_file():
+            return f"{label}: matching configuration is missing ({sidecar.name})."
+        return ""
+
+    def _update_voice_setup_status(self, *args):
+        persian_error = self._piper_setup_status(
+            "Persian", self.tts_fa_model.text().strip()
+        )
+        if self.english_engine.currentData() == "kokoro":
+            model = Path(self.kokoro_model_path.text().strip()).expanduser()
+            voices = Path(self.kokoro_voices_path.text().strip()).expanduser()
+            if not self.kokoro_model_path.text().strip() or not model.is_file():
+                english_error = "English: select the local Kokoro .onnx model."
+            elif not self.kokoro_voices_path.text().strip() or not voices.is_file():
+                english_error = "English: select the matching Kokoro voices .bin file."
+            else:
+                english_error = ""
+            english_description = "Kokoro"
+        else:
+            english_error = self._piper_setup_status(
+                "English", self.tts_en_model.text().strip()
+            )
+            english_description = "Piper"
+
+        errors = [message for message in (persian_error, english_error) if message]
+        if errors:
+            note = (
+                "Not ready for automatic Persian ↔ English switching.\n"
+                + " ".join(errors)
+                + " Kokoro is the English engine; Persian still requires a valid Persian Piper voice."
+            )
+        else:
+            note = (
+                f"Ready: Persian via Piper and English via {english_description}. "
+                "Daena routes each spoken reply by its text and can switch languages within one reply."
+            )
+        self.voice_readiness.setText(note)
+
     def _update_engine(self, *args):
         kokoro = self.english_engine.currentData() == "kokoro"
         self.kokoro_page.setVisible(kokoro)
         self.tts_en_model.setEnabled(not kokoro)
         self.en_download.setEnabled(not kokoro)
+        self._update_voice_setup_status()
 
     def _speaking_voice(self):
         index = self.kokoro_voice.currentIndex()
