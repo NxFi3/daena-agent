@@ -396,8 +396,9 @@ class Loop:
             return ""
         try:
             candidate = Path(raw).expanduser()
-            if not candidate.is_absolute() and self._workspace_root is not None:
-                candidate = self._workspace_root / candidate
+            workspace_root = getattr(self, "_workspace_root", None)
+            if not candidate.is_absolute() and workspace_root is not None:
+                candidate = workspace_root / candidate
             return str(candidate.resolve(strict=False))
         except (OSError, RuntimeError, ValueError):
             return raw.replace(chr(92), "/")
@@ -586,7 +587,9 @@ class Loop:
                 arguments = tool.duplicate_key(
                     arguments,
                     workspace_root=(
-                        str(self._workspace_root) if self._workspace_root else None
+                        str(getattr(self, "_workspace_root", None))
+                        if getattr(self, "_workspace_root", None)
+                        else None
                     ),
                 )
             except Exception:
