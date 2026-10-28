@@ -31,6 +31,9 @@ from src.utils.logger import get_logger
 
 class Loop:
     DEFAULT_MAX_ITERATIONS = 100
+    DEFAULT_MAX_RUN_SECONDS = 900
+    MAX_READ_RECEIPTS = 256
+    STAGNATION_BLOCK_THRESHOLD = 4
     DEFAULT_RECENT_CONTEXT_LIMIT = 160
     DEFAULT_SEARCH_CONTEXT_TOP_K = 3
 
@@ -74,6 +77,19 @@ class Loop:
         self.max_generation_retries = max(
             0, min(5, int(runtime_config.get("generation_retries", 2)))
         )
+        try:
+            configured_run_seconds = int(
+                runtime_config.get("max_run_seconds", self.DEFAULT_MAX_RUN_SECONDS)
+            )
+        except (TypeError, ValueError):
+            configured_run_seconds = self.DEFAULT_MAX_RUN_SECONDS
+        # Zero explicitly disables the wall-clock limit; negative values fall
+        # back to the safe default.
+        self.max_run_seconds = (
+            0 if configured_run_seconds == 0 else
+            configured_run_seconds if configured_run_seconds > 0 else
+            self.DEFAULT_MAX_RUN_SECONDS
+        )
         self.tool_definitions = self.tool.get_model_tools()
         self.tool.subagents.parent_message_sink = self.receive_agent_message
         self.tool.subagents.event_sink = lambda event: self._emit_event(
@@ -99,6 +115,12 @@ class Loop:
         # An exact observation is authoritative until the workspace changes;
         # repeating it only burns context and commonly causes inspection loops.
         self._observation_counts = {}
+        self._read_receipts = []
+        self._evidence_revision = 0
+        self._failed_exact_calls = {}
+        self._failed_action_scopes = {}
+        self._guard_block_streak = 0
+        self._stagnation_stop_reason = None
         self.metrics = {
             "iterations": 0,
             "llm_calls": 0,
@@ -112,6 +134,8 @@ class Loop:
             "tool_call_attempts": 0,
             "tool_successes": 0,
             "tool_failures": 0,
+            "duplicate_observations_blocked": 0,
+            "repeated_actions_blocked": 0,
             "resource_blocks": 0,
             "completed": False,
             "outcome": "running",
@@ -256,8 +280,31 @@ class Loop:
             self._plan_active_this_run = True
         self.working_set.update(call, result, iteration)
         # File state is observed from disk, not guessed from command text.
-        if self.working_set.refresh_workspace():
+        workspace_changed = self.working_set.refresh_workspace()
+        if workspace_changed:
             self.workspace_revision += 1
+            self._evidence_revision += 1
+        elif result.success:
+            # Successful results are fresh evidence unless a guard synthesized
+            # them. This permits deliberate retries after useful new evidence.
+            self._evidence_revision += 1
+        Loop._record_read_receipt(self, call, result)
+        Loop._record_failed_action(self, call, result)
+        metadata = result.metadata if isinstance(result.metadata, dict) else {}
+        if metadata.get("loop_guard_blocked"):
+            self._guard_block_streak += 1
+            if metadata.get("covered_read"):
+                self.metrics["duplicate_observations_blocked"] += 1
+            else:
+                self.metrics["repeated_actions_blocked"] += 1
+            if self._guard_block_streak >= self.STAGNATION_BLOCK_THRESHOLD:
+                self._stagnation_stop_reason = (
+                    "Stopped after repeated no-progress tool calls were blocked. "
+                    "Review the reported errors and choose a different strategy or "
+                    "collect new evidence."
+                )
+        else:
+            self._guard_block_streak = 0
         key = "tool_successes" if result.success else "tool_failures"
         self.metrics[key] += 1
         self._store_event(self._tool_result_event(call, result))
@@ -295,6 +342,9 @@ class Loop:
         return (getattr(self, "workspace_revision", 0), call.name, serialized)
 
     def _duplicate_observation_result(self, call):
+        covered = Loop._covered_read_result(self, call)
+        if covered is not None:
+            return covered
         key = Loop._observation_key(self, call)
         counts = getattr(self, "_observation_counts", {})
         if key is None or counts.get(key, 0) < 1:
@@ -315,6 +365,7 @@ class Loop:
             },
             metadata={
                 "duplicate_action": True,
+                "loop_guard_blocked": True,
                 "recovery_hint": (
                     "Do not repeat this exact observation again unless the workspace "
                     "changes. Use existing evidence or inspect a materially different "
@@ -334,20 +385,354 @@ class Loop:
                 self._observation_counts = counts
             counts[key] = counts.get(key, 0) + 1
 
+    def _canonical_read_path(self, value):
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        try:
+            candidate = Path(raw).expanduser()
+            if not candidate.is_absolute() and self._workspace_root is not None:
+                candidate = self._workspace_root / candidate
+            return str(candidate.resolve(strict=False))
+        except (OSError, RuntimeError, ValueError):
+            return raw.replace(chr(92), "/")
+
+    def _read_is_already_covered(self, call):
+        """Return a prior delivered receipt only when it covers the full request."""
+        if not call.valid or str(call.name).strip().lower() != "read_file":
+            return None
+        args = dict(call.args or {})
+        path = Loop._canonical_read_path(self, args.get("file_path"))
+        if not path:
+            return None
+        revision = getattr(self, "workspace_revision", 0)
+        start_offset = args.get("start_offset")
+        try:
+            max_chars = max(1, int(args.get("max_output_chars", 8000)))
+        except (TypeError, ValueError):
+            max_chars = 8000
+
+        if start_offset is not None:
+            try:
+                wanted_start = max(0, int(start_offset))
+            except (TypeError, ValueError):
+                return None
+            wanted_end = wanted_start + max_chars
+            for receipt in reversed(getattr(self, "_read_receipts", [])):
+                if receipt.get("workspace_revision") != revision or receipt.get("path") != path:
+                    continue
+                evidence = receipt.get("evidence", {})
+                try:
+                    delivered_start = int(evidence.get("source_start_offset", -1))
+                    delivered_end = int(evidence.get("source_end_offset", -1))
+                    requested_end = int(evidence.get("requested_end_offset", -1))
+                except (TypeError, ValueError):
+                    continue
+                covers_requested_span = (
+                    delivered_start <= wanted_start
+                    and delivered_end >= wanted_end
+                    and requested_end >= wanted_end
+                )
+                covers_to_eof = (
+                    evidence.get("truncated") is False
+                    and delivered_start <= wanted_start < delivered_end
+                    and delivered_end == requested_end
+                )
+                if covers_requested_span or covers_to_eof:
+                    return receipt
+            return None
+
+        try:
+            wanted_start_line = max(1, int(args.get("start_line") or 1))
+        except (TypeError, ValueError):
+            wanted_start_line = 1
+        raw_end_line = args.get("end_line")
+        try:
+            wanted_end_line = int(raw_end_line) if raw_end_line is not None else None
+        except (TypeError, ValueError):
+            return None
+
+        for receipt in reversed(getattr(self, "_read_receipts", [])):
+            if receipt.get("workspace_revision") != revision or receipt.get("path") != path:
+                continue
+            evidence = receipt.get("evidence", {})
+            try:
+                delivered_start_line = int(evidence.get("start_line") or 1)
+                total_lines = int(evidence.get("total_lines") or 0)
+                returned_end_line = evidence.get("returned_end_line")
+                if returned_end_line is None:
+                    returned_end_line = evidence.get("end_line")
+                delivered_end_line = int(returned_end_line or 0)
+            except (TypeError, ValueError):
+                continue
+            # Omitted end_line means EOF; only a receipt that proves complete
+            # delivery through EOF may satisfy that request.
+            desired_end = wanted_end_line if wanted_end_line is not None else total_lines
+            complete_to_eof = (
+                wanted_end_line is not None
+                or (
+                    evidence.get("truncated") is False
+                    and int(evidence.get("source_end_offset", -1))
+                    == int(evidence.get("requested_end_offset", -2))
+                    and delivered_end_line >= total_lines > 0
+                )
+            )
+            if (
+                desired_end > 0
+                and complete_to_eof
+                and delivered_start_line <= wanted_start_line
+                and delivered_end_line >= desired_end
+                and wanted_start_line <= desired_end
+            ):
+                return receipt
+        return None
+
+    def _covered_read_result(self, call):
+        receipt = Loop._read_is_already_covered(self, call)
+        if receipt is None:
+            return None
+        evidence = receipt.get("evidence", {})
+        return ToolResult(
+            success=False,
+            name=call.name,
+            content={
+                "error": {
+                    "type": "duplicate_observation",
+                    "message": (
+                        "This requested file range is already covered by source "
+                        "text delivered earlier in the current workspace revision."
+                    ),
+                },
+                "prior_evidence": {
+                    "path": receipt.get("path", ""),
+                    "file_sha256": evidence.get("file_sha256"),
+                    "source_start_offset": evidence.get("source_start_offset"),
+                    "source_end_offset": evidence.get("source_end_offset"),
+                    "start_line": evidence.get("start_line"),
+                    "returned_end_line": evidence.get("returned_end_line"),
+                    "total_lines": evidence.get("total_lines"),
+                },
+                "recovery": (
+                    "Reuse the source receipt already in context. Do not repeat a "
+                    "covered read. Request only a line/character range containing "
+                    "new evidence if more information is needed."
+                ),
+            },
+            metadata={
+                "duplicate_action": True,
+                "loop_guard_blocked": True,
+                "covered_read": True,
+                "recovery_hint": (
+                    "Reuse existing source evidence or request only an uncovered range."
+                ),
+            },
+        )
+
+    def _normalized_action_arguments(self, call):
+        arguments = dict(call.args or {})
+        manager = getattr(self, "tool", None)
+        getter = getattr(manager, "get_tool", None)
+        tool = getter(call.name) if callable(getter) and call.name else None
+        if tool is not None:
+            try:
+                arguments = tool.duplicate_key(
+                    arguments,
+                    workspace_root=(
+                        str(self._workspace_root) if self._workspace_root else None
+                    ),
+                )
+            except Exception:
+                pass
+        return json.dumps(arguments, ensure_ascii=False, sort_keys=True, default=str)
+
+    def _failure_exact_key(self, call):
+        return (
+            getattr(self, "workspace_revision", 0),
+            getattr(self, "_evidence_revision", 0),
+            str(getattr(call, "name", "")).strip().lower(),
+            Loop._normalized_action_arguments(self, call),
+        )
+
+    def _failure_scope_key(self, call):
+        name = str(getattr(call, "name", "")).strip().lower()
+        action = str(getattr(call, "action", "execute")).strip().lower()
+        target = str(getattr(call, "target", "") or "").strip()
+        if target.startswith("files:"):
+            targets = [
+                Loop._canonical_read_path(self, item)
+                for item in target[len("files:"):].split("|")
+                if item.strip()
+            ]
+            target = "files:" + "|".join(sorted(targets))
+        else:
+            target = " ".join(target.split())
+        if not target:
+            target = Loop._normalized_action_arguments(self, call)
+        return (
+            getattr(self, "workspace_revision", 0),
+            getattr(self, "_evidence_revision", 0),
+            name,
+            action,
+            target,
+        )
+
+    def _repeated_failed_action_result(self, call):
+        """Block a third same-scope failure unless workspace/evidence changed."""
+        exact_key = Loop._failure_exact_key(self, call)
+        scope_key = Loop._failure_scope_key(self, call)
+        exact = getattr(self, "_failed_exact_calls", {}).get(exact_key, {})
+        scoped = getattr(self, "_failed_action_scopes", {}).get(scope_key, {})
+        record = exact if exact.get("count", 0) >= 2 else scoped
+        if record.get("count", 0) < 2:
+            return None
+        prior = str(record.get("summary") or "The previous attempt failed.")
+        return ToolResult(
+            success=False,
+            name=call.name,
+            content={
+                "error": {
+                    "type": "repeated_failed_action",
+                    "message": (
+                        "This action scope has failed twice without new evidence "
+                        "or a workspace change. A further repeated attempt was "
+                        "blocked. Previous failure: " + prior
+                    ),
+                },
+                "recovery": (
+                    "Do not repeat the same approach. Use the actual error details "
+                    "and existing source evidence to change strategy, collect "
+                    "materially new evidence, or report a blocker."
+                ),
+            },
+            metadata={
+                "duplicate_action": True,
+                "loop_guard_blocked": True,
+                "recovery_hint": (
+                    "Two attempts failed without new evidence. Change strategy or "
+                    "collect materially new evidence before retrying this scope."
+                ),
+            },
+        )
+
+    def _record_failed_action(self, call, result):
+        metadata = result.metadata if isinstance(result.metadata, dict) else {}
+        if (
+            result.success
+            or metadata.get("loop_guard_blocked")
+            or metadata.get("duplicate_action")
+        ):
+            return
+        exact_key = Loop._failure_exact_key(self, call)
+        scope_key = Loop._failure_scope_key(self, call)
+        exact = getattr(self, "_failed_exact_calls", None)
+        scopes = getattr(self, "_failed_action_scopes", None)
+        if exact is None:
+            exact = {}
+            self._failed_exact_calls = exact
+        if scopes is None:
+            scopes = {}
+            self._failed_action_scopes = scopes
+
+        def record(store, key):
+            item = dict(store.get(key, {}))
+            item["count"] = int(item.get("count", 0)) + 1
+            item["summary"] = str(result.summary or "")[:400]
+            inner = result.content if isinstance(result.content, dict) else {}
+            error = inner.get("error")
+            item["error_type"] = (
+                str(error.get("type", "")) if isinstance(error, dict) else ""
+            )
+            item["iteration"] = int(getattr(self, "metrics", {}).get("iterations", 0))
+            store[key] = item
+
+        record(exact, exact_key)
+        record(scopes, scope_key)
+        # Keep guard memory bounded and relevant to the current state.
+        workspace_revision = getattr(self, "workspace_revision", 0)
+        evidence_revision = getattr(self, "_evidence_revision", 0)
+        self._failed_exact_calls = {
+            key: value for key, value in exact.items()
+            if key[0] == workspace_revision and key[1] == evidence_revision
+        }
+        self._failed_action_scopes = {
+            key: value for key, value in scopes.items()
+            if key[0] == workspace_revision and key[1] == evidence_revision
+        }
+
+    def _record_read_receipt(self, call, result):
+        if (
+            not result.success
+            or str(getattr(call, "name", "")).strip().lower() != "read_file"
+        ):
+            return
+        evidence = result.evidence if isinstance(result.evidence, dict) else {}
+        required = (
+            "path", "file_sha256", "source_start_offset",
+            "source_end_offset", "requested_end_offset",
+        )
+        if not all(key in evidence for key in required):
+            return
+        path = Loop._canonical_read_path(self, evidence.get("path"))
+        if not path:
+            return
+        receipts = getattr(self, "_read_receipts", None)
+        if receipts is None:
+            receipts = []
+            self._read_receipts = receipts
+        receipts.append({
+            "path": path,
+            "workspace_revision": getattr(self, "workspace_revision", 0),
+            "evidence_revision": getattr(self, "_evidence_revision", 0),
+            "evidence": {
+                key: evidence.get(key)
+                for key in (
+                    "path", "file_sha256", "source_start_offset",
+                    "source_end_offset", "requested_end_offset", "start_line",
+                    "end_line", "returned_end_line", "total_lines", "truncated",
+                )
+            },
+        })
+        if len(receipts) > self.MAX_READ_RECEIPTS:
+            del receipts[:len(receipts) - self.MAX_READ_RECEIPTS]
+
     def _execute_tool_calls(self, calls, iteration):
         # Only tools that explicitly opt in as side-effect-free may run in
         # parallel; the model chooses what to inspect and which calls to group.
-        concurrent = len(calls) > 1 and all(
-            call.valid
-            and call.name != "task_finish"
-            and getattr(self.tool.get_tool(call.name), "parallel_safe", False)
+        observation_keys = [
+            Loop._observation_key(self, call)
             for call in calls
+            if call.valid and str(getattr(call, "action", "")).lower() == "inspect"
+        ]
+        read_paths = [
+            Loop._canonical_read_path(self, (call.args or {}).get("file_path"))
+            for call in calls
+            if call.valid and str(getattr(call, "name", "")).lower() == "read_file"
+        ]
+        # Same-file reads are serialized so later calls can reuse receipts from
+        # earlier calls in the batch instead of racing into duplicate I/O.
+        concurrent = (
+            len(calls) > 1
+            and len([key for key in observation_keys if key is not None])
+                == len(set(key for key in observation_keys if key is not None))
+            and len([path for path in read_paths if path])
+                == len(set(path for path in read_paths if path))
+            and all(
+                call.valid
+                and call.name != "task_finish"
+                and getattr(self.tool.get_tool(call.name), "parallel_safe", False)
+                for call in calls
+            )
         )
         if concurrent:
             executable = []
             blocked = {}
             for index, call in enumerate(calls):
-                duplicate = Loop._duplicate_observation_result(self, call)
+                repeated_failure = Loop._repeated_failed_action_result(self, call)
+                duplicate = (
+                    repeated_failure
+                    if repeated_failure is not None
+                    else Loop._duplicate_observation_result(self, call)
+                )
                 if duplicate is None:
                     executable.append((index, call))
                 else:
@@ -399,7 +784,12 @@ class Loop:
                 )
                 self.metrics["resource_blocks"] += 1
             else:
-                duplicate = Loop._duplicate_observation_result(self, call)
+                repeated_failure = Loop._repeated_failed_action_result(self, call)
+                duplicate = (
+                    repeated_failure
+                    if repeated_failure is not None
+                    else Loop._duplicate_observation_result(self, call)
+                )
                 result = (
                     duplicate
                     if duplicate is not None
@@ -428,10 +818,10 @@ class Loop:
         self.context.contextbuilder.tokenbudget.reserve_tools(self.tool_definitions)
         names = {item["function"]["name"] for item in self.tool_definitions}
         state = self.working_set.context()
-        # These fields were heuristic task assessments. Only explicit tool
-        # receipts and current filesystem inventory are authoritative.
-        for key in ("verification", "last_failed_verification", "facts"):
-            state.pop(key, None)
+        # Verification records originate from actual tool receipts. Preserve
+        # failure diagnostics across context compaction so the model can recover.
+        # Narrative facts are less authoritative and are omitted here.
+        state.pop("facts", None)
         state["available_tools"] = sorted(names)
         state["subagents"] = self.tool.subagents.capabilities()
         state["active_process_ids"] = sorted(self._active_process_ids)
@@ -603,6 +993,15 @@ class Loop:
                 self.agent_state.iteration = iteration
                 if self._stop_event.is_set():
                     raise InterruptedError("Interrupted by user")
+                if (
+                    self.max_run_seconds > 0
+                    and self._run_started_at is not None
+                    and time.perf_counter() - self._run_started_at >= self.max_run_seconds
+                ):
+                    return self._stopped_result(
+                        f"Task time budget exhausted ({self.max_run_seconds} seconds). "
+                        "Execution stopped to prevent an unbounded run."
+                    )
                 self._consume_steering()
                 self._emit_event("iteration_start", max_iterations=self.max_iterations)
                 try:
@@ -641,6 +1040,8 @@ class Loop:
                     self._execute_tool_calls(calls, iteration)
                     if self._stop_event.is_set():
                         raise InterruptedError("Interrupted by user")
+                    if self._stagnation_stop_reason:
+                        return self._stopped_result(self._stagnation_stop_reason)
                     if self._finish_request is not None:
                         report = self._finish_request
                         outcome = report["outcome"]
