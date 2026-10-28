@@ -451,6 +451,42 @@ def test_text_only_mode_never_constructs_whisper_and_keeps_bilingual_voices(
     assert set(synthesizer.providers["fa"].model_paths) == {"fa", "en"}
 
 
+def test_stopped_voice_settings_are_validated_before_being_saved(
+    controller, monkeypatch, tmp_path
+):
+    c, _ = controller
+    c.stop()
+    c._provider_factory = None
+    monkeypatch.setattr(
+        "src.studio.voice_controller.installed_models", lambda: {}
+    )
+    saved = []
+    monkeypatch.setattr(
+        c, "save_settings", lambda settings, **kwargs: saved.append(dict(settings))
+    )
+    kokoro = tmp_path / "kokoro.onnx"
+    voices = tmp_path / "voices.bin"
+    kokoro.touch()
+    voices.touch()
+
+    c.apply_settings(
+        {
+            "input_mode": "text",
+            "language": "auto",
+            "stt_model": "large-v3-turbo",
+            "english_engine": "kokoro",
+            "tts_fa_model": str(tmp_path / "missing-fa.onnx"),
+            "kokoro_model_path": str(kokoro),
+            "kokoro_voices_path": str(voices),
+        }
+    )
+
+    assert c.session is None
+    assert saved == []
+    assert "needs a working Persian voice" in c.dialog.error_label.text()
+    assert "Kokoro supplies English only" in c.dialog.error_label.text()
+
+
 def test_cli_installed_paths_fill_empty_settings_but_preserve_custom_paths(
     controller, monkeypatch
 ):
