@@ -206,12 +206,12 @@ class VoiceDialog(QDialog):
         )
         self.stt_model.addItem("Faster CPU · small (~0.5 GB)", "small")
         self.stt_model.setToolTip(
-            "Used only when Input is Microphone. Text-only mode never loads Whisper, even if a recognition model is selected here."
+            "Used only for microphone input. Text-only mode never loads Whisper."
         )
         form.addRow("Speech recognition", self.stt_model)
         self.stt_download = QPushButton("Download selected speech model")
         self.stt_download.setToolTip(
-            "You can prepare a local model while using Text only; it will not load until Microphone input is selected and applied."
+            "Download the selected local recognition model for microphone input."
         )
         self.stt_download.clicked.connect(self._download_speech)
         form.addRow("", self.stt_download)
@@ -568,6 +568,8 @@ class VoiceDialog(QDialog):
         self.finish_button.setEnabled(self._active and not text_only)
         self.mute_button.setEnabled(self._active and not text_only)
         for widget in (
+            self.stt_model,
+            self.stt_download,
             self.stt_device,
             self.stt_compute_type,
             self.stt_cpu_threads,
