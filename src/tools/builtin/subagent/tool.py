@@ -63,6 +63,12 @@ class Subagent(Tool):
                 "maximum": 300000,
                 "default": 30000,
             },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 50,
+                "default": 20,
+            },
         },
         "required": ["action"],
         "additionalProperties": False,
@@ -80,6 +86,7 @@ class Subagent(Tool):
         allowed_tools: list | None = None,
         text: str = "",
         recipient: str = "",
+        limit: int = 20,
     ) -> ToolResult:
         manager = self.subagent_manager
         if action == "spawn":
@@ -111,7 +118,7 @@ class Subagent(Tool):
         elif action == "inbox":
             result = {"messages": manager.inbox("parent")}
         elif action == "bus":
-            result = {"messages": manager.bus_history(limit=max(1, min(wait_ms // 1000 or 20, 50)))}
+            result = {"messages": manager.bus_history(limit=limit)}
         elif action == "diff":
             result = manager.diff(agent_id)
         elif action in {"merge", "discard"}:
