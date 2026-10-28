@@ -366,6 +366,42 @@ def test_voice_start_requires_at_least_one_configured_output_voice(
         )
 
 
+def test_text_only_mode_never_constructs_whisper_and_keeps_bilingual_voices(
+    controller, tmp_path, monkeypatch
+):
+    c, _ = controller
+    c._provider_factory = None
+    persian = tmp_path / "persian.onnx"
+    english = tmp_path / "english.onnx"
+    for path in (
+        persian,
+        english,
+        tmp_path / "persian.onnx.json",
+        tmp_path / "english.onnx.json",
+    ):
+        path.touch()
+
+    def forbidden_whisper(*args, **kwargs):
+        raise AssertionError("Text-only Voice must not construct Whisper")
+
+    monkeypatch.setattr(
+        "src.studio.voice_controller.FasterWhisperProvider", forbidden_whisper
+    )
+    recognizer, synthesizer = c._providers(
+        {
+            "input_mode": "text",
+            "language": "en",
+            "stt_model": "large-v3-turbo",
+            "english_engine": "piper",
+            "tts_fa_model": str(persian),
+            "tts_en_model": str(english),
+        }
+    )
+    assert recognizer is None
+    assert synthesizer.language == "auto"
+    assert set(synthesizer.model_paths) == {"fa", "en"}
+
+
 def test_cli_installed_paths_fill_empty_settings_but_preserve_custom_paths(
     controller, monkeypatch
 ):
