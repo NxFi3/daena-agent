@@ -125,6 +125,38 @@ def test_only_model_delivered_file_bytes_enter_the_read_guard(tmp_path):
     )
     assert Loop._read_is_already_covered(loop, call) is not None
 
+
+def test_same_truncated_line_read_is_blocked_and_can_use_next_offset(tmp_path):
+    file_path = tmp_path / "large.h"
+    file_path.write_text("x" * 9000 + "\\nsecond line\\n", encoding="utf-8")
+    loop = _loop_for_guards(tmp_path)
+    loop._read_receipts.append(
+        _receipt(
+            file_path,
+            start_offset=0,
+            end_offset=8000,
+            requested_end=9013,
+            start_line=1,
+            end_line=2,
+            truncated=True,
+        )
+    )
+    repeated = SimpleNamespace(
+        valid=True,
+        name="read_file",
+        action="inspect",
+        args={"file_path": str(file_path), "start_line": 1, "end_line": 2},
+    )
+    continuation = SimpleNamespace(
+        valid=True,
+        name="read_file",
+        action="inspect",
+        args={"file_path": str(file_path), "start_offset": 8000, "max_output_chars": 8000},
+    )
+
+    assert Loop._read_is_already_covered(loop, repeated) is not None
+    assert Loop._read_is_already_covered(loop, continuation) is None
+
 def test_repeated_failed_action_is_blocked_after_two_failures(tmp_path):
     loop = _loop_for_guards(tmp_path)
     call = SimpleNamespace(
