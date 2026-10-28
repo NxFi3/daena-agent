@@ -497,13 +497,10 @@ class VoiceController(QObject):
             )
             current_voices = settings.get("kokoro_voices_path", "")
             if not (current_voices and Path(current_voices).expanduser().is_file()):
-                installed_voices = sibling_voices
-                if installed_voices.is_file():
-                    settings["kokoro_voices_path"] = str(installed_voices)
-                elif kokoro:
-                    cached_voices = Path(kokoro["path"]).expanduser().parent / "voices-v1.0.bin"
-                    if cached_voices.is_file():
-                        settings["kokoro_voices_path"] = str(cached_voices)
+                # Keep the expected sibling path visible in Settings even when
+                # the archive is missing; readiness feedback then explains which
+                # exact file still needs to be selected/downloaded.
+                settings["kokoro_voices_path"] = str(sibling_voices)
 
         for key, field in (
             ("speaker-embedding", "speaker_model_path"),
