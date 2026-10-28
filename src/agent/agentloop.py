@@ -33,6 +33,7 @@ class Loop:
     DEFAULT_MAX_ITERATIONS = 100
     DEFAULT_MAX_RUN_SECONDS = 900
     MAX_READ_RECEIPTS = 256
+    READ_OVERLAP_BLOCK_RATIO = 0.80
     STAGNATION_BLOCK_THRESHOLD = 4
     DEFAULT_RECENT_CONTEXT_LIMIT = 160
     DEFAULT_SEARCH_CONTEXT_TOP_K = 3
@@ -404,7 +405,7 @@ class Loop:
             return raw.replace(chr(92), "/")
 
     def _read_is_already_covered(self, call):
-        """Return a prior delivered receipt only when it covers the full request."""
+        """Classify a read as covered, repeated-prefix, or highly overlapping."""
         if not call.valid or str(call.name).strip().lower() != "read_file":
             return None
         args = dict(call.args or {})
@@ -432,8 +433,18 @@ class Loop:
                     delivered_start = int(evidence.get("source_start_offset", -1))
                     delivered_end = int(evidence.get("source_end_offset", -1))
                     requested_end = int(evidence.get("requested_end_offset", -1))
+                    prior_limit = int(evidence.get("max_output_chars") or 0)
                 except (TypeError, ValueError):
                     continue
+
+                same_truncated_request = (
+                    evidence.get("truncated") is True
+                    and delivered_start == wanted_start
+                    and prior_limit == max_chars
+                )
+                if same_truncated_request:
+                    return {**receipt, "_repeat_truncated": True}
+
                 covers_requested_span = (
                     delivered_start <= wanted_start
                     and delivered_end >= wanted_end
@@ -446,6 +457,18 @@ class Loop:
                 )
                 if covers_requested_span or covers_to_eof:
                     return receipt
+
+                # Block only a high-overlap suffix request: the previous receipt
+                # covers this request's start and most of its bytes, but the
+                # request extends beyond the already-delivered prefix.
+                overlap_end = min(delivered_end, wanted_end)
+                overlap = max(0, overlap_end - wanted_start)
+                ratio = overlap / max(1, wanted_end - wanted_start)
+                if (
+                    delivered_start <= wanted_start < delivered_end < wanted_end
+                    and ratio >= self.READ_OVERLAP_BLOCK_RATIO
+                ):
+                    return {**receipt, "_overlap_only": True}
             return None
 
         try:
@@ -465,33 +488,51 @@ class Loop:
             try:
                 delivered_start_line = int(evidence.get("start_line") or 1)
                 total_lines = int(evidence.get("total_lines") or 0)
-                # Retrying the exact same truncated line-range request returns
-                # the same prefix. Block that cycle and tell the model to follow
-                # next_read/start_offset. This relies on a receipt actually
-                # delivered to the model, not raw tool output.
-                if (
-                    evidence.get("truncated") is True
-                    and evidence.get("start_line") == wanted_start_line
-                    and evidence.get("end_line") == wanted_end_line
-                ):
-                    return receipt
+                evidence_end_line = evidence.get("end_line")
                 returned_end_line = evidence.get("returned_end_line")
-                if returned_end_line is None:
-                    if evidence.get("truncated"):
-                        # Context payload trimming may split a physical line;
-                        # without the exact returned line, do not claim coverage.
-                        continue
-                    returned_end_line = evidence.get("end_line")
-                delivered_end_line = int(returned_end_line or 0)
+                if returned_end_line is None and evidence.get("truncated"):
+                    delivered_end_line = None
+                else:
+                    if returned_end_line is None:
+                        returned_end_line = evidence_end_line
+                    delivered_end_line = int(returned_end_line or 0)
             except (TypeError, ValueError):
                 continue
-            # Omitted end_line means EOF; only a receipt that proves complete
-            # delivery through EOF may satisfy that request.
+
             desired_end = (
                 min(wanted_end_line, total_lines)
                 if wanted_end_line is not None and total_lines > 0
                 else wanted_end_line if wanted_end_line is not None
                 else total_lines
+            )
+            prior_requested_end = (
+                int(evidence_end_line)
+                if evidence_end_line is not None
+                else None
+            )
+            same_requested_end = (
+                prior_requested_end == wanted_end_line
+                if wanted_end_line is not None
+                else prior_requested_end == total_lines
+            )
+            if (
+                evidence.get("truncated") is True
+                and delivered_start_line == wanted_start_line
+                and same_requested_end
+            ):
+                # A repeated line request truncates at the same byte position;
+                # use its continuation offset instead of returning that prefix.
+                return {**receipt, "_repeat_truncated": True}
+
+            if delivered_end_line is None:
+                # Context fitting cut through a line and did not preserve an
+                # exact returned line number. Do not claim range coverage.
+                continue
+
+            fully_delivered_end = (
+                delivered_end_line - 1
+                if evidence.get("truncated") is True
+                else delivered_end_line
             )
             complete_to_eof = (
                 wanted_end_line is not None
@@ -499,17 +540,35 @@ class Loop:
                     evidence.get("truncated") is False
                     and int(evidence.get("source_end_offset", -1))
                     == int(evidence.get("requested_end_offset", -2))
-                    and delivered_end_line >= total_lines > 0
+                    and fully_delivered_end >= total_lines > 0
                 )
             )
             if (
                 desired_end > 0
                 and complete_to_eof
                 and delivered_start_line <= wanted_start_line
-                and delivered_end_line >= desired_end
+                and fully_delivered_end >= desired_end
                 and wanted_start_line <= desired_end
             ):
                 return receipt
+
+            # If the last observation already spans most of this requested
+            # range and includes its first requested line, ask for only the
+            # uncovered suffix rather than reading the same hundreds of lines.
+            overlap_end = min(delivered_end_line, desired_end) if desired_end > 0 else 0
+            overlap_lines = max(
+                0,
+                overlap_end - max(delivered_start_line, wanted_start_line) + 1,
+            )
+            requested_lines = max(1, desired_end - wanted_start_line + 1)
+            ratio = overlap_lines / requested_lines
+            if (
+                desired_end > 0
+                and delivered_start_line <= wanted_start_line <= delivered_end_line
+                and delivered_end_line < desired_end
+                and ratio >= self.READ_OVERLAP_BLOCK_RATIO
+            ):
+                return {**receipt, "_overlap_only": True}
         return None
 
     def _covered_read_result(self, call):
@@ -517,39 +576,71 @@ class Loop:
         if receipt is None:
             return None
         evidence = receipt.get("evidence", {})
+        repeat_truncated = bool(receipt.get("_repeat_truncated"))
+        overlap_only = bool(receipt.get("_overlap_only"))
+        args = dict(call.args or {})
+        source_end = evidence.get("source_end_offset")
+        end_line = args.get("end_line")
+        if end_line is None:
+            end_line = evidence.get("total_lines")
+        expected_sha = evidence.get("file_sha256")
+
+        if repeat_truncated:
+            error_type = "repeated_truncated_read"
+            message = (
+                "This exact read request has already delivered the same truncated "
+                "prefix. Repeating its original start would return the same bytes."
+            )
+            recovery = (
+                "Use the prior next_read continuation or resume with "
+                f"start_offset={source_end}, expected_sha256={expected_sha}, "
+                f"and end_line={end_line}. Do not restart the same range."
+            )
+        elif overlap_only:
+            error_type = "overlapping_observation"
+            message = (
+                "Most of this request overlaps a source range already delivered to "
+                "the model. The redundant read was blocked; only the suffix is new."
+            )
+            recovery = (
+                "Resume at the end of the delivered range with "
+                f"start_offset={source_end}, expected_sha256={expected_sha}, "
+                f"and end_line={end_line}, or request a genuinely different range."
+            )
+        else:
+            error_type = "duplicate_observation"
+            message = (
+                "This requested file range is already covered by source text "
+                "delivered earlier in the current workspace revision."
+            )
+            recovery = (
+                "Reuse the source receipt already in context. Do not repeat a "
+                "covered read. Request only a line/character range containing "
+                "new evidence if more information is needed."
+            )
         return ToolResult(
             success=False,
             name=call.name,
             content={
-                "error": {
-                    "type": "duplicate_observation",
-                    "message": (
-                        "This requested file range is already covered by source "
-                        "text delivered earlier in the current workspace revision."
-                    ),
-                },
+                "error": {"type": error_type, "message": message},
                 "prior_evidence": {
                     "path": receipt.get("path", ""),
-                    "file_sha256": evidence.get("file_sha256"),
+                    "file_sha256": expected_sha,
                     "source_start_offset": evidence.get("source_start_offset"),
-                    "source_end_offset": evidence.get("source_end_offset"),
+                    "source_end_offset": source_end,
                     "start_line": evidence.get("start_line"),
                     "returned_end_line": evidence.get("returned_end_line"),
                     "total_lines": evidence.get("total_lines"),
                 },
-                "recovery": (
-                    "Reuse the source receipt already in context. Do not repeat a "
-                    "covered read. Request only a line/character range containing "
-                    "new evidence if more information is needed."
-                ),
+                "recovery": recovery,
             },
             metadata={
                 "duplicate_action": True,
                 "loop_guard_blocked": True,
-                "covered_read": True,
-                "recovery_hint": (
-                    "Reuse existing source evidence or request only an uncovered range."
-                ),
+                "covered_read": not (repeat_truncated or overlap_only),
+                "overlap_only": overlap_only,
+                "repeated_truncated_read": repeat_truncated,
+                "recovery_hint": recovery,
             },
         )
 
@@ -740,6 +831,7 @@ class Loop:
                         "read_id", "path", "file_sha256", "source_start_offset",
                         "source_end_offset", "requested_end_offset", "start_line",
                         "end_line", "returned_end_line", "total_lines", "truncated",
+                        "max_output_chars",
                     )
                 },
             })
