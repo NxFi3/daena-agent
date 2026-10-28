@@ -93,8 +93,8 @@ class ContextBuilder:
     MAX_HISTORICAL_MESSAGES = 6
 
     OLD_RESULT_MARKER = (
-        " ...[old result truncated to save context; "
-        "re-run the tool only if you still need it]"
+        " ...[old result truncated to save context; consult the newest receipt "
+        "before repeating this operation, and request only missing evidence]"
     )
 
     MAX_EXPERIENCE_CHARS = 4000
@@ -386,59 +386,55 @@ class ContextBuilder:
         return message
 
     def _tool_payload(self, event_content: dict[str, Any]) -> str:
+        """Render bounded tool receipts without dropping recovery-critical fields."""
         summary = str(event_content.get("summary") or "").strip()
         evidence = event_content.get("evidence")
         effects = event_content.get("effects")
-
-        if summary or isinstance(evidence, dict) or isinstance(effects, list):
-            compact: dict[str, Any] = {
-                "success": bool(event_content.get("success", False)),
-            }
-            if summary:
-                compact["summary"] = summary
-            if isinstance(effects, list) and effects:
-                compact["effects"] = effects
-            if isinstance(evidence, dict) and evidence:
-                compact["evidence"] = evidence
-
-            return fit_json(compact, self.MAX_TOOL_CHARS)
-
         inner = event_content.get("content")
-        payload = (
-            dict(inner) if isinstance(inner, dict) else {"message": str(inner or "")}
+        inner = dict(inner) if isinstance(inner, dict) else {"message": str(inner or "")}
+        metadata = event_content.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        success = bool(event_content.get("success", False))
+
+        compact: dict[str, Any] = {"success": success}
+        if summary:
+            compact["summary"] = summary
+        if isinstance(effects, list) and effects:
+            compact["effects"] = effects
+        if isinstance(evidence, dict) and evidence:
+            compact["evidence"] = evidence
+
+        # A summary is not a substitute for the tool's explicit recovery
+        # instructions or structured diagnostic details.
+        selected_content_fields = (
+            "error", "recovery", "details", "path", "type", "operation",
+            "hunk", "matching_locations", "old_snippet", "content_preview",
+            "total_lines", "valid_prefixes", "offending_line", "recovery_hint",
+            "diagnostic_excerpt", "exit_code", "exit_code_hint", "status",
+            "process_id", "pid", "command", "workdir", "timed_out",
+            "duration_ms", "output_pending", "prior_evidence",
         )
-        payload["success"] = bool(event_content.get("success", False))
+        for key in selected_content_fields:
+            value = inner.get(key)
+            if value is not None and value != "":
+                compact[key] = value
 
-        blocks: list[str] = []
-        for key in ("content", "stdout", "stderr"):
-            value = payload.pop(key, None)
+        for key in (
+            "recovery_hint", "recovery_required", "duplicate_action",
+            "loop_guard_blocked", "covered_read", "idempotent_replay",
+        ):
+            value = metadata.get(key)
+            if value is not None:
+                compact[key] = value
+
+        # Preserve bounded output excerpts even when ToolResult already supplied
+        # evidence. Compiler/test diagnostics often tell the next step precisely.
+        for key, limit in (("stdout", 2400), ("stderr", 2400)):
+            value = inner.get(key)
             if isinstance(value, str) and value.strip():
-                blocks.append(f"[{key}]\n{value}")
+                compact[key] = self._head_tail(value, limit)
 
-        files = payload.get("files")
-        if isinstance(files, list):
-            slim_files: list[dict[str, Any]] = []
-            for item in files:
-                if not isinstance(item, dict):
-                    continue
-                slim_files.append(
-                    {
-                        key: value
-                        for key, value in item.items()
-                        if key not in ("content", "content_preview")
-                    }
-                )
-                text = item.get("content")
-                if isinstance(text, str) and text.strip():
-                    blocks.append(f"[file: {item.get('path', '')}]\n{text}")
-            payload["files"] = slim_files
-
-        text = json.dumps(payload, ensure_ascii=False, default=str)
-        if blocks:
-            text += "\n\n" + "\n\n".join(blocks)
-        if len(text) > self.MAX_TOOL_CHARS:
-            text = self._head_tail(text, self.MAX_TOOL_CHARS)
-        return text
+        return fit_json(compact, self.MAX_TOOL_CHARS)
 
     def _sanitize_tool_protocol(
         self,

@@ -77,7 +77,8 @@
   },
   "runtime": {
     "completion_protocol": "implicit",
-    "generation_retries": 2
+    "generation_retries": 2,
+    "max_run_seconds": 900
   },
   "browser": {
     "headless": false,
