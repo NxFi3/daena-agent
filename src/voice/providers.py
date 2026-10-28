@@ -239,11 +239,20 @@ class LanguageRouter:
         self.required_languages = tuple(dict.fromkeys(required_languages))
         self._lock = RLock()
 
+    @staticmethod
+    def _supports(provider, language):
+        if provider is None:
+            return False
+        declared = getattr(provider, "supported_languages", None)
+        return declared is None or language in declared
+
     @property
     def available_languages(self) -> tuple[str, ...]:
         """Languages with configured providers, without loading models."""
         return tuple(
-            code for code in ("fa", "en") if self.providers.get(code) is not None
+            code
+            for code in ("fa", "en")
+            if self._supports(self.providers.get(code), code)
         )
 
     @classmethod
@@ -266,7 +275,7 @@ class LanguageRouter:
 
     def _provider(self, language: str):
         provider = self.providers.get(language)
-        if provider is None:
+        if not self._supports(provider, language):
             raise VoiceLanguageUnavailable(self._missing_voice_message(language))
         return provider
 
@@ -278,7 +287,11 @@ class LanguageRouter:
             raise VoiceLanguageUnavailable(
                 "No local output voice is configured. Choose a Persian Piper voice and an English Piper/Kokoro voice."
             )
-        missing = [code for code in selected if self.providers.get(code) is None]
+        missing = [
+            code
+            for code in selected
+            if not self._supports(self.providers.get(code), code)
+        ]
         if missing:
             raise VoiceLanguageUnavailable(
                 "Automatic language switching is not ready: "
@@ -345,8 +358,12 @@ class PiperProvider:
         self._lock = RLock()
 
     @property
-    def available_languages(self) -> tuple[str, ...]:
+    def supported_languages(self) -> tuple[str, ...]:
         return tuple(code for code in ("fa", "en") if code in self.model_paths)
+
+    @property
+    def available_languages(self) -> tuple[str, ...]:
+        return self.supported_languages
 
     def _load(self, language):
         if language in self._voices:
