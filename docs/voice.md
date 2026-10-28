@@ -111,13 +111,16 @@ Playback begins as soon as the first synthesized chunk is available; actual
 latency depends on the voice, text length and CPU. Only committed replies are
 narrated; a slow Agent still adds its own response delay.
 
-With automatic language, only available output voices are loaded in both text
-and microphone modes. For example, **Kokoro model + voices** can speak English
-without a Persian or English Piper voice. Microphone mode still needs a local
-speech-recognition model. Persian output needs a Persian Piper voice; if a later
-answer contains Persian without one, Voice reports the missing voice for that
-answer and stays active. It never downloads or substitutes a different language
-silently. Selecting Persian explicitly requires its voice before Voice starts.
+Language routing is automatic for every microphone utterance and every
+spoken reply, even when an older saved setting says English or Persian. Whisper
+detects the spoken language per utterance; the reply router selects configured
+voices from the reply's writing system and can switch between Persian and English
+within one response. Available voices are loaded without requiring every language
+at startup. For example, **Kokoro model + voices** can speak English without an
+English Piper voice, while Persian still requires its own configured Piper voice.
+If a reply needs a language with no local voice, Voice reports that specific
+missing voice and stays active. It never silently downloads or substitutes a
+different language. Microphone mode still needs a local Whisper model.
 
 ## One-time model setup
 
@@ -169,7 +172,8 @@ The default recognition model is multilingual **large-v3-turbo**, with CPU int8,
 four CPU threads and beam search3. This keeps the GPU free for a large local
 Ollama model. Choose **small** to reduce memory/load time, or explicitly choose a
 supported CUDA/compute combination. Models are cached and warmed in background
-workers. `auto` detects language; fixed `fa` or `en` can improve short utterances.
+workers. Language is detected automatically for each utterance so switching between
+Persian and English does not require changing a global language setting.
 
 The default catalog voices are Persian **Amir medium** and English **Lessac high**
 Piper voices. You can select **Kokoro** as the English engine instead. Automatic TTS handles script changes with the corresponding voice;
