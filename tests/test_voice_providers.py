@@ -21,9 +21,11 @@ from src.voice.models import (
 from src.voice.providers import (
     AudioChunk,
     FasterWhisperProvider,
+    LanguageRouter,
     PiperProvider,
     VoiceCancelled,
     VoiceError,
+    VoiceLanguageUnavailable,
     language_runs,
 )
 
@@ -111,6 +113,63 @@ def voices(tmp_path):
         Path(str(path) + ".json").write_text("{}")
         result[language] = path
     return result
+
+
+def test_language_router_uses_one_contract_for_piper_and_kokoro_style_providers():
+    events = []
+
+    class FakeProvider:
+        def __init__(self, name):
+            self.name = name
+
+        def prepare(self, stop_event=None):
+            events.append(("prepare", self.name))
+
+        def synthesize(self, text, language="auto", stop_event=None):
+            events.append(("speak", self.name, language, text))
+            yield AudioChunk(16000, b"\0\0")
+
+    persian = FakeProvider("piper-fa")
+    english = FakeProvider("kokoro-en")
+    router = LanguageRouter(
+        {"fa": persian, "en": english},
+        language="auto",
+        required_languages=("fa", "en"),
+    )
+
+    router.prepare()
+    chunks = list(router.synthesize("سلام Daena، خوبی؟"))
+    assert len(chunks) == 3
+    assert events[:2] == [("prepare", "piper-fa"), ("prepare", "kokoro-en")]
+    assert events[2:] == [
+        ("speak", "piper-fa", "fa", "سلام"),
+        ("speak", "kokoro-en", "en", "Daena،"),
+        ("speak", "piper-fa", "fa", "خوبی؟"),
+    ]
+
+
+def test_language_router_fails_before_start_when_automatic_language_is_missing():
+    events = []
+
+    class EnglishOnly:
+        def prepare(self, stop_event=None):
+            events.append("prepared")
+
+        def synthesize(self, text, language="auto", stop_event=None):
+            events.append(("spoken", text, language))
+            yield AudioChunk(16000, b"\0\0")
+
+    router = LanguageRouter(
+        {"fa": None, "en": EnglishOnly()},
+        language="auto",
+        required_languages=("fa", "en"),
+    )
+    assert router.available_languages == ("en",)
+    with pytest.raises(VoiceLanguageUnavailable, match="Persian output is not configured"):
+        router.prepare()
+    with pytest.raises(VoiceLanguageUnavailable, match="does not include Persian"):
+        list(router.synthesize("سلام"))
+    assert events == []
 
 
 def test_piper_streams_current_chunk_api_and_caches_both_language_voices(tmp_path):
