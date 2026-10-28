@@ -552,6 +552,30 @@ class Loop:
             },
         )
 
+    def _duplicate_same_batch_read_result(self, call):
+        return ToolResult(
+            success=False,
+            name=call.name,
+            content={
+                "error": {
+                    "type": "duplicate_observation",
+                    "message": (
+                        "The same exact read_file request already ran in this tool "
+                        "batch. Its duplicate would return the same source range."
+                    ),
+                },
+                "recovery": (
+                    "Use the first result in this batch. To get more information, "
+                    "request a genuinely different range or follow next_read."
+                ),
+            },
+            metadata={
+                "duplicate_action": True,
+                "loop_guard_blocked": True,
+                "recovery_hint": "Do not repeat identical file reads inside one tool batch.",
+            },
+        )
+
     def _normalized_action_arguments(self, call):
         arguments = dict(call.args or {})
         manager = getattr(self, "tool", None)
@@ -791,6 +815,7 @@ class Loop:
                 self._apply_result(call, result, iteration)
             return self._stop_event is not None and self._stop_event.is_set()
 
+        batch_read_keys = set()
         for call in calls:
             self.metrics["tool_call_attempts"] += 1
             self._emit_event(
@@ -813,17 +838,27 @@ class Loop:
                 )
                 self.metrics["resource_blocks"] += 1
             else:
-                repeated_failure = Loop._repeated_failed_action_result(self, call)
-                duplicate = (
-                    repeated_failure
-                    if repeated_failure is not None
-                    else Loop._duplicate_observation_result(self, call)
+                observation_key = (
+                    Loop._observation_key(self, call)
+                    if str(getattr(call, "name", "")).strip().lower() == "read_file"
+                    else None
                 )
-                result = (
-                    duplicate
-                    if duplicate is not None
-                    else self.tool.execute([call])["results"][0]
-                )
+                if observation_key is not None and observation_key in batch_read_keys:
+                    result = Loop._duplicate_same_batch_read_result(self, call)
+                else:
+                    repeated_failure = Loop._repeated_failed_action_result(self, call)
+                    duplicate = (
+                        repeated_failure
+                        if repeated_failure is not None
+                        else Loop._duplicate_observation_result(self, call)
+                    )
+                    result = (
+                        duplicate
+                        if duplicate is not None
+                        else self.tool.execute([call])["results"][0]
+                    )
+                    if result.success and observation_key is not None:
+                        batch_read_keys.add(observation_key)
             Loop._record_observation_success(self, call, result)
             self._apply_result(call, result, iteration)
             if call.name == "task_finish" and result.success:
@@ -841,7 +876,11 @@ class Loop:
         return None
 
     def _generate_next_action(self, user_task, workspace_directory):
-        self.working_set.refresh_workspace()
+        if self.working_set.refresh_workspace():
+            # External edits can happen between tool calls. Make stale read and
+            # failed-action receipts ineligible before asking the model again.
+            self.workspace_revision += 1
+            self._evidence_revision += 1
         self.tool_definitions = self.tool.get_model_tools()
         self.context.contextbuilder.tokenbudget.refresh(self.config)
         self.context.contextbuilder.tokenbudget.reserve_tools(self.tool_definitions)
