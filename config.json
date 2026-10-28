@@ -41,6 +41,7 @@
       "skill_list",
       "skill_read",
       "subagent",
+      "agent_message",
       "task_finish",
       "web_fetch",
       "web_search",
