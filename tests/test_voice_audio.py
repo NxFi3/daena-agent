@@ -272,12 +272,12 @@ def test_voice_dialog_controls_do_not_start_devices_or_download_models(qt_app):
     dialog.set_active(True)
     assert dialog.model_page.isEnabled()  # Live settings use explicit Apply.
     assert dialog.interrupt_button.isEnabled()
-    # Text-only mode keeps Whisper unloaded but lets the user select/download
-    # a recognition model for a later microphone session.
+    # Text-only mode does not expose microphone/Whisper settings or start
+    # recognition; switch back to microphone mode to change those controls.
     dialog._select(dialog.input_mode, "text")
     dialog._update_input_mode()
     assert dialog.values()["input_mode"] == "text"
-    assert dialog.stt_model.isEnabled() and dialog.stt_download.isEnabled()
+    assert not dialog.stt_model.isEnabled() and not dialog.stt_download.isEnabled()
     assert not dialog.stt_device.isEnabled()
     assert not dialog.input_device.isEnabled()
     dialog.set_transcript("سلام Daena")
