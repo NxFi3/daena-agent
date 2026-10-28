@@ -131,11 +131,12 @@ def test_shared_bus_broadcast_reaches_running_peers_and_parent(tmp_path):
     second = manager.spawn("Inspect subagent coordination", name="Bus reviewer")
     try:
         assert both_ready.wait(3)
-        receipt = manager.send_message(
-            sender=first["agent_id"],
-            recipient="all",
+        receipt = AgentMessage(manager, first["agent_id"]).execute(
+            action="broadcast",
             text="I found a likely language-routing bug; please check the related tests.",
         )
+        assert receipt.success
+        receipt = receipt.content
         assert receipt["delivery"] == "broadcast"
         assert any("likely language-routing bug" in item for item in instances[1].messages)
         assert not any("likely language-routing bug" in item for item in instances[0].messages)
@@ -209,6 +210,29 @@ def test_parent_shared_bus_broadcast_is_delivered_to_every_child(tmp_path):
     finally:
         release.set()
         manager.wait_all(3000)
+
+
+def test_shipped_config_enables_agent_messages_for_delegated_children():
+    import json
+    from pathlib import Path
+
+    config = json.loads(
+        (Path(__file__).resolve().parents[1] / "config.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    allowed = config["security"]["allowed_tools"]
+    assert "subagent" in allowed
+    assert "agent_message" in allowed
+
+    manager = SubagentManager(config, lambda child_config: None)
+    from src.agent.subagents import Cancellation, ChildTask
+
+    child = ChildTask(
+        "test-child", "Inspect", "read_only", Cancellation(None, 30)
+    )
+    child_config = manager._child_config(child, str(Path.cwd()))
+    assert "agent_message" in child_config["security"]["allowed_tools"]
 
 
 def test_live_messaging_disabled_when_delegation_forbidden(tmp_path):
