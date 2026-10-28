@@ -327,6 +327,43 @@ def test_switch_between_kokoro_and_piper_without_using_stale_optional_voices(
     ] == [("piper", ("fa",)), ("piper", ("fa", "en")), ("piper", ("fa",))]
 
 
+def test_stale_persian_setting_recovers_to_installed_piper_voice(
+    controller, tmp_path, monkeypatch
+):
+    c, _ = controller
+    c._provider_factory = None
+    persian = tmp_path / "fa_IR-amir-medium.onnx"
+    english = tmp_path / "en_US-lessac-high.onnx"
+    for path in (
+        persian,
+        Path(str(persian) + ".json"),
+        english,
+        Path(str(english) + ".json"),
+    ):
+        path.touch()
+    monkeypatch.setattr(
+        "src.studio.voice_controller.installed_models",
+        lambda: {
+            "piper-fa": {"path": str(persian)},
+            "piper-en": {"path": str(english)},
+        },
+    )
+    settings = {
+        "input_mode": "text",
+        "language": "en",
+        "stt_model": "/not-used-in-text-mode",
+        "english_engine": "piper",
+        "tts_fa_model": str(tmp_path / "deleted-persian.onnx"),
+        "tts_en_model": str(english),
+    }
+
+    _, synthesizer = c._providers(settings)
+
+    assert settings["tts_fa_model"] == str(persian)
+    assert synthesizer.available_languages == ("fa", "en")
+    assert set(synthesizer.providers["fa"].model_paths) == {"fa", "en"}
+
+
 def test_voice_language_routes_automatically_even_if_old_setting_says_english(
     controller, tmp_path
 ):
