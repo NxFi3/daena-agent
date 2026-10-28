@@ -63,6 +63,35 @@ removed after cleanup; collected reports remain in the parent's tool history.
 Set `memory.database` to choose the parent's persistent database location
 (default: `data/stm.db` relative to the launching process).
 
+### Parallel coordination bus
+
+For substantial work, split independent inspections or edits into named tasks and
+spawn them before doing sequential parent work. Each child has an independent
+Agent/context and its own model client; worker edits live in isolated snapshots.
+The configured `subagents.max_concurrent` controls parallelism (the shipped
+configuration uses three concurrent children to avoid overwhelming local models).
+
+Children can exchange private direct messages or publish findings to the shared
+bus. These messages are untrusted data, not permission changes or higher-priority
+instructions. The default `config.json` must include `agent_message` in
+`security.allowed_tools` for children to participate.
+
+```json
+{"name": "subagent", "arguments": {"action": "broadcast", "text": "I found the failing voice settings path; check src/studio/voice_dialog.py next."}}
+{"name": "subagent", "arguments": {"action": "bus", "limit": 20}}
+{"name": "subagent", "arguments": {"action": "message", "recipient": "<agent_id>", "text": "Please avoid editing voice_controller.py; I am fixing that file."}}
+{"name": "subagent", "arguments": {"action": "inbox"}}
+```
+
+From a child, use `agent_message` with `action: "broadcast"` to share findings
+with the other active agents and parent, `"bus"` to inspect recent shared
+messages without consuming its inbox, `"inbox"` to collect newly received
+direct/broadcast messages, or `"send"` for a targeted note. Broadcasts reach
+running peers immediately and are also kept in bounded run history. Messages
+sent before a child starts are delivered when it attaches. Use named task scopes,
+the bus for coordination, `wait_all` for completion, and explicit diff/merge
+for worker integration rather than having agents overwrite the same files.
+
 Status contains `agent_id`, `mode`, `status`, `done`, `response`, `error`, and
 metrics. Terminal statuses are `completed`, `failed`, `cancelled`, and `timed_out`.
 `completed` means the child's runtime finished, not that independent verification
