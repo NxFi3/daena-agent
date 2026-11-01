@@ -5,9 +5,11 @@ from __future__ import annotations
 from collections import deque
 import json
 import math
+import re
 from pathlib import Path
 from queue import Queue, Empty, Full
 from threading import Event, Thread
+from uuid import uuid4
 import time
 
 from PySide6.QtCore import QObject, QTimer
@@ -21,6 +23,7 @@ from src.voice.models import (
 )
 from src.voice.providers import FasterWhisperProvider, LanguageRouter, PiperProvider
 from src.voice.session import VoiceSession
+from src.voice.streaming import speech_segments
 
 
 class VoiceController(QObject):
@@ -72,6 +75,10 @@ class VoiceController(QObject):
         self._perception_failed = False
         self._playback_active = False
         self._speech_pending = False
+        self._voice_stream_id = None
+        self._voice_stream_text = ""
+        self._voice_stream_buffer = ""
+        self._voice_stream_failed = False
         self._preserve_input = False
         self._barge_pending = False
         self._deferred_submission = None
@@ -97,9 +104,11 @@ class VoiceController(QObject):
         if callable(setter):
             setter(
                 "voice_mode",
-                VOICE_SYSTEM_INSTRUCTION
-                if self.session is not None or self._restart_settings is not None
-                else None,
+                (
+                    VOICE_SYSTEM_INSTRUCTION
+                    if self.session is not None or self._restart_settings is not None
+                    else None
+                ),
             )
 
     def ensure_dialog(self):
@@ -663,17 +672,19 @@ class VoiceController(QObject):
             )
 
         providers = (
-            FasterWhisperProvider(
-                selected,
-                device=settings.get("stt_device", "cpu"),
-                compute_type=settings.get("stt_compute_type", "int8"),
-                language="auto",
-                local_files_only=True,
-                cpu_threads=settings.get("stt_cpu_threads", 4),
-                beam_size=settings.get("stt_beam_size", 3),
-            )
-            if mode != "text"
-            else None,
+            (
+                FasterWhisperProvider(
+                    selected,
+                    device=settings.get("stt_device", "cpu"),
+                    compute_type=settings.get("stt_compute_type", "int8"),
+                    language="auto",
+                    local_files_only=True,
+                    cpu_threads=settings.get("stt_cpu_threads", 4),
+                    beam_size=settings.get("stt_beam_size", 3),
+                )
+                if mode != "text"
+                else None
+            ),
             synthesizer,
         )
         self._cached_providers = signature, providers
@@ -841,9 +852,11 @@ class VoiceController(QObject):
             self.dialog.set_state(
                 "Preparing local voice · text only; microphone off"
                 if text_only
-                else "Preparing local models · microphone muted"
-                if self._muted
-                else "Preparing local models · speech input starts when recognition is ready"
+                else (
+                    "Preparing local models · microphone muted"
+                    if self._muted
+                    else "Preparing local models · speech input starts when recognition is ready"
+                )
             )
             self.save_settings(settings)
         except Exception as exc:
@@ -865,9 +878,7 @@ class VoiceController(QObject):
             self.dialog.set_state(
                 "Ready · type text; microphone off"
                 if self._settings.get("input_mode") == "text"
-                else "Microphone muted"
-                if self._muted
-                else "Listening"
+                else "Microphone muted" if self._muted else "Listening"
             )
 
     def speak_text(self, text):
@@ -940,6 +951,7 @@ class VoiceController(QObject):
             self.dialog.set_transcript("")
 
     def begin_turn(self):
+        self._abort_voice_stream()
         if self._previewing or self._speech_pending or self._playback_active:
             self.cancel_speech()
         self._barge_pending = False
@@ -980,9 +992,11 @@ class VoiceController(QObject):
             self.dialog.set_state(
                 "Speaking · microphone off"
                 if self._settings.get("input_mode") == "text"
-                else "Speaking · listening; talk to interrupt"
-                if self._duplex_status.get("active")
-                else "Speaking · microphone paused to avoid echo"
+                else (
+                    "Speaking · listening; talk to interrupt"
+                    if self._duplex_status.get("active")
+                    else "Speaking · microphone paused to avoid echo"
+                )
             )
 
     def cancel_speech(self, *, preserve_input=False):
@@ -992,6 +1006,7 @@ class VoiceController(QObject):
         if self._restart_state is not None:
             self._restart_state = (True, list(self._spoken))
         self._speech_pending = self._playback_active = False
+        self._abort_voice_stream()
         self._pending_replies.clear()
         self._deferred_submission = None
         self._deferred_voice_text = None
@@ -1025,6 +1040,7 @@ class VoiceController(QObject):
         self._deferred_submission = None
         self._deferred_voice_text = None
         self._playback_active = self._speech_pending = False
+        self._abort_voice_stream()
         self._duplex_status = {}
         self._close_test_audio(restore=False)
         if not restart:
@@ -1191,12 +1207,109 @@ class VoiceController(QObject):
             self._pending_transcript = None
             self._deliver_transcript(data)
 
+    def _abort_voice_stream(self):
+        stream_id, self._voice_stream_id = self._voice_stream_id, None
+        self._voice_stream_text = ""
+        self._voice_stream_buffer = ""
+        self._voice_stream_failed = False
+        if stream_id and self.session:
+            self.session.abort_deferred(stream_id)
+
+    def _begin_voice_stream(self):
+        self._abort_voice_stream()
+        if self.session and not self._speech_suppressed:
+            self._voice_stream_id = uuid4().hex
+
+    def _feed_voice_stream(self, delta):
+        if not self._voice_stream_id or not self.session or self._voice_stream_failed:
+            return
+        self._voice_stream_text += str(delta or "")
+        if len(self._voice_stream_text) > 8000:
+            self._voice_stream_failed = True
+            self._abort_voice_stream()
+            return
+        self._voice_stream_buffer += str(delta or "")
+        matches = list(re.finditer(r"(?<=[.!?؟؛])\s+|\n+", self._voice_stream_buffer))
+        cut = matches[-1].end() if matches else 0
+        if not cut and len(self._voice_stream_buffer) > 440:
+            cut = self._voice_stream_buffer.rfind(" ", 0, 400)
+            if cut < 120:
+                cut = 0
+        if not cut:
+            return
+        ready, self._voice_stream_buffer = (
+            self._voice_stream_buffer[:cut],
+            self._voice_stream_buffer[cut:],
+        )
+        stream_id = self._voice_stream_id
+        for sentence in speech_segments(ready):
+            if not self.session.speak_deferred(sentence, stream_id, "auto"):
+                self._voice_stream_failed = True
+                self._abort_voice_stream()
+                return
+
+    def _commit_voice_stream(self, text):
+        stream_id = self._voice_stream_id
+        if not stream_id or not self.session or self._voice_stream_failed:
+            self._abort_voice_stream()
+            return False
+        if self._voice_stream_text != str(text or ""):
+            self._abort_voice_stream()
+            return False
+        tail = self._voice_stream_buffer
+        self._voice_stream_buffer = ""
+        for sentence in speech_segments(tail):
+            if not self.session.speak_deferred(sentence, stream_id, "auto"):
+                self._abort_voice_stream()
+                return False
+        committed = self.session.commit_deferred(stream_id)
+        if not committed:
+            self.session.abort_deferred(stream_id)
+        self._voice_stream_id = None
+        self._voice_stream_text = ""
+        self._voice_stream_buffer = ""
+        self._voice_stream_failed = False
+        return committed
+
     def on_event(self, event):
         if getattr(self.window, "_automation_run", False):
+            self._abort_voice_stream()
             return
         kind = event.get("type")
-        if self._speech_suppressed:
+        if kind == "generation_start":
+            self._begin_voice_stream()
             return
+        if kind == "content_delta":
+            self._feed_voice_stream(event.get("text", ""))
+            return
+        if kind in {
+            "generation_retry",
+            "tool_call",
+            "assistant_message",
+            "run_stopped",
+            "run_start",
+        }:
+            self._abort_voice_stream()
+        if self._speech_suppressed:
+            self._abort_voice_stream()
+            return
+        if kind == "final_response":
+            text = str(event.get("text") or "").strip()
+            if text and self._commit_voice_stream(str(event.get("text") or "")):
+                if text not in self._spoken:
+                    self._spoken.append(text)
+                    if self.screen:
+                        self.screen.set_reply(text)
+                    self.dialog.set_state("Preparing Daena’s spoken reply")
+                    if self._reply_started is None:
+                        self._reply_started = time.monotonic()
+                        if self._turn_started is not None:
+                            self._metrics["agent_ms"] = round(
+                                (self._reply_started - self._turn_started) * 1000
+                            )
+                    self._speech_pending = True
+                return
+            self._abort_voice_stream()
         if kind != "final_response" and not (
             kind == "assistant_message" and self._settings.get("speak_progress", False)
         ):
@@ -1378,11 +1491,13 @@ class VoiceController(QObject):
                         else (
                             "Voice output ready · type text; microphone off"
                             if self._settings.get("input_mode") == "text"
-                            else "Listening · recognition ready"
-                            if getattr(self.session, "recognition_ready", None)
-                            is not None
-                            and self.session.recognition_ready.is_set()
-                            else "Preparing speech recognition · microphone input is not submitted yet"
+                            else (
+                                "Listening · recognition ready"
+                                if getattr(self.session, "recognition_ready", None)
+                                is not None
+                                and self.session.recognition_ready.is_set()
+                                else "Preparing speech recognition · microphone input is not submitted yet"
+                            )
                         )
                     )
                 elif event.kind == "latency":

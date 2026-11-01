@@ -75,6 +75,20 @@ class Session:
     def speak(self, text, language):
         self.spoken.append(text)
 
+    def speak_deferred(self, text, stream_id, language="auto"):
+        self.deferred = getattr(self, "deferred", [])
+        self.deferred.append((text, stream_id, language))
+        return True
+
+    def commit_deferred(self, stream_id):
+        self.committed = getattr(self, "committed", [])
+        self.committed.append(stream_id)
+        return True
+
+    def abort_deferred(self, stream_id):
+        self.aborted = getattr(self, "aborted", [])
+        self.aborted.append(stream_id)
+
     def interrupt(self):
         self.epoch += 1
 
@@ -262,3 +276,41 @@ def test_restart_waits_for_canceled_native_work_without_loading_second_models(
     old.retired = True
     c.start({"language": "auto"})
     assert c.session is not None
+
+
+def test_streaming_tts_stages_sentences_and_commits_only_final_answer(controller):
+    c, _ = controller
+    c.on_event({"type": "generation_start"})
+    c.on_event({"type": "content_delta", "text": "First sentence. "})
+    c.on_event({"type": "content_delta", "text": "Second sentence"})
+    assert [item[0] for item in c.session.deferred] == ["First sentence."]
+    assert not getattr(c.session, "committed", [])
+    c.on_event({"type": "final_response", "text": "First sentence. Second sentence"})
+    assert len(c.session.committed) == 1
+    assert c.session.spoken == []
+
+
+def test_streaming_tts_discards_speculation_for_tool_calls_and_mismatches(controller):
+    c, _ = controller
+    c.on_event({"type": "generation_start"})
+    c.on_event({"type": "content_delta", "text": "I will inspect that. "})
+    stream_id = c._voice_stream_id
+    c.on_event({"type": "tool_call", "name": "read_file"})
+    assert stream_id in c.session.aborted
+    assert not getattr(c.session, "committed", [])
+
+    c.on_event({"type": "generation_start"})
+    c.on_event({"type": "content_delta", "text": "A draft answer. "})
+    c.on_event({"type": "final_response", "text": "A different final answer."})
+    assert c.session.spoken == ["A different final answer."]
+    assert not getattr(c.session, "committed", [])
+
+
+def test_cancel_discards_uncommitted_stream_audio(controller):
+    c, _ = controller
+    c.on_event({"type": "generation_start"})
+    c.on_event({"type": "content_delta", "text": "Speculative sentence. "})
+    stream_id = c._voice_stream_id
+    c.cancel_speech()
+    assert stream_id in c.session.aborted
+    assert c._voice_stream_id is None

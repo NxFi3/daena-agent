@@ -44,7 +44,10 @@ class VoiceSession:
         self.events = Queue(maxsize=64)
         self.audio = Queue(maxsize=6)
         self._speech = Queue(maxsize=2)
-        self._text = Queue(maxsize=6)
+        self._text = Queue(maxsize=64)
+        self._deferred_lock = Lock()
+        self._deferred_audio = {}
+        self._deferred_aborted = set()
         # Acoustic work cannot delay recognition or playback. Speech observations
         # have priority; continuous ambient observations are latest-only.
         self._perception_speech = Queue(maxsize=2)
@@ -193,25 +196,63 @@ class VoiceSession:
                 break
 
     def speak(self, text, language="auto"):
+        return self._queue_speech(text, language=language)
+
+    def _queue_speech(self, text, *, language="auto", stream_id=None, action="speak"):
         if self._closed:
-            return
-        if len(str(text)) > 8000:
-            self.emit(
-                "notice",
-                "Read-aloud is limited to the first 8000 characters; full text remains in chat.",
-                self.epoch,
-            )
-        text = str(text)[:8000]
+            return False
+        text = "" if text is None else str(text)[:8000]
         try:
             self._text.put_nowait(
-                (self.epoch, self._cancel, text, language, time.monotonic())
+                (
+                    self.epoch,
+                    self._cancel,
+                    text,
+                    language,
+                    time.monotonic(),
+                    stream_id,
+                    action,
+                )
             )
+            return True
         except Full:
             self.emit(
                 "error",
                 "Read-aloud queue is full. Interrupt to clear it; the full answer remains in chat.",
                 self.epoch,
             )
+            return False
+
+    def speak_deferred(self, text, stream_id, language="auto"):
+        """Synthesize a committed sentence while generation continues, but hold PCM."""
+        if not text or not stream_id or self._closed:
+            return False
+        with self._deferred_lock:
+            if stream_id in self._deferred_aborted:
+                return False
+            self._deferred_audio.setdefault(stream_id, [])
+        return self._queue_speech(text, language=language, stream_id=stream_id)
+
+    def commit_deferred(self, stream_id):
+        """Release staged PCM only after the Agent confirms a final text answer."""
+        if not stream_id or self._closed:
+            return False
+        with self._deferred_lock:
+            if (
+                stream_id in self._deferred_aborted
+                or stream_id not in self._deferred_audio
+            ):
+                return False
+        return self._queue_speech(None, stream_id=stream_id, action="commit")
+
+    def abort_deferred(self, stream_id):
+        if not stream_id:
+            return
+        with self._deferred_lock:
+            self._deferred_aborted.add(stream_id)
+            self._deferred_audio.pop(stream_id, None)
+            if len(self._deferred_aborted) > 128:
+                self._deferred_aborted.pop()
 
     def interrupt(self, *, preserve_input=False):
         with self._lock:
@@ -244,6 +285,9 @@ class VoiceSession:
                         break
             else:
                 self.reset_input()
+            with self._deferred_lock:
+                self._deferred_audio.clear()
+                self._deferred_aborted.clear()
             self._perception_wake.set()
         return self.epoch
 
@@ -402,9 +446,40 @@ class VoiceSession:
                 return
         while not self._stop.is_set():
             try:
-                epoch, cancel, text, language, started = self._text.get(timeout=0.1)
+                epoch, cancel, text, language, started, stream_id, action = (
+                    self._text.get(timeout=0.1)
+                )
             except Empty:
                 continue
+            if cancel.is_set():
+                continue
+            if action == "commit":
+                with self._deferred_lock:
+                    staged = self._deferred_audio.pop(stream_id, [])
+                    aborted = stream_id in self._deferred_aborted
+                    self._deferred_aborted.discard(stream_id)
+                if aborted:
+                    continue
+                for part in staged:
+                    while not cancel.is_set() and not self._stop.is_set():
+                        try:
+                            self.audio.put((epoch, part), timeout=0.05)
+                            break
+                        except Full:
+                            continue
+                while not cancel.is_set() and not self._stop.is_set():
+                    try:
+                        self.audio.put((epoch, None), timeout=0.05)
+                        break
+                    except Full:
+                        continue
+                if not cancel.is_set():
+                    self.emit("tts_done", None, epoch)
+                continue
+            if stream_id:
+                with self._deferred_lock:
+                    if stream_id in self._deferred_aborted:
+                        continue
             if cancel.is_set():
                 continue
             try:
@@ -443,12 +518,28 @@ class VoiceSession:
                                 sample_rate=chunk.sample_rate,
                                 pcm16=chunk.pcm16[offset : offset + size],
                             )
-                            while not cancel.is_set() and not self._stop.is_set():
-                                try:
-                                    self.audio.put((epoch, part), timeout=0.05)
-                                    break
-                                except Full:
-                                    continue
+                            if stream_id:
+                                with self._deferred_lock:
+                                    if stream_id not in self._deferred_aborted:
+                                        staged = self._deferred_audio.setdefault(
+                                            stream_id, []
+                                        )
+                                        if (
+                                            sum(len(item.pcm16) for item in staged)
+                                            + len(part.pcm16)
+                                            <= 24 * 1024 * 1024
+                                        ):
+                                            staged.append(part)
+                                        else:
+                                            self._deferred_aborted.add(stream_id)
+                                            self._deferred_audio.pop(stream_id, None)
+                            else:
+                                while not cancel.is_set() and not self._stop.is_set():
+                                    try:
+                                        self.audio.put((epoch, part), timeout=0.05)
+                                        break
+                                    except Full:
+                                        continue
                             if cancel.is_set() or self._stop.is_set():
                                 break
                     if (
@@ -460,26 +551,32 @@ class VoiceSession:
                             "The local speech engine produced no audio for this passage. "
                             "Check the selected output voice, language and model files, then try the voice preview."
                         )
-                while not cancel.is_set() and not self._stop.is_set():
-                    try:
-                        self.audio.put((epoch, None), timeout=0.05)
-                        break
-                    except Full:
-                        continue
-                if not cancel.is_set():
-                    self.emit("tts_done", None, epoch)
-            except VoiceLanguageUnavailable as exc:
-                if not cancel.is_set():
-                    # Missing an optional language is local to this answer.
-                    # Finalize any preceding PCM and retain STT/TTS readiness.
+                if not stream_id:
                     while not cancel.is_set() and not self._stop.is_set():
                         try:
                             self.audio.put((epoch, None), timeout=0.05)
                             break
                         except Full:
                             continue
+                    if not cancel.is_set():
+                        self.emit("tts_done", None, epoch)
+            except VoiceLanguageUnavailable as exc:
+                if stream_id:
+                    self.abort_deferred(stream_id)
+                if not cancel.is_set():
+                    # Missing an optional language is local to this answer.
+                    # Finalize preceding ordinary PCM; deferred streams are discarded.
+                    if not stream_id:
+                        while not cancel.is_set() and not self._stop.is_set():
+                            try:
+                                self.audio.put((epoch, None), timeout=0.05)
+                                break
+                            except Full:
+                                continue
                     self.emit("speech_unavailable", str(exc), epoch)
             except Exception as exc:
+                if stream_id:
+                    self.abort_deferred(stream_id)
                 if not cancel.is_set():
                     self.emit(
                         "error",

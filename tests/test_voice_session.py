@@ -193,3 +193,27 @@ def test_voice_cli_writes_real_pcm_wav_without_recording(tmp_path, monkeypatch):
     with wave.open(str(output), "rb") as wav:
         assert wav.getframerate() == 22050 and wav.getnchannels() == 1
         assert wav.getsampwidth() == 2 and wav.getnframes() == 2205
+
+
+def test_deferred_stream_synthesizes_before_commit_but_holds_audio():
+    class TTS:
+        def prepare(self, stop_event=None):
+            pass
+
+        def synthesize(self, text, language, stop_event=None):
+            yield AudioChunk(16000, (text.encode("utf-8")[:2] or b"x") * 320)
+
+    session = VoiceSession(None, TTS())
+    stream_id = "test-stream"
+    try:
+        wait_until(lambda: any(e.kind == "ready" for e in list(session.events.queue)))
+        assert session.speak_deferred("First sentence.", stream_id)
+        wait_until(lambda: bool(session._deferred_audio.get(stream_id)))
+        assert session.audio.empty()
+        assert session.commit_deferred(stream_id)
+        wait_until(lambda: not session.audio.empty())
+        output = drain(session.audio)
+        assert any(chunk is not None for _, chunk in output)
+        assert output[-1][1] is None
+    finally:
+        session.close()
